@@ -1,5 +1,7 @@
 ﻿# TraderAIG - Institutional Operating Core
 
+[![CI](https://github.com/Mo201285/TraderAIG/actions/workflows/ci.yml/badge.svg)](https://github.com/Mo201285/TraderAIG/actions/workflows/ci.yml)
+
 منظومة استثمارية مؤسسية متكاملة تعمل على MetaTrader 5 مع خلفية ذكية بـ Python.
 
 ## البنية المعمارية

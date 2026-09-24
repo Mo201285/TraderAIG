@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -1544,3 +1546,84 @@ def chart_strategies(symbol: str = "XAUUSD") -> List[Dict]:
         })
     out.sort(key=lambda s: (s["stage"], -s["trades"]))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Real-time MT5 bridge channel (WebSocket)
+# ---------------------------------------------------------------------------
+
+
+from fastapi import WebSocket, WebSocketDisconnect  # noqa: E402
+from operations.ws_bridge import (  # noqa: E402
+    CLIENT_MSGS,
+    hub,
+    token_ok,
+)
+
+
+@app.get("/bridge/status")
+def bridge_status() -> Dict:
+    """Connected bridge sessions + their last ack/status (read-only)."""
+    return hub.status()
+
+
+@app.websocket("/bridge/ws")
+async def bridge_ws(websocket: WebSocket) -> None:
+    """Terminal-proxy channel: real-time signals down, acks/status up."""
+    if not token_ok(websocket.query_params.get("token", "")):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    await websocket.accept()
+    session = hub.register(loop=asyncio.get_running_loop())
+
+    async def _sender() -> None:
+        while not session.closed:
+            frame = await session.queue.get()
+            if frame is None:
+                break
+            await websocket.send_json(frame)
+
+    sender_task = asyncio.create_task(_sender())
+    try:
+        await websocket.send_json({"msg": "hello", "session_id": session.id})
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                frame = json.loads(raw)
+            except ValueError:
+                await websocket.send_json(
+                    {"msg": "error", "error": "malformed frame"})
+                await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
+                break
+            if not isinstance(frame, dict):
+                await websocket.send_json(
+                    {"msg": "error", "error": "frame must be an object"})
+                continue
+
+            msg = frame.get("msg", "")
+            if msg == "ping":
+                await websocket.send_json({"msg": "pong"})
+            elif msg == "hello":
+                hub.set_role(session.id, str(frame.get("role", "terminal")))
+                hub.touch(session.id)
+            elif msg in CLIENT_MSGS and msg != "hello":
+                hub.touch(session.id)
+                hub.record(session.id, msg, frame)
+            elif msg == "signal":
+                log.warning(
+                    f"bridge session {session.id}: attempted to send a signal "
+                    "upstream (single authority is the server); rejected")
+                await websocket.send_json({
+                    "msg": "error",
+                    "error": "servers are the single signal authority",
+                })
+            else:
+                await websocket.send_json(
+                    {"msg": "error", "error": "unknown msg"})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        session.closed = True
+        if sender_task:
+            sender_task.cancel()
+        hub.unregister(session.id)

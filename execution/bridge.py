@@ -42,7 +42,40 @@ class MT5Bridge:
     def send_signal(self, candidate: TradeCandidate,
                     fill_hint: Optional[float] = None) -> bool:
         """Write an APPROVED candidate as a JSON command for the EA."""
-        payload = {
+        payload = self._payload(candidate, fill_hint)
+        ok = self.send_signal_frame(payload)
+        if ok:
+            from operations.ws_bridge import hub, SIGNAL_TOPIC
+            hub.publish(SIGNAL_TOPIC, {
+                "msg": "signal",
+                "topic": SIGNAL_TOPIC,
+                "payload": payload,
+                "sent_at": time.time(),
+            })
+        return ok
+
+    def send_signal_frame(self, payload: Dict) -> bool:
+        """Write an already-stamped signal payload to the bridge file.
+
+        Used by the terminal-side proxy, which received the payload over the
+        WebSocket channel and is relaying it through the *same* file the EA
+        polls — so the real-time path and the offline path share one wire.
+        """
+        try:
+            self.bridge_file.parent.mkdir(parents=True, exist_ok=True)
+            self.bridge_file.write_text(
+                json.dumps(payload, indent=2), encoding="utf-8"
+            )
+            log.info(f"Bridge signal written: {payload.get('symbol')} "
+                     f"{payload.get('action')} vol={payload.get('volume')}")
+            return True
+        except OSError as exc:
+            log.error(f"Bridge write failed: {exc}")
+            return False
+
+    def _payload(self, candidate: TradeCandidate,
+                 fill_hint: Optional[float] = None) -> Dict:
+        return {
             "signal": "trade",
             "symbol": candidate.symbol,
             "action": "buy" if candidate.direction.value == "long" else "sell",
@@ -53,17 +86,6 @@ class MT5Bridge:
             "candidate_id": candidate.candidate_id,
             "sent_at": time.time(),
         }
-        try:
-            self.bridge_file.parent.mkdir(parents=True, exist_ok=True)
-            self.bridge_file.write_text(
-                json.dumps(payload, indent=2), encoding="utf-8"
-            )
-            log.info(f"Bridge signal sent: {candidate.symbol} "
-                     f"{payload['action']} vol={payload['volume']}")
-            return True
-        except OSError as exc:
-            log.error(f"Bridge write failed: {exc}")
-            return False
 
     def read_status(self) -> Optional[Dict]:
         """Read the EA's latest status ack."""

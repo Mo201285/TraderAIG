@@ -1289,7 +1289,7 @@ Macro                Change               Bybit
 | Strategy Lab — السجل/التحقق/الترقية والعزل | ✅ مكتمل | `research/strategy_lab/`, `/ops/review/apply`, مراجعة `monitoring/review` |
 | Investment Decision — مرشِّح/مصفوفة | ✅ مكتمل | `decision/…`, `core/pipeline.py` |
 | Risk Governor — البوابات/الرفض/التعلّم بالمخاطر | ✅ مكتمل | `risk/…`, `/risk/*`, التمرين `ops/exercise` يملأ الحيّ |
-| Execution — CEX paper, MT5 live (ديمو) | 🟨 CEX ✅ · **MT5 الحقيقي ✅** جلسة ديمو كاملة (في خانات، إغلاق، سجل) — إنتاجي الشركة لا زال عبر MQL5/websocket ⛔ | `execution/mt5_adapter.py`, `scripts/mt5_live_session.py` (عبر بيانات `.env` على `mt5-dev`), `mt5/…` |
+| Execution — CEX paper, MT5 live (ديمو) | 🟨 CEX ✅ · **MT5 الحقيقي ✅** جلسة ديمو كاملة (في خانات، إغلاق، سجل) · **قناة websocket اللحظية ✅ 2026-09-25** (server `operations/ws_bridge.py` ↔ proxy `scripts/mt5_bridge_proxy.py`) — الربط بمضيف تداول إنتاجي ⛔ قرار استضافة مستقبلي | `execution/mt5_adapter.py`, `scripts/mt5_live_session.py` (عبر بيانات `.env` على `mt5-dev`), `mt5/…`, `operations/ws_bridge.py` |
 | Reconciliation — التحقق من المراكز | ✅ مكتمل | `core/pipeline.py::verify` |
 | Experience Ledger — الرفض/التعلم/audit | ✅ مكتمل + دائم عبر SQLite | `learning/…`, `persistence/` |
 | Validation/WFO — حارس الجودة والاختبار | ✅ مكتمل | `research/school_engine/…`, `/monitoring/quality` |
@@ -1299,16 +1299,17 @@ Macro                Change               Bybit
 | DSPy AI Program Evolution | ✅ مكتمل (موصول محليًا؛ 1b/3b مُقاستان) | `ai/dspy/README.md`, `tradraig dspy …` |
 | Operator Console — طبل ثنائي اللغة | ✅ 17 أمرًا + فحص حي | `tools/tradraig.py` |
 | Dashboard (Control Plane) | ✅ 11 صفحة + LIVE wiring | `TAIG Dash/` — `tsc` نظيف، `vite build` سليم |
-| الاختبارات | ✅ 584 عبر pytest | HTTP-surface + الحوكمة + الأحداث + التعافي + الجلسة الحية + إغلاق حلقة التتبع per-strategy … |
+| الاختبارات | ✅ 593 عبر pytest | HTTP-surface + الحوكمة + الأحداث + التعافي + الجلسة الحية + جسر WebSocket اللحظي … |
 | Postgres إنتاجي | ✅ **موثّق على خادم حقيقي 2026-09-25** — كامل السويت 584 ناجحًا على PostgreSQL 16.15 (EDB محمول `E:\Postgres\pgsql`، كتلة `data16` منفذ 55432، إطلاق عبر WMI — لا تثبيت على C:) | `scripts\postgres_prod_test.ps1` + `scripts/postgres_deploytest.py` — خمسة جداول قانونية (`users/experiences/risk_vetoes/ops_runs/audit`)، وSQLite يبقى الافتراضي (`POSTGRES_HOST` فارغ) |
-| دفع (Stripe/Pi) / MT5 websocket إنتاجي | ⛔ **معلّق على خدمات خارجية** | لا توجد خادمات خارجية متاحة حاليًا (MT5 الحقيقي الديمو ✅ عبر python-MT5) |
+| دفع (Stripe/Pi) | ⛔ **معلّق على خدمات خارجية** | لا توجد خادمات خارجية متاحة حاليًا |
+| MT5 websocket إنتاجي | ✅ **قناة websocket اللحظية مكتملة ومثبتة 2026-09-25** (593 عبر pytest + wire-up حي عبر TCP على uvicorn) — الربط بمضيف التداول الإنتاجي قرار استضافة مستقبلي ⛔ | `operations/ws_bridge.py`, `scripts/mt5_bridge_proxy.py`, `execution/bridge.py` |
 
 التحقق من جاهزية الأسلاك في أي وقت (غير مدمر):
 
 ```text
 powershell -ExecutionPolicy Bypass -File scripts\verify_all.ps1   # البوابات كلها بأمر واحد (ruff → py_compile → pytest → tsc/vite → smoke)
 python -m ruff check .                                        # فحص نمط نظيف (0)
-python -m pytest -q                                  # 584 اختبارًا
+python -m pytest -q                                  # 593 اختبارًا
 cd "TAIG Dash" && node .\node_modules\typescript\bin\tsc --noEmit && node .\node_modules\vite\bin\vite.js build
 powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1     # 7/7 على خادم uvicorn حقيقي
 ```

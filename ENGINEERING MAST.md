@@ -622,7 +622,7 @@ Every feature/auth-change closes only when **all** pass:
 ```text
 D:\One> python -m ruff check .                                         # lint must be zero (pyproject.toml)
 D:\One> powershell -ExecutionPolicy Bypass -File scripts\verify_all.ps1   # the whole gate in one command (any single-failure -> exit 1)
-D:\One> python -m pytest -q                                   # full suite (584 passing, baseline)
+D:\One> python -m pytest -q                                   # full suite (593 passing, baseline)
 D:\One\TAIG Dash> node .\node_modules\typescript\bin\tsc --noEmit && node .\node_modules\vite\bin\vite.js build
 D:\One> powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # live wiring: 7/7
 ```
@@ -667,5 +667,7 @@ D:\One> powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # live
   Redis (`TRADERAIG_STATE_REDIS=0`), persistence (`TRADERAIG_PERSIST=0`),
   Postgres (`POSTGRES_HOST` empty → SQLite), DSPy gate (`TRADERAIG_DSPY_ENABLED`).
   New work must keep the same zero-dependency-offline behavior.
-- Blocked work: real MT5 terminal (MQL5 side), wallet/payment.
+- Blocked work: wallet/payment only; the MT5 terminus is fully wired on this box
+  (file bridge + real-time WebSocket channel, verified 2026-09-25) — attaching a
+  real production trading host remains a deployment decision, not a code gap.
   Do not "implement around" them by faking external services.

@@ -173,7 +173,7 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1
 ## الاختبارات
 
 ```powershell
-python -m pytest -q                        # المجموعة الكاملة (584)
+python -m pytest -q                        # المجموعة الكاملة (593)
 python -m pytest tests/test_ai_dspy/       # طبقة DSPy فقط
 python tests\test_operations\test_operator_console.py   # عبر pytest
 python scripts\mt5_live_session.py --no-trade   # إثبات التغذية الحية قراءةً فقط (بدون أمر)

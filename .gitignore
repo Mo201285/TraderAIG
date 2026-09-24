@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+.venv/
+logs/
+.pytest_cache/
+
+# MT5 terminals (dev + portable terminals are ~1.6 GB of platform binaries,
+# history charts and cache — never source)
+mt5-dev/
+mt5-portable/
+
+# Runtime canonical state (SQLite/JSONL/registries), rebuilt locally on run —
+# operational data, not source. Matches operations/dr.py's backup units.
+.data/
+.proofs/
+research/strategy_lab/data/
+ai/dspy/registry/data/
+
+# Python tooling cache
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# MT5
+*.ex5
+*.ex4
+bridge/

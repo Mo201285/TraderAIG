@@ -1,0 +1,27 @@
+# Pre-commit hooks — mirror the local gates from AGENTS.md.
+#
+# Activation (requires this tree to be a git repo):
+#   pip install pre-commit
+#   pre-commit install                 # once, after `git init`
+#   pre-commit run --all-files         # validate + auto-fix the whole tree
+#
+# Only ruff lint is wired for Python (no ruff-format: the legacy tree is not
+# formatted yet; enabling `ruff format` would rewrite every file blindly).
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        exclude: ^mt5-(dev|portable)/
+      - id: check-toml
+      - id: check-json
+        exclude: ^(research/strategy_lab/data|mt5-(dev|portable))/

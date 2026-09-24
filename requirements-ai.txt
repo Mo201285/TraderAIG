@@ -1,0 +1,6 @@
+# Optional AI Program Compiler (DSPy) layer - Research & Model Evolution.
+# Import is lazy and gated by TRADERAIG_DSPY_ENABLED; actual optimization
+# requires outbound network to a configured LLM provider.
+#
+#   pip install -r requirements-ai.txt
+dspy==3.3.1

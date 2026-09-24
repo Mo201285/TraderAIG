@@ -1,0 +1,68 @@
+# CI: the AGENTS.md verification gate, automated on every push/PR.
+#
+# Covers what can run hermetic in CI:
+#   backend  -> ruff lint + full pytest suite (Windows runner: matches the dev
+#               box, and the MetaTrader5 pin is a Windows-only wheel)
+#   dashboard-> TypeScript typecheck + production build
+#
+# The live-wiring smoke (`scripts/smoke_live.ps1`, boots uvicorn on :8000 and
+# drives it through the console client) stays a local operator check on
+# purpose — it is non-destructive but touches the real :8000 port.
+
+name: verify
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: ruff + pytest (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install --quiet --disable-pip-version-check -r requirements.txt
+
+      - name: Lint (ruff)
+        run: python -m ruff check .
+
+      - name: Run the full test suite
+        run: python -m pytest -q -p no:cacheprovider
+
+  dashboard:
+    name: dashboard tsc + build (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: "TAIG Dash"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: "TAIG Dash/package-lock.json"
+
+      - name: Install front-end dependencies
+        run: npm ci
+
+      - name: TypeScript typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
+
+      - name: Production build (vite build)
+        run: npx vite build

@@ -1,0 +1,454 @@
+"""Tests for the live MT5 adapter (mocked terminal; no real connection)."""
+
+from types import SimpleNamespace
+
+import pytest
+
+import execution.mt5_adapter as adapter_mod
+from core.contracts import TradeDirection
+from core.state import CanonicalState, PositionState, state
+from decision.thesis import TradeCandidate
+from execution.mt5_adapter import MT5Adapter
+from learning.experience import ErrorType, ledger
+from risk.governor import RiskDecisionKind
+
+
+@pytest.fixture(autouse=True)
+def _reset_canonical_state():
+    """Hermetic tests: never bleed canonical positions/orders/ledger into
+    other files via the module-global singleton `state`."""
+    state.__dict__.clear()
+    state.__dict__.update(CanonicalState().__dict__)
+    yield
+    state.__dict__.clear()
+    state.__dict__.update(CanonicalState().__dict__)
+
+
+def _no_creds(monkeypatch):
+    monkeypatch.setattr(adapter_mod, "settings", SimpleNamespace(mt5=SimpleNamespace(
+        login=0, password="", server="", terminal_path="")))
+
+
+def _live_creds(monkeypatch):
+    monkeypatch.setattr(adapter_mod, "settings", SimpleNamespace(mt5=SimpleNamespace(
+        login=123456, password="secret", server="Broker-Demo",
+        terminal_path="D:\\One\\mt5-portable\\terminal64.exe")))
+
+
+def _make_fake_mt5():
+    mt5 = SimpleNamespace()
+    mt5.TRADE_ACTION_DEAL = 1
+    mt5.ORDER_TYPE_BUY = 0
+    mt5.ORDER_TYPE_SELL = 1
+    mt5.ORDER_TIME_GTC = 0
+    mt5.ORDER_FILLING_IOC = 1
+    mt5.ORDER_FILLING_FOK = 0
+    mt5.ORDER_FILLING_RETURN = 2
+    mt5.ORDER_FILLING_BOC = 3
+    mt5.TIMEFRAME_M15 = 15
+    mt5.TRADE_RETCODE_DONE = 10009
+    mt5.last_error = lambda: (10011, "no error")
+    mt5.initialize = lambda **kw: True
+    mt5.shutdown = lambda: None
+    mt5.terminal_info = lambda: SimpleNamespace(name="fake",
+                                                trade_allowed=True,
+                                                connected=True)
+    return mt5
+
+
+def _candidate() -> TradeCandidate:
+    return TradeCandidate(
+        candidate_id="cand-1",
+        thesis_id="thesis-1",
+        symbol="XAUUSD",
+        direction=TradeDirection.LONG,
+        entry=2000.0,
+        stop_loss=1990.0,
+        take_profit=2020.0,
+        size=0.10,
+        risk_reward=2.0,
+        confidence=0.7,
+    )
+
+
+@pytest.fixture
+def adapter():
+    return MT5Adapter()
+
+
+def test_observer_mode_without_credentials(monkeypatch, adapter):
+    """Without credentials and with no live terminal the adapter must
+    degrade gracefully into read-only observer mode."""
+    _no_creds(monkeypatch)
+    monkeypatch.setattr(adapter, "_terminal_running", lambda: False)
+    assert adapter.available is False
+    assert adapter.connect() is False
+    assert adapter.place_position(_candidate(), RiskDecisionKind.APPROVED) is None
+    assert adapter.start_watcher() is False
+    st = adapter.status()
+    assert st["available"] is False
+    assert "LOCKED" in st["last_error"]
+
+
+def test_session_attach_without_credentials(monkeypatch, adapter):
+    """A running portable terminal can be adopted without a password."""
+    _no_creds(monkeypatch)
+    adapter_mod.settings.mt5.terminal_path = "D:\\One\\mt5-portable\\terminal64.exe"
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    monkeypatch.setattr(adapter, "_terminal_running", lambda: True)
+    fake.account_info = lambda: SimpleNamespace(
+        login=1363114, broker="FakeBroker", balance=100000.0, equity=100000.0,
+        margin=0.0, margin_free=100000.0, leverage=1, currency="USD",
+        server="FTTrading-Server")
+
+    assert adapter.connect() is True
+    assert adapter.attach_mode is True
+    acc = adapter.sync_account()
+    assert acc is not None
+    assert state.get_account().login == 1363114
+
+
+def test_account_sync_mirrors_into_canonical_state(monkeypatch, adapter):
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    fake.account_info = lambda: SimpleNamespace(
+        login=123456, broker="FakeBroker", balance=10000.0, equity=10100.0,
+        margin=500.0, margin_free=9600.0, leverage=100, currency="USD",
+        server="Broker-Demo")
+    adapter._initialized = True
+
+    acc = adapter.sync_account()
+    assert acc is not None
+    s = state.get_account()
+    assert s.login == 123456
+    assert s.balance == 10000.0
+    assert s.equity == 10100.0
+    assert s.leverage == 100
+    assert s.currency == "USD"
+
+
+def test_fetch_candles_maps_real_rates(monkeypatch, adapter):
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    fake.copy_rates_from_pos = lambda sym, tf, pos, count: [
+        {"time": 1000 + i, "open": 2000.0, "high": 2000.5, "low": 1999.5,
+         "close": 2000.2, "tick_volume": 10, "real_volume": 0}
+        for i in range(5)
+    ]
+
+    candles = adapter.fetch_candles("XAUUSD")
+    assert len(candles) == 5
+    assert candles[0].symbol == "XAUUSD"
+    assert candles[0].timeframe == "M15"
+    assert candles[-1].close == 2000.2
+
+
+def test_positions_sync_and_reconcile(monkeypatch, adapter):
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    calls = {"n": 0}
+
+    def positions_get():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [SimpleNamespace(
+                ticket=9001, symbol="XAUUSD", type=0, volume=0.1,
+                price_open=2000.0, price_current=2005.0, sl=1990.0, tp=2020.0,
+                time=1000, profit=50.0, swap=-1.2)]
+        return []
+
+    fake.positions_get = positions_get
+
+    adapter.sync_positions()
+    assert state.get_position("9001") is not None
+    assert len(state.open_positions()) == 1
+
+    adapter.sync_positions()
+    assert len(state.open_positions()) == 0
+    closed = state.get_position("9001")
+    assert closed is not None
+    assert closed.unrealized_pnl == 0.0
+
+
+def test_history_feeds_experience_ledger(monkeypatch, adapter):
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    fake.history_deals_get = lambda f, t: [
+        SimpleNamespace(deal=11, time=1000, symbol="XAUUSD", volume=0.1,
+                        price=2000.0, type=0, entry=0, profit=60.0,
+                        commission=-1.0, swap=-0.5),
+        SimpleNamespace(deal=12, time=1001, symbol="XAUUSD", volume=0.1,
+                        price=2010.0, type=1, entry=1, profit=-40.0,
+                        commission=-1.0, swap=-0.5),
+    ]
+
+    before = len(ledger.all())
+    adapter.sync_history(days=7)
+    after = len(ledger.all())
+    assert after - before >= 2
+
+    win = [r for r in ledger.all() if r.record_id == "mt5:11"][-1]
+    loss = [r for r in ledger.all() if r.record_id == "mt5:12"][-1]
+    assert win.error_classification is None
+    assert loss.error_classification == ErrorType.EXPECTED_LOSS
+    assert win.actual_result["source"] == "mt5"
+
+
+def test_record_execution_stamps_strategy_id(monkeypatch):
+    """E1 (appendix B): exec: attempts carry strategy provenance."""
+    adapter = MT5Adapter()
+    seen = []
+    monkeypatch.setattr("learning.experience.ledger.record",
+                        lambda rec: seen.append(rec), raising=False)
+    c = _candidate()
+    c.strategy_id = "s:prod"
+    adapter._record_execution(c, None, SimpleNamespace(order=123))
+    assert seen
+    assert seen[-1].metadata["strategy_id"] == "s:prod"
+
+
+def test_deal_to_record_stamps_strategy_from_position_map(monkeypatch):
+    """E1 (appendix B): history deals replay the ticket->strategy bridge."""
+    adapter = MT5Adapter()
+    adapter._strategy_by_position[99] = "s:prod"
+    seen = []
+    monkeypatch.setattr("learning.experience.ledger.record",
+                        lambda rec: seen.append(rec), raising=False)
+    deal = SimpleNamespace(
+        deal=77, ticket=77, time=1500, symbol="XAUUSD", volume=0.1,
+        price=4000.0, type=1, entry=1, profit=20.0, commission=0.0, swap=0.0,
+        magic=123456, comment="TraderAIG:xyz", position=99,
+    )
+    adapter._deal_to_record(deal)
+    assert seen
+    assert seen[-1].metadata["strategy_id"] == "s:prod"
+
+
+def test_sync_preserves_partial_realized_and_keeps_swap_separate(monkeypatch, adapter):
+    """E4 (appendix B): a broker sync must NOT mislabel swap as realized PnL
+    nor wipe the realized accumulation from our own partial closes."""
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    fake.positions_get = lambda: [SimpleNamespace(
+        ticket=9002, symbol="XAUUSD", type=0, volume=0.1,
+        price_open=2000.0, price_current=2005.0, sl=1990.0, tp=2020.0,
+        time=1000, profit=50.0, swap=-1.2)]
+
+    # a partial close already booked +0.3 realized on ticket 9002
+    state.add_position(PositionState(
+        position_id="9002", symbol="XAUUSD", direction=TradeDirection.LONG,
+        volume=0.1, entry_price=2000.0, current_price=2005.0))
+    state.settle_realized("9002", 0.3)
+
+    adapter.sync_positions()
+
+    synced = state.get_position("9002")
+    assert synced.realized_pnl == pytest.approx(0.3)   # preserved, not p.swap
+    assert synced.swap == pytest.approx(-1.2)          # financing cost, separate
+    assert state.risk.daily_pnl == pytest.approx(0.3)  # partial stays booked
+
+
+def test_close_partial_books_daily_pnl_from_the_partial(monkeypatch, adapter):
+    """E4 (appendix B): a successful partial close reaches the daily-loss
+    guard immediately instead of waiting (and being wiped by) the final close."""
+    _live_creds(monkeypatch)
+    adapter._initialized = True  # `connected` is a derived property
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    fake.symbol_info_tick = lambda sym: SimpleNamespace(bid=2010.0, ask=2010.2)
+    dispatched = []
+    fake.order_send = lambda req: dispatched.append(req) or SimpleNamespace(
+        retcode=10009, comment="done")
+
+    state.add_position(PositionState(
+        position_id="9003", symbol="XAUUSD", direction=TradeDirection.LONG,
+        volume=0.2, entry_price=2000.0, current_price=2008.0))
+
+    assert adapter.close_partial("9003", 0.1) is True
+
+    pos = state.get_position("9003")
+    assert pos.volume == pytest.approx(0.1)
+    assert pos.realized_pnl == pytest.approx(1.0)   # (2010-2000)*0.1
+    assert state.risk.daily_pnl == pytest.approx(1.0)  # guard sees the partial
+    assert state.get_position("9003").status.value == "open"
+    assert dispatched  # the deal actually reached the (fake) broker
+
+
+def test_history_position_keyed_fallback(monkeypatch, adapter):
+    """When the time-window query comes back empty (server-local zone gap or
+    terminal cache warming), closed position ids fall back to a direct
+    position-keyed deal pull so the round-trip still reaches the ledger."""
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+
+    def deals_get(*args, **kwargs):
+        if kwargs.get("position"):
+            return [
+                SimpleNamespace(deal=31, time=2000, symbol="XAUUSD", volume=0.01,
+                                price=4300.0, type=0, entry=0, profit=5.0,
+                                commission=-0.5, swap=0.0),
+                SimpleNamespace(deal=32, time=2001, symbol="XAUUSD", volume=0.01,
+                                price=4310.0, type=1, entry=1, profit=-3.0,
+                                commission=-0.5, swap=0.0),
+            ]
+        return []
+
+    fake.history_deals_get = deals_get
+    adapter._recent_closed_ids = [777]
+
+    adapter.sync_history(days=7)
+
+    ids = {r.record_id for r in ledger.all()}
+    assert "mt5:31" in ids
+    assert "mt5:32" in ids
+    assert adapter._recent_closed_ids == []
+    assert adapter._sync_stats["history"] == 2
+
+
+def test_place_position_refuses_unapproved(monkeypatch, adapter):
+    _no_creds(monkeypatch)
+    assert adapter.place_position(_candidate(), RiskDecisionKind.VETOED) is None
+
+
+def test_place_position_fills_when_approved_and_connected(monkeypatch, adapter):
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    adapter._initialized = True
+    fake.symbol_info = lambda sym: SimpleNamespace(name=sym)
+    fake.symbol_info_tick = lambda sym: SimpleNamespace(bid=1999.9, ask=2000.1,
+                                                        last=2000.0, time=1000)
+
+    # Fresh canonical state so the gate passes.
+    from core.state import AccountState
+    state.set_account(AccountState(login=123, balance=10_000.0,
+                                   equity=10_000.0, leverage=100))
+    state.risk.daily_pnl = 0.0
+
+    fake.positions_get = lambda: [SimpleNamespace(
+        ticket=777, symbol="XAUUSD", type=0, volume=0.1,
+        price_open=2000.1, price_current=2000.1, sl=1990.0, tp=2020.0,
+        time=1000, profit=0.0, swap=0.0)]
+
+    fake.order_send = lambda req: SimpleNamespace(
+        retcode=10009, order=777, price=2000.1, comment="done")
+
+    pos = adapter.place_position(_candidate(), RiskDecisionKind.APPROVED)
+    assert pos is not None
+    assert pos.position_id == "777"
+    assert state.get_position("777") is not None
+
+
+def test_place_position_falls_back_across_filling_modes(monkeypatch, adapter):
+    """Some brokers advertise one filling mode but accept another; the
+    adapter must walk the chain (e.g. FOK for XAUUSD on FTTrading)."""
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    adapter._initialized = True
+    fake.symbol_info = lambda sym: SimpleNamespace(name=sym)
+    fake.symbol_info_tick = lambda sym: SimpleNamespace(bid=1999.9, ask=2000.1,
+                                                        last=2000.0, time=1000)
+
+    from core.state import AccountState
+    state.set_account(AccountState(login=123, balance=10_000.0,
+                                   equity=10_000.0, leverage=100))
+    state.risk.daily_pnl = 0.0
+
+    filled = {"done": False}
+    fake.positions_get = lambda: ([SimpleNamespace(
+        ticket=888, symbol="XAUUSD", type=0, volume=0.1,
+        price_open=2000.1, price_current=2000.1, sl=1990.0, tp=2020.0,
+        time=1000, profit=0.0, swap=0.0)] if filled["done"] else [])
+
+    def order_send(req):
+        if req.get("type_filling") == fake.ORDER_FILLING_FOK:
+            filled["done"] = True
+            return SimpleNamespace(retcode=10009, order=888, price=2000.1,
+                                   comment="done")
+        return SimpleNamespace(retcode=10022, order=0, price=0.0,
+                               comment="Unsupported filling mode")
+
+    fake.order_send = order_send
+
+    pos = adapter.place_position(_candidate(), RiskDecisionKind.APPROVED)
+    assert pos is not None
+    assert pos.position_id == "888"
+    assert filled["done"] is True
+
+
+# ---------------------------------------------------------------------------
+# Position management: modify SL/TP and partial close on the live terminal
+# ---------------------------------------------------------------------------
+
+
+def _open_position(adapter, monkeypatch):
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    fake.TRADE_ACTION_SLTP = 6
+    fake.ORDER_TYPE_SELL = 1
+    fake.ORDER_TYPE_BUY = 0
+    return fake
+
+
+def test_modify_position_sends_sltp_and_updates_state(monkeypatch, adapter):
+    fake = _open_position(adapter, monkeypatch)
+    sent = {}
+
+    def order_send(req):
+        sent["req"] = req
+        return SimpleNamespace(retcode=fake.TRADE_RETCODE_DONE)
+
+    fake.order_send = order_send
+    adapter._initialized = True
+
+    from core.state import AccountState, PositionState
+    state.set_account(AccountState(login=123, balance=10_000.0,
+                                   equity=10_000.0, leverage=100))
+    position = PositionState(
+        position_id="50", symbol="XAUUSD", direction=TradeDirection.LONG,
+        volume=0.1, entry_price=2000.0, current_price=2000.0,
+        sl=1995.0, tp=2020.0)
+    state.risk.daily_pnl = 0.0
+    state.add_position(position)
+    adapter.sync_positions = lambda: None
+
+    ok = adapter.modify_position("50", new_sl=2000.0, new_tp=2020.0)
+    assert ok is True
+    assert sent["req"]["action"] == 6
+    assert sent["req"]["sl"] == 2000.0
+    assert sent["req"]["tp"] == 2020.0
+    assert state.get_position("50").sl == 2000.0
+
+
+def test_close_partial_reduces_volume(monkeypatch, adapter):
+    fake = _open_position(adapter, monkeypatch)
+    fake.symbol_info_tick = lambda sym: SimpleNamespace(bid=2000.1, ask=2000.2)
+
+    def order_send(req):
+        return SimpleNamespace(retcode=fake.TRADE_RETCODE_DONE)
+
+    fake.order_send = order_send
+    adapter._initialized = True
+
+    from core.state import AccountState, PositionState
+    state.set_account(AccountState(login=123, balance=10_000.0,
+                                   equity=10_000.0, leverage=100))
+    state.risk.daily_pnl = 0.0
+    state.add_position(PositionState(
+        position_id="51", symbol="XAUUSD", direction=TradeDirection.LONG,
+        volume=0.2, entry_price=2000.0, current_price=2000.0,
+        sl=1995.0, tp=2020.0))
+    adapter.sync_positions = lambda: None
+
+    ok = adapter.close_partial("51", volume=0.1)
+    assert ok is True
+    assert abs(state.get_position("51").volume - 0.1) < 1e-6

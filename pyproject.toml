@@ -1,0 +1,33 @@
+# Tooling config for TraderAIG (ruff is a dev-time lint gate, never a runtime dep).
+# Rule set starts conservative so the legacy tree stays green; new rules get
+# enabled over time instead of a big-bang refactor.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+    ".data",
+    ".git",
+    ".proofs",
+    ".pytest_cache",
+    "__pycache__",
+    "logs",
+    "mt5-dev",
+    "mt5-portable",
+    "TAIG Dash",
+    "research/strategy_lab/data",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+# Accepted legacy debt (report-only, no mass rename / multi-file reformat):
+#   E501  long lines (grandfathered), W291/W293 trailing whitespace,
+#   E741  ambiguous single-letter names (l / I / O)
+ignore = ["E501", "W291", "W293", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+# sys.path bootstrap before stdlib imports is the repo's idiomatic test pattern
+# (AGENTS.md), so E402 needs an explicit allowance here.
+"tests/**/*.py" = ["E402"]
+"scripts/**/*.py" = ["E402"]
+"tools/**/*.py" = ["E402"]

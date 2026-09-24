@@ -1,0 +1,1 @@
+"""TraderAIG - Core shared package."""

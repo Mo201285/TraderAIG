@@ -1,0 +1,10 @@
+{
+  "description": "This bilingual web application offers users seamless access in Arabic and English, enhancing communication and engagement through a secure login system.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

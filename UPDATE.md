@@ -1,4 +1,4 @@
-﻿نعم، الآن اتضح المقصود. الملف المرفوع هو **TraderAIG Institutional Operating Core — Unified Operating Specification v1.1.0**، وهو بالفعل يمثل **الـ Core الحالي للمشروع**، وليس مجرد جزء منه. 
+﻿نعم، الآن اتضح المقصود. الملف المرفوع هو **TraderAIG Institutional Operating Core — Unified Operating Specification v1.1.0**، وهو بالفعل يمثل **الـ Core الحالي للمشروع**، وليس مجرد جزء منه.
 
 وبناءً على الملف + المعمارية التي بنيناها سابقًا لـ **TrederAIG / Institutional Investment Operating System**، فإن التكامل الاحترافي يجب أن يكون **توسعة منظمة لهذا الـ Core، وليس إعادة بناء المشروع من الصفر**.
 
@@ -63,7 +63,7 @@
                          GOVERNANCE
 ```
 
-هذا يتوافق مباشرة مع الـ Primary Decision Flow الموجود في الملف: Data Ingestion → Regime → Evidence → Thesis → Candidate Board → Risk Governor → Execution → Reconciliation → Learning. 
+هذا يتوافق مباشرة مع الـ Primary Decision Flow الموجود في الملف: Data Ingestion → Regime → Evidence → Thesis → Candidate Board → Risk Governor → Execution → Reconciliation → Learning.
 
 ---
 
@@ -81,7 +81,7 @@
 * Learning & Evolution Core
 * DSPy AI Program Evolution
 
-وهذه ليست مجرد أسماء؛ الملف يحدد مسؤوليات كل Core وواجهاته وحالاته. 
+وهذه ليست مجرد أسماء؛ الملف يحدد مسؤوليات كل Core وواجهاته وحالاته.
 
 لذلك لا أنصح بإنشاء:
 
@@ -160,7 +160,7 @@ Governance OS
        └── Final Approval
 ```
 
-والملف نفسه يضع `RiskGovernor` كجهة لها **Veto/Approve** و"Override all". 
+والملف نفسه يضع `RiskGovernor` كجهة لها **Veto/Approve** و"Override all".
 
 أنا أوصي فقط بتوسيع ذلك إلى:
 
@@ -192,7 +192,7 @@ EvidenceAggregator
 ContextClassifier
 ```
 
-وهذا ممتاز كأساس. 
+وهذا ممتاز كأساس.
 
 نوسعها إلى:
 
@@ -281,7 +281,7 @@ Confluence
 Thesis
 ```
 
-وهذا يحافظ على مبدأ الملف بأن المدارس تولد setup/features، بينما Matrix/Decision يستهلك الـ validated priors، والـ Risk Governor يبقى الحاجز التشغيلي النهائي. 
+وهذا يحافظ على مبدأ الملف بأن المدارس تولد setup/features، بينما Matrix/Decision يستهلك الـ validated priors، والـ Risk Governor يبقى الحاجز التشغيلي النهائي.
 
 ---
 
@@ -293,7 +293,7 @@ Thesis
 
 > Research-only AI Program Compiler
 
-ولا يدخل execution. 
+ولا يدخل execution.
 
 إذن:
 
@@ -345,7 +345,7 @@ ai/dspy/
 └── connect.py
 ```
 
-وتم تصميمه بحيث يستهلك **structured market state وليس raw OHLC**. 
+وتم تصميمه بحيث يستهلك **structured market state وليس raw OHLC**.
 
 إذن دورة التطوير تصبح:
 
@@ -399,7 +399,7 @@ M7 = Strategy Laboratory
 M8 = Integration Quality Plane
 ```
 
-و M8 ما زال مخططًا. 
+و M8 ما زال مخططًا.
 
 وهذا بالضبط هو المكان الذي يجب أن ندمج فيه مشروعنا السابق الخاص بـ:
 
@@ -515,7 +515,7 @@ PAPER
 PRODUCTION
 ```
 
-وهذا هو نفس promotion ladder الموجود بالفعل في الملف. 
+وهذا هو نفس promotion ladder الموجود بالفعل في الملف.
 
 ---
 
@@ -547,7 +547,7 @@ error_classification
 lessons
 ```
 
-وهذا ممتاز كأساس للتعلم. 
+وهذا ممتاز كأساس للتعلم.
 
 لكن سنقسم التعلم إلى مسارين:
 
@@ -576,7 +576,7 @@ lessons
                      GOVERNANCE
 ```
 
-وهذا يتوافق أيضًا مع الاتجاه المحدد في الملف بأن **Research Learning وExecution Learning يجب أن يبقيا منفصلين**. 
+وهذا يتوافق أيضًا مع الاتجاه المحدد في الملف بأن **Research Learning وExecution Learning يجب أن يبقيا منفصلين**.
 
 ---
 
@@ -723,7 +723,7 @@ Decision ID
 Python → MQL5
 ```
 
-ويوجد بالفعل MT5 EA وBridge، مع فصل DEV/LIVE مثبت في المشروع. 
+ويوجد بالفعل MT5 EA وBridge، مع فصل DEV/LIVE مثبت في المشروع.
 
 التصميم النهائي:
 
@@ -757,7 +757,7 @@ Learning
 
 بل نضيف Adapter فقط.
 
-والملف بالفعل بدأ هذا الاتجاه عبر CEX Gateway وCEX Live Engine. 
+والملف بالفعل بدأ هذا الاتجاه عبر CEX Gateway وCEX Live Engine.
 
 ---
 
@@ -913,13 +913,13 @@ LIVE
 
 وهذا يتماشى مع قاعدة الملف:
 
-> inspect → plan → minimal safe change → targeted tests → full validation → documentation. 
+> inspect → plan → minimal safe change → targeted tests → full validation → documentation.
 
 ---
 
 # 15. Dashboard يصبح Control Plane وليس مجرد Dashboard
 
-الواجهة الموجودة حاليًا أصبحت بالفعل live-wired في أجزاء مهمة من المشروع، مع System Health وRisk وLearning وExercise وغيرها. 
+الواجهة الموجودة حاليًا أصبحت بالفعل live-wired في أجزاء مهمة من المشروع، مع System Health وRisk وLearning وExercise وغيرها.
 
 الهدف النهائي:
 
@@ -997,7 +997,7 @@ AI changes live strategy
 
 لأن هذا قد يؤدي إلى feedback loop خطير.
 
-الملف نفسه يضع promotion والـ validation كحاجز قبل الإنتاج. 
+الملف نفسه يضع promotion والـ validation كحاجز قبل الإنتاج.
 
 ---
 
@@ -1126,7 +1126,7 @@ Validation
 Governance
 ```
 
-وهذا يتوافق مع M9.3 في الملف الخاص بمراقبة تدهور الاستراتيجية والتحويل إلى quarantine. 
+وهذا يتوافق مع M9.3 في الملف الخاص بمراقبة تدهور الاستراتيجية والتحويل إلى quarantine.
 
 ---
 
@@ -1270,9 +1270,9 @@ Macro                Change               Bybit
                 Production
 ```
 
-والأهم أن هذا **لا يهدم ما تم إنجازه**. الملف يثبت أن لديك بالفعل قاعدة تشغيلية قوية: Governance، canonical state، Risk Governor، MT5 integration، learning ledger، Strategy Lab، DSPy، model registry، operator console، dashboard live wiring، واختبارات واسعة؛ بينما المرحلة المنطقية التالية هي إكمال **M8/M9** وربط نتائج Strategy Lab بالـ runtime تحت Governance صارم. 
+والأهم أن هذا **لا يهدم ما تم إنجازه**. الملف يثبت أن لديك بالفعل قاعدة تشغيلية قوية: Governance، canonical state، Risk Governor، MT5 integration، learning ledger، Strategy Lab، DSPy، model registry، operator console، dashboard live wiring، واختبارات واسعة؛ بينما المرحلة المنطقية التالية هي إكمال **M8/M9** وربط نتائج Strategy Lab بالـ runtime تحت Governance صارم.
 
-**بالتالي سأعتبر الملف `TraderAIG Institutional Operating Core v1.1.0` هو الـ source-of-truth الحالي، وأي تصميم لاحق لـ TrederAIG يجب أن يتكامل معه ولا ينشئ Core موازيًا.** 
+**بالتالي سأعتبر الملف `TraderAIG Institutional Operating Core v1.1.0` هو الـ source-of-truth الحالي، وأي تصميم لاحق لـ TrederAIG يجب أن يتكامل معه ولا ينشئ Core موازيًا.**
 
 ---
 
@@ -1365,4 +1365,4 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1     # 7/7 على
 | F3: حقن `stage_resolver` حي (قراءة التسجيل عند كل اختبار) في الحاكم العام ومحوّل MT5 | `risk/governor.py`, `execution/mt5_adapter.py` | اختبار انحدار (عزل وسط الدورة) |
 | F4: حمل `strategy_id` في سجلات exec:/mt5: (خريطة ticket→strategy) + rollup per-strategy في `/performance` | `execution/mt5_adapter.py`, `learning/performance.py`, `operations/api.py` | اختبارات انحدار |
 | F5: حماية `PositionManager` من تعاقد محوّل غير مكتمل (لا انهيار، تسجيل صريح) | `operations/position_manager.py` | اختبار |
-| F6: غلق المدى الأخير الآن — E3/E4/L3/L4 | `core/state.py`, `execution/mt5_adapter.py`, `operations/live_engine.py`, `operations/position_manager.py`, `core/pipeline.py`, `learning/experience.py`, `research/strategy_lab/live_feed.py`, `research/strategy_lab/registry.py`, `research/strategy_lab/contracts.py`, `scripts/strategy_lab_run.py`, `ai/dspy/intake.py`, `operations/api.py` | ✅ مُعالَج — 14 اختبار انحدار جديد، cru **584 عبر pytest** | 
+| F6: غلق المدى الأخير الآن — E3/E4/L3/L4 | `core/state.py`, `execution/mt5_adapter.py`, `operations/live_engine.py`, `operations/position_manager.py`, `core/pipeline.py`, `learning/experience.py`, `research/strategy_lab/live_feed.py`, `research/strategy_lab/registry.py`, `research/strategy_lab/contracts.py`, `scripts/strategy_lab_run.py`, `ai/dspy/intake.py`, `operations/api.py` | ✅ مُعالَج — 14 اختبار انحدار جديد، cru **584 عبر pytest** |

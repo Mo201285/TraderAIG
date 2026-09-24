@@ -384,4 +384,3 @@ export default function AppShell({ user, lang, onLangToggle, onLogout }: Props) 
     </div>
   );
 }
-

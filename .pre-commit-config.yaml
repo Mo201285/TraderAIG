@@ -24,4 +24,4 @@ repos:
         exclude: ^mt5-(dev|portable)/
       - id: check-toml
       - id: check-json
-        exclude: ^(research/strategy_lab/data|mt5-(dev|portable))/
+        exclude: ^(research/strategy_lab/data|mt5-(dev|portable)|TAIG Dash/\.figma)/

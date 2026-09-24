@@ -1,8 +1,8 @@
 # VOICE COMPANION OPERATING SPEC
 ## Voice-Enabled Account Companion for TraderAIG
 
-**Last Updated:** 2026-09-11  
-**Status:** Active Design Document  
+**Last Updated:** 2026-09-11
+**Status:** Active Design Document
 **Scope:** Voice input, voice response, approvals, alerts, account companion, MT5/CEX integration
 
 ---

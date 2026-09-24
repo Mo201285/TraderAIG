@@ -1,8 +1,8 @@
 # STRATEGY LAB TESTING ROADMAP
 ## Applied Research QA Specification
 
-**Last Updated:** 2026-09-11  
-**Status:** Active Implementation Document  
+**Last Updated:** 2026-09-11
+**Status:** Active Implementation Document
 **Scope:** `research/strategy_lab/*`, `scripts/strategy_lab_run.py`, `tests/test_strategy_lab/*`
 
 ---

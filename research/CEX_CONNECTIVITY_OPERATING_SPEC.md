@@ -1,8 +1,8 @@
 # CEX CONNECTIVITY OPERATING SPEC
 ## Centralized Exchange Integration for TraderAIG
 
-**Last Updated:** 2026-09-11  
-**Status:** Active Design Document  
+**Last Updated:** 2026-09-11
+**Status:** Active Design Document
 **Scope:** CEX connectivity, execution routing, portfolio sync, governance, risk, observability
 
 ---

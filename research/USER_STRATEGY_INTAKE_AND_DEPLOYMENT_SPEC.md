@@ -1,8 +1,8 @@
 # USER STRATEGY INTAKE AND DEPLOYMENT SPEC
 ## Conversational Strategy Creation, Validation, Approval, and Account Binding
 
-**Last Updated:** 2026-09-11  
-**Status:** Active Design Document  
+**Last Updated:** 2026-09-11
+**Status:** Active Design Document
 **Scope:** User-authored strategies, conversational intake, lab validation, approval flow, MT5/CEX deployment
 
 ---

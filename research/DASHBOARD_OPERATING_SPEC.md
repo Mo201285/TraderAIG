@@ -1,8 +1,8 @@
 # DASHBOARD OPERATING SPEC
 ## TraderAIG Control Surface Specification
 
-**Last Updated:** 2026-09-11  
-**Status:** Active Design Document  
+**Last Updated:** 2026-09-11
+**Status:** Active Design Document
 **Scope:** Dashboard / Control Room / Research Lab / Risk / Execution / Registry
 
 ---

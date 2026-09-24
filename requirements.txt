@@ -27,3 +27,6 @@ websockets==12.0
 # Testing
 pytest==8.3.2
 pytest-asyncio==0.24.0
+
+# Lint gate (matches .pre-commit-config.yaml rev v0.6.4 and pyproject.toml)
+ruff==0.6.4

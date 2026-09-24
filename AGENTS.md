@@ -49,5 +49,4 @@ If any two conflict: STOP, surface the conflict, never silently pick one.
 ## Blocked (external services only — do not fake/implement around)
 
 - Real MT5 execution is PROVEN on the demo terminal via python-MT5 (`scripts/mt5_live_session.py`, live round-trips + history→ledger); the **MQL5 EA file-bridge channel** and **websocket production bridge** remain blocked (production attach needs a host choice)
-- Postgres production deployment test
 - Wallet/payment integration (Stripe/Pi)

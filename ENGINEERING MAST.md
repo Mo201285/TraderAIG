@@ -667,5 +667,5 @@ D:\One> powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # live
   Redis (`TRADERAIG_STATE_REDIS=0`), persistence (`TRADERAIG_PERSIST=0`),
   Postgres (`POSTGRES_HOST` empty → SQLite), DSPy gate (`TRADERAIG_DSPY_ENABLED`).
   New work must keep the same zero-dependency-offline behavior.
-- Blocked work: real MT5 terminal (MQL5 side), Postgres prod test, wallet/payment.
+- Blocked work: real MT5 terminal (MQL5 side), wallet/payment.
   Do not "implement around" them by faking external services.

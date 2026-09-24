@@ -1300,7 +1300,8 @@ Macro                Change               Bybit
 | Operator Console — طبل ثنائي اللغة | ✅ 17 أمرًا + فحص حي | `tools/tradraig.py` |
 | Dashboard (Control Plane) | ✅ 11 صفحة + LIVE wiring | `TAIG Dash/` — `tsc` نظيف، `vite build` سليم |
 | الاختبارات | ✅ 584 عبر pytest | HTTP-surface + الحوكمة + الأحداث + التعافي + الجلسة الحية + إغلاق حلقة التتبع per-strategy … |
-| Postgres إنتاجي / دفع (Stripe/Pi) / MT5 websocket إنتاجي | ⛔ **معلّق على خدمات خارجية** | لا توجد خادمات خارجية متاحة حاليًا (MT5 الحقيقي الديمو ✅ عبر python-MT5) |
+| Postgres إنتاجي | ✅ **موثّق على خادم حقيقي 2026-09-25** — كامل السويت 584 ناجحًا على PostgreSQL 16.15 (EDB محمول `E:\Postgres\pgsql`، كتلة `data16` منفذ 55432، إطلاق عبر WMI — لا تثبيت على C:) | `scripts\postgres_prod_test.ps1` + `scripts/postgres_deploytest.py` — خمسة جداول قانونية (`users/experiences/risk_vetoes/ops_runs/audit`)، وSQLite يبقى الافتراضي (`POSTGRES_HOST` فارغ) |
+| دفع (Stripe/Pi) / MT5 websocket إنتاجي | ⛔ **معلّق على خدمات خارجية** | لا توجد خادمات خارجية متاحة حاليًا (MT5 الحقيقي الديمو ✅ عبر python-MT5) |
 
 التحقق من جاهزية الأسلاك في أي وقت (غير مدمر):
 

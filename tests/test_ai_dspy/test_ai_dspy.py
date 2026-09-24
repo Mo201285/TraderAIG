@@ -81,6 +81,7 @@ def test_status_enabled_requires_lm_key_even_when_gate_on(monkeypatch):
                 "TRADERAIG_DSPY_LM_BASE_URL", "TRADERAIG_DSPY_LM",
                 "TRADERAIG_DSPY_LM_API_KEY"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(runtime, "dspy_installed", lambda: True)
     out = runtime.status()
     assert out["enabled"] is False
     assert "provider key" in out["reason"] or "LM" in out["reason"]
@@ -481,6 +482,7 @@ def test_optimize_program_checks_corpus_before_importing_dspy(monkeypatch):
 
     monkeypatch.setenv("TRADERAIG_DSPY_ENABLED", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "fake-key-for-gate")
+    monkeypatch.setattr(runtime, "dspy_installed", lambda: True)
     monkeypatch.setattr(strategy_lab, "load_records", lambda **kw: [])
     report = optimize_program("ict_scalping", trials=2)
     assert report["ok"] is False
@@ -605,6 +607,7 @@ def test_optimize_program_rejects_lm_before_dspy_import(monkeypatch):
 
     monkeypatch.setenv("TRADERAIG_DSPY_ENABLED", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "fake-key-for-gate")
+    monkeypatch.setattr(runtime, "dspy_installed", lambda: True)
     monkeypatch.setenv("TRADERAIG_DSPY_LM_BASE_URL", "http://127.0.0.1:11434/v1")
     monkeypatch.delenv("TRADERAIG_DSPY_LM", raising=False)
     monkeypatch.setattr(strategy_lab, "load_records", lambda **kw: [{"x": 1}])

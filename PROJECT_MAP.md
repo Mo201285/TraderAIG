@@ -734,6 +734,8 @@ python tools/tradraig.py events [--after N] [--topic registry|change|risk|health
 python tools/tradraig.py copy [--json]      # copy-engine follower mirror (master-decision view, live API)
 python tools/tradraig.py change list|submit [--kind promote|quarantine|config --target T --reason R]|approve ID|deny ID|cancel ID  # audited change-request board (via API)
 python tools/tradraig.py pay status|providers|charge --user UID --amount 49 --plan starter|wallet UID|refund --charge ID   # billing/wallet (sandbox-first; via API = single billing authority)
+python scripts/cex_okx_probe.py        # read-only signed OKX balance probe (live slot, IPv4 whitelisted) — exit 0 = OK
+python scripts/cex_okx_demo_probe.py   # read-only signed OKX balance probe (demo/testnet slot, x-simulated-trading:1) — exit 0 = OK
 python -m ruff check .                              # lint (must be 0)
 powershell -ExecutionPolicy Bypass -File scripts\verify_all.ps1  # whole verification gate in one command (ruff→py_compile→pytest→tsc/vite→smoke)
 powershell -ExecutionPolicy Bypass -File scripts/smoke_live.ps1   # boot the real server + drive the console over HTTP (7-step live wiring check)

@@ -144,15 +144,18 @@ def main() -> None:
                 log.info(f"Paper watch started: {paper_engine.status()}")
 
     if args.cex:
-        from operations.cex_engine import CexLiveEngine
+        from operations import cex_engine as cex_mod
         # paper=None -> derived from the venue mode: CEX_MODE=paper (default)
         # means watch mode; testnet/live routes orders only when armed.
-        cex_engine = CexLiveEngine(timeframe="M15", htf_timeframe="H1")
-        if cex_engine.start(float(os.getenv("CEX_INTERVAL", "15"))):
+        # Bind the module singleton to the configured instance so the API
+        # routes (/cex/engine) observe the real running loop, not a stub.
+        cex_live_engine = cex_mod.CexLiveEngine(timeframe="M15", htf_timeframe="H1")
+        cex_mod.cex_live_engine = cex_live_engine
+        if cex_live_engine.start(float(os.getenv("CEX_INTERVAL", "15"))):
             log.info(f"CEX watch started: "
-                     f"{cex_engine.status().get('venue')} "
-                     f"({cex_engine.status().get('mode')}) "
-                     f"symbols={cex_engine.status().get('symbols')}")
+                     f"{cex_live_engine.status().get('venue')} "
+                     f"({cex_live_engine.status().get('mode')}) "
+                     f"symbols={cex_live_engine.status().get('symbols')}")
             from execution.cex.gateway import cex_gateway
             log.info(f"CEX gateway gate: "
                      f"live_allowed={cex_gateway.status()['gate_live_allowed']}, "

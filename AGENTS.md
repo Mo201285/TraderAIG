@@ -27,7 +27,7 @@ If any two conflict: STOP, surface the conflict, never silently pick one.
 
 - One command: `powershell -ExecutionPolicy Bypass -File scripts\verify_all.ps1` (gates: ruff lint → py_compile → full pytest → `tsc`+`vite build` → live smoke; use `-SkipSmoke` for everything except the live boot)
 - Lint: `python -m ruff check .` in `D:\One` (must be zero; config in `pyproject.toml`)
-- Backend: `python -m pytest -q` in `D:\One` (baseline **593 passing** — report the new count when it moves)
+- Backend: `python -m pytest -q` in `D:\One` (baseline **609 passing** — report the new count when it moves)
 - Dashboard: in `TAIG Dash` run `node .\node_modules\typescript\bin\tsc --noEmit` then `node .\node_modules\vite\bin\vite.js build` (no page is done without both)
 - Live wire: `powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1` (7/7 steps on a real uvicorn boot)
 
@@ -49,4 +49,4 @@ If any two conflict: STOP, surface the conflict, never silently pick one.
 ## Blocked (external services only — do not fake/implement around)
 
 - Real MT5 execution is PROVEN on the demo terminal via python-MT5 (`scripts/mt5_live_session.py`, live round-trips + history→ledger), and the **MQL5 EA channel is fully wired**: file bridge (`execution/bridge.py`) + **real-time WebSocket channel** (`operations/ws_bridge.py` ↔ `scripts/mt5_bridge_proxy.py`, verified 2026-09-25). What remains external is the **production trading-host attach** — pointing the channel at the company/real host is a deployment/host-choice decision, no code gap.
-- Wallet/payment integration (Stripe/Pi)
+- Wallet/payment integration is SHIPPED **sandbox-first** (in-process ledger, zero network) with Stripe wired (real REST, live only under `PAYMENTS_MODE=live` + `PAYMENTS_LIVE_ALLOWED=1` + key) and Pi an honest not-wired stub (server SDK missing). Remaining external: **live payment provisioning** (real Stripe keys; Pi SDK) and the OKX API **passphrase** for the read-only probe.

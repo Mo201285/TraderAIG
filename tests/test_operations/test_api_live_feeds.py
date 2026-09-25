@@ -17,12 +17,16 @@ import operations.api as api
 
 @pytest.fixture()
 def client():
+    _orig_identity = api.identity
+    _orig_board = api.candidate_board
     api.identity = IdentityService()
     api.candidate_board = CandidateBoard()
     api._EXERCISE.update(
         running=False, last_run=None, duration_s=0, error=None)
     with TestClient(api.app) as c:
         yield c
+    api.identity = _orig_identity
+    api.candidate_board = _orig_board
 
 
 def test_current_plan_404_when_no_identity(client):

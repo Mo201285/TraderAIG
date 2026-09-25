@@ -1299,9 +1299,9 @@ Macro                Change               Bybit
 | DSPy AI Program Evolution | ✅ مكتمل (موصول محليًا؛ 1b/3b مُقاستان) | `ai/dspy/README.md`, `tradraig dspy …` |
 | Operator Console — طبل ثنائي اللغة | ✅ 17 أمرًا + فحص حي | `tools/tradraig.py` |
 | Dashboard (Control Plane) | ✅ 11 صفحة + LIVE wiring | `TAIG Dash/` — `tsc` نظيف، `vite build` سليم |
-| الاختبارات | ✅ 593 عبر pytest | HTTP-surface + الحوكمة + الأحداث + التعافي + الجلسة الحية + جسر WebSocket اللحظي … |
+| الاختبارات | ✅ **609** عبر pytest | حسّي السطح + الحوكمة + الأحداث + التعافي + الجلسة الحية + جسر WebSocket اللحظي + الفواتير 16 … |
 | Postgres إنتاجي | ✅ **موثّق على خادم حقيقي 2026-09-25** — كامل السويت 584 ناجحًا على PostgreSQL 16.15 (EDB محمول `E:\Postgres\pgsql`، كتلة `data16` منفذ 55432، إطلاق عبر WMI — لا تثبيت على C:) | `scripts\postgres_prod_test.ps1` + `scripts/postgres_deploytest.py` — خمسة جداول قانونية (`users/experiences/risk_vetoes/ops_runs/audit`)، وSQLite يبقى الافتراضي (`POSTGRES_HOST` فارغ) |
-| دفع (Stripe/Pi) | ⛔ **معلّق على خدمات خارجية** | لا توجد خادمات خارجية متاحة حاليًا |
+| دفع (Stripe/Pi) | ✅ **نظرة الرمل أولًا 2026-09-25** — محفظة + دفتر حساب + موفّرون (`governance/payments.py`): sandbox حتمي بلا شبكة؛ Stripe موصول (REST حقيقي، يُفعَّل فقط بـ `PAYMENTS_MODE=live` + `PAYMENTS_LIVE_ALLOWED=1` + مفتاح، الشحن PENDING حتى webhook مُتحقَّق منه HMAC-SHA256)؛ Pi مسخّرة صادقة غير موصولة. برهان حي 9/9 على uvicorn حقيقي (:8124) — أساس **609** | `tradraig pay status|providers|charge|wallet|refund`، `/payments/*`، `.env.example` |
 | MT5 websocket إنتاجي | ✅ **قناة websocket اللحظية مكتملة ومثبتة 2026-09-25** (593 عبر pytest + wire-up حي عبر TCP على uvicorn) — الربط بمضيف التداول الإنتاجي قرار استضافة مستقبلي ⛔ | `operations/ws_bridge.py`, `scripts/mt5_bridge_proxy.py`, `execution/bridge.py` |
 
 التحقق من جاهزية الأسلاك في أي وقت (غير مدمر):
@@ -1309,7 +1309,7 @@ Macro                Change               Bybit
 ```text
 powershell -ExecutionPolicy Bypass -File scripts\verify_all.ps1   # البوابات كلها بأمر واحد (ruff → py_compile → pytest → tsc/vite → smoke)
 python -m ruff check .                                        # فحص نمط نظيف (0)
-python -m pytest -q                                  # 593 اختبارًا
+python -m pytest -q                                  # 609 اختبارًا
 cd "TAIG Dash" && node .\node_modules\typescript\bin\tsc --noEmit && node .\node_modules\vite\bin\vite.js build
 powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1     # 7/7 على خادم uvicorn حقيقي
 ```

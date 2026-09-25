@@ -103,6 +103,11 @@ I18N = {
         "dr_backup_ok": "backup created",
         "dr_restore_ok": "restore ok",
         "dr_restore_refused": "restore refused",
+        "pay_api_down": "payments API down",
+        "pay_charge_ok": "charge submitted",
+        "pay_charge_locked": "charge gated (live providers locked)",
+        "pay_refund_ok": "refunded",
+        "pay_unknown": "unknown pay action",
     },
     "ar": {
         "layer": "الطبقة", "state": "الحالة", "detail": "التفصيل",
@@ -134,6 +139,11 @@ I18N = {
         "dr_backup_ok": "تم إنشاء النسخة الاحتياطية",
         "dr_restore_ok": "تمت الاستعادة",
         "dr_restore_refused": "رُفضت الاستعادة",
+        "pay_api_down": "واجهة المدفوعات متوقفة",
+        "pay_charge_ok": "تم إرسال الرسوم",
+        "pay_charge_locked": "الرسوم محظورة (الدفع الحي مقفول)",
+        "pay_refund_ok": "تمت الاسترداد",
+        "pay_unknown": "إجراء دفع غير معروف",
     },
 }
 
@@ -863,6 +873,85 @@ def cmd_change(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_pay(args: argparse.Namespace) -> int:
+    """Billing & wallet — always via the API (single billing authority)."""
+    t = I18N[args.lang]
+    base = f"http://127.0.0.1:{API_PORT}"
+    act = args.action
+
+    def _down() -> int:
+        print(f"{_ANSI['bad']}{t['pay_api_down']}{_ANSI['off']}")
+        return 1
+
+    if act == "status":
+        ok, data = http_json(f"{base}/payments/status")
+        if not ok:
+            return _down()
+        print(f"  mode={data.get('mode')} provider={data.get('provider')} "
+              f"locked={data.get('locked')} "
+              f"live_allowed={data.get('gate_live_allowed')}")
+        print(f"  ledger: {data.get('ledger_succeeded')} succeeded / "
+              f"{data.get('ledger_total')} total")
+        print(f"  keys: configured={data.get('provider_configured')} "
+              f"webhook={data.get('webhook_configured')}")
+        return 0
+    if act == "providers":
+        ok, data = http_json(f"{base}/payments/providers")
+        if not ok:
+            return _down()
+        for r in data.get("available", []):
+            print(f"  {str(r['name']):<10} configured={r['configured']} "
+                  f"live_wired={r['live_wired']}")
+        print(f"selected: {data.get('selected')}")
+        return 0
+    if act == "charge":
+        rc, data = http_post_json(f"{base}/payments/charge", {
+            "user_id": args.user, "amount_usd": args.amount,
+            "plan": getattr(args, "plan", "") or "",
+            "provider": getattr(args, "provider", "") or "",
+            "description": getattr(args, "description", "") or "",
+        })
+        if rc == 409:
+            print(f"{_ANSI['warn']}{t['pay_charge_locked']}{_ANSI['off']}: {data}")
+            return 1
+        if rc is None:
+            return _down()
+        if rc != 200:
+            print(f"{_ANSI['bad']}HTTP {rc}: {data}{_ANSI['off']}")
+            return 1
+        print(f"{_ANSI['ok']}{t['pay_charge_ok']}{_ANSI['off']}: "
+              f"{data.get('charge_id')} {data.get('status')} "
+              f"${data.get('amount_usd')} balance={data.get('wallet_balance')}")
+        if data.get("subscription_activated"):
+            print("  subscription activated via governance")
+        return 0
+    if act == "wallet":
+        ok, data = http_json(f"{base}/payments/wallet/{args.user}")
+        if not ok:
+            return _down()
+        print(f"  wallet {args.user}: balance=${data.get('balance_usd')} "
+              f"(succeeded={data.get('succeeded')} "
+              f"refunded={data.get('refunded')} pending={data.get('pending')})")
+        for e in data.get("entries", [])[-5:]:
+            print(f"    {str(e['status']):<9} ${e['amount_usd']:<8} "
+                  f"{str(e['provider']):<8} {str(e['charge_id'])[:22]} "
+                  f"{e.get('plan', '')}")
+        return 0
+    if act == "refund":
+        rc, data = http_post_json(f"{base}/payments/refund",
+                                  {"charge_id": args.charge})
+        if rc is None:
+            return _down()
+        if rc != 200:
+            print(f"{_ANSI['bad']}HTTP {rc}: {data}{_ANSI['off']}")
+            return 1
+        print(f"{_ANSI['ok']}{t['pay_refund_ok']}{_ANSI['off']}: "
+              f"{data.get('status')} ${data.get('amount_usd')}")
+        return 0
+    print(f"{_ANSI['bad']}{t['pay_unknown']}: {act}{_ANSI['off']}")
+    return 1
+
+
 def cmd_events(args: argparse.Namespace) -> int:
     """Tail the live operations event feed (dashboard/copy-engine consumer)."""
     t = I18N[args.lang]
@@ -1079,6 +1168,19 @@ def _parser() -> argparse.ArgumentParser:
     cp = sub.add_parser("copy", help="copy-engine consumer status (mirror of master decisions, via the API)")
     cp.add_argument("--json", action="store_true")
     cp.set_defaults(fn=cmd_copy)
+
+    pay = sub.add_parser("pay", help="Billing & wallet (via the API — single billing authority)")
+    pay.add_argument("action", choices=("status", "providers", "charge", "wallet", "refund"),
+                     help="status | providers | charge | wallet | refund")
+    pay.add_argument("--user", default="", help="user_id (charge/wallet)")
+    pay.add_argument("--amount", type=float, default=0.0, help="USD amount (charge)")
+    pay.add_argument("--plan", default="",
+                     choices=("", "free", "starter", "pro", "institutional"),
+                     help="plan to activate on a successful charge")
+    pay.add_argument("--provider", default="", choices=("", "sandbox", "stripe", "pi"))
+    pay.add_argument("--description", default="")
+    pay.add_argument("--charge", default="", help="charge_id (refund)")
+    pay.set_defaults(fn=cmd_pay)
 
     bk = sub.add_parser("backup", help="snapshot durable canonical state to a ZIP (M6.4)")
     bk.add_argument("--out", default=None, help="destination dir (default <root>/backups)")

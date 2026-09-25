@@ -127,11 +127,15 @@ curl http://127.0.0.1:8000/system/health
 - **حصانة** — سلسلة تنبيهات متعددة القنوات `telegram→discord→console` (أو بثّ `all`)، وحزمة
   `operations/dr.py` للنسخ/التحقق/الاستعادة SHA-256 للحالة الدائمة، وطبقة اختبار HTTP-surface
   (FastAPI TestClient) وفحص حي `scripts/smoke_live.ps1` يقلب خادمًا حقيقيًا ويقود الكونسول عبر HTTP.
+- **الدفع والمحفظة — رمل أولًا** (`governance/payments.py`): محفظة حتمية لكل مستخدم + موفّرو دفع
+  (sandbox حتمي بلا شبكة / Stripe REST حقيقي للعن حي فقط مع `PAYMENTS_LIVE_ALLOWED=1` + مفتاح،
+  يُستكمل عبر webhook مُتحقَّق منه / Pi مسخّرة صادقة غير موصولة)؛ الشحن يفعّل الاشتراك تلقائيًا؛
+  `tradraig pay status|providers|charge|wallet|refund` عبر API (سلطة فوترة واحدة).
 
 ## الاختبارات
 
 ```bash
-python -m pytest -q                      # المجموعة الكاملة (593 اختباراً)
+python -m pytest -q                      # المجموعة الكاملة (609 اختباراً)
 python -m pytest tests/test_ai_dspy/     # طبقة الذكاء/برامج DSPy فقط
 cd "TAIG Dash" && node .\node_modules\typescript\bin\tsc --noEmit && node .\node_modules\vite\bin\vite.js build   # الواجهة: أنواع + بناء
 powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # فحص حي: إقلاع uvicorn حقيقي + قيادة الكونسول عبر HTTP

@@ -97,6 +97,24 @@ class CexConfig:
 
 
 @dataclass(frozen=True)
+class PaymentsConfig:
+    """Billing & wallet activation.
+
+    Sandbox-first by design: `mode` defaults to "sandbox" and the live gate
+    defaults to OFF. A real provider (stripe) may only move money when
+    `live_allowed` is explicitly enabled AND the provider's key is present;
+    otherwise it stays a locked observer (exactly the CEX discipline).
+    """
+    mode: str                 # sandbox | live
+    live_allowed: bool        # hard gate; real money stays off unless true
+    provider: str             # sandbox | stripe | pi
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    pi_api_key: str = ""
+    pi_wallet_key: str = ""
+
+
+@dataclass(frozen=True)
 class APIConfig:
     host: str
     port: int
@@ -124,6 +142,7 @@ class Settings:
     redis: RedisConfig
     mt5: MT5Config
     cex: CexConfig
+    payments: PaymentsConfig
     api: APIConfig
     risk_defaults: RiskDefaults
     logging: LoggingConfig
@@ -172,6 +191,15 @@ def load_settings() -> Settings:
             bybit_api_secret=os.getenv("CEX_BYBIT_API_SECRET", ""),
             bybit_testnet_key=os.getenv("CEX_BYBIT_TESTNET_KEY", ""),
             bybit_testnet_secret=os.getenv("CEX_BYBIT_TESTNET_SECRET", ""),
+        ),
+        payments=PaymentsConfig(
+            mode=os.getenv("PAYMENTS_MODE", "sandbox").lower(),
+            live_allowed=_env_bool("PAYMENTS_LIVE_ALLOWED", False),
+            provider=os.getenv("PAYMENTS_PROVIDER", "sandbox").lower(),
+            stripe_secret_key=os.getenv("PAYMENTS_STRIPE_SECRET_KEY", ""),
+            stripe_webhook_secret=os.getenv("PAYMENTS_STRIPE_WEBHOOK_SECRET", ""),
+            pi_api_key=os.getenv("PAYMENTS_PI_API_KEY", ""),
+            pi_wallet_key=os.getenv("PAYMENTS_PI_WALLET_KEY", ""),
         ),
         api=APIConfig(
             host=os.getenv("API_HOST", "0.0.0.0"),

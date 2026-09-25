@@ -659,6 +659,119 @@ def cex_engine_stop() -> Dict:
 
 
 # ---------------------------------------------------------------------------
+# Billing & Wallet (sandbox-first; live gated OFF by default)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/payments/status")
+def payments_status() -> Dict:
+    from governance.payments import payments_service
+    return payments_service.status()
+
+
+@app.get("/payments/providers")
+def payments_providers() -> Dict:
+    from governance.payments import payments_service
+    return payments_service.providers()
+
+
+@app.get("/payments/wallet/{user_id}")
+def payments_wallet(user_id: str) -> Dict:
+    from governance.payments import payments_service
+    wallet = payments_service.wallet(user_id)
+    if not wallet["entries"]:
+        if identity.get_user(user_id) is None:
+            raise HTTPException(status_code=404, detail="user not found")
+    return wallet
+
+
+@app.post("/payments/charge")
+def payments_charge(payload: Dict) -> Dict:
+    """Charge a user's billing account; activates their subscription when a
+    plan is supplied. Sandbox succeeds deterministically; live providers land
+    PENDING until a verified webhook confirms."""
+    from governance.payments import PaymentProviderKind, PaymentLockedError
+    from governance.payments import payments_service as svc
+
+    user_id = payload.get("user_id", "")
+    amount = float(payload.get("amount_usd", 0.0))
+    plan = str(payload.get("plan", "") or "")
+    provider_name = str(payload.get("provider", "") or "")
+    if identity.get_user(user_id) is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    if plan:
+        from governance.identity import SubscriptionPlan
+        try:
+            SubscriptionPlan(plan)
+        except ValueError:
+            raise HTTPException(status_code=400,
+                                detail=f"unknown plan {plan}") from None
+
+    prov = None
+    if provider_name and provider_name != PaymentProviderKind.SANDBOX.value:
+        prov = build_payment_provider_for_name(provider_name)
+    try:
+        result = svc.charge(
+            user_id=user_id, amount_usd=amount, plan=plan,
+            provider=prov, description=payload.get("description", ""),
+            metadata=payload.get("metadata"))
+    except PaymentLockedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result.status.value == "failed":
+        raise HTTPException(status_code=400,
+                            detail=result.message or "charge failed")
+    return result.as_dict()
+
+
+@app.post("/payments/refund")
+def payments_refund(payload: Dict) -> Dict:
+    from governance.payments import PaymentLockedError
+    from governance.payments import payments_service as svc
+    charge_id = payload.get("charge_id", "")
+    try:
+        result = svc.refund(charge_id)
+    except PaymentLockedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result.status.value == "failed":
+        raise HTTPException(status_code=400, detail=result.message)
+    return result.as_dict()
+
+
+@app.post("/payments/webhook")
+def payments_webhook(payload: Dict) -> Dict:
+    """Ingest a provider webhook event. Signature is verified when the
+    provider has a webhook secret configured (live providers always reject
+    unsigned events)."""
+    from governance.payments import PaymentLockedError
+    from governance.payments import payments_service as svc
+    provider_name = str(payload.get("provider", "") or "")
+    body = payload.get("payload", "")
+    signature = str(payload.get("signature", "") or "")
+    prov = build_payment_provider_for_name(provider_name) if provider_name else None
+    try:
+        return svc.handle_webhook(body, signature, provider=prov)
+    except PaymentLockedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def build_payment_provider_for_name(name: str):
+    """Resolve an explicit provider by name (used by charge/webhook)."""
+    from governance.payments import (
+        PaymentProviderKind,
+        SandboxPaymentProvider,
+        StripePaymentProvider,
+    )
+    if name == PaymentProviderKind.STRIPE.value:
+        from core.config import settings
+        return StripePaymentProvider(
+            secret_key=settings.payments.stripe_secret_key,
+            webhook_secret=settings.payments.stripe_webhook_secret)
+    if name == PaymentProviderKind.SANDBOX.value:
+        return SandboxPaymentProvider()
+    raise HTTPException(status_code=400, detail=f"unknown provider {name}") from None
+
+
+# ---------------------------------------------------------------------------
 # Live MT5 terminal
 # ---------------------------------------------------------------------------
 

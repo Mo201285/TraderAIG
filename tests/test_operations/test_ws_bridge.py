@@ -48,6 +48,18 @@ def client():
     return TestClient(api.app)
 
 
+def _wait_until(predicate, timeout: float = 3.0):
+    """Poll until predicate() holds; the WS receive loop records asynchronously."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"condition not met within {timeout}s")
+
+
 def test_hello_handshake(client):
     with client.websocket_connect("/bridge/ws") as ws:
         hello = ws.receive_json()
@@ -82,6 +94,13 @@ def test_client_ack_and_status_are_recorded(client):
                                           "polled_at": 1.0}}))
         st = api.bridge_status()
         me = next(s for s in st["sessions"] if s["id"] == sid)
+        _wait_until(lambda: (next(s for s in api.bridge_status()["sessions"]
+                                  if s["id"] == sid).get("last_ack") or {})
+                    .get("candidate_id") == "cand-x")
+        _wait_until(lambda: (next(s for s in api.bridge_status()["sessions"]
+                                  if s["id"] == sid).get("last_status") or {})
+                    .get("bridge", {}).get("status") == "ack")
+        me = next(s for s in api.bridge_status()["sessions"] if s["id"] == sid)
         assert me["last_ack"]["candidate_id"] == "cand-x"
         assert me["last_status"]["bridge"]["status"] == "ack"
 

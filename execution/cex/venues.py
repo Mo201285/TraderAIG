@@ -8,9 +8,13 @@ adapter stays locked (read-only observer), mirroring the MT5 adapter rule.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
+import http.client
 import json
+import socket
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -22,6 +26,44 @@ from core.logging import get_logger
 
 
 log = get_logger("execution.cex")
+
+
+def _resolve_v4(host: str, port: int):
+    """Connect-address for ``host`` over IPv4 only.
+
+    CEX API keys bind their IP allowlists as IPv4 addresses; a machine with
+    working IPv6 (preferred by RFC 6724) would otherwise egress as IPv6 and be
+    rejected by the venue despite a correct signature (OKX 403/1010). Filtering
+    ``AF_INET`` keeps sport account/read probes matching the allowlisted IP.
+    """
+    addrs = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    if not addrs:
+        raise OSError(f"no IPv4 address for {host}")
+    return addrs[0][4]
+
+
+class _V4HTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection that forces the IPv4 address family."""
+
+    def connect(self) -> None:
+        sys.audit("http.client.connect", self, self.host, self.port)
+        self.sock = socket.create_connection(
+            _resolve_v4(self.host, self.port), self.timeout, self.source_address)
+        if self._tunnel_host:
+            self._tunnel()
+        server_hostname = self._tunnel_host or self.host
+        self.sock = self._context.wrap_socket(
+            self.sock, server_hostname=server_hostname)
+
+
+class _V4HTTPSHandler(urllib.request.HTTPSHandler):
+    """URL opener handler that dispatches https through ``_V4HTTPSConnection``."""
+
+    def https_open(self, req):  # noqa: ANN001, D401
+        return self.do_open(_V4HTTPSConnection, req)
+
+
+_V4_OPENER = urllib.request.build_opener(_V4HTTPSHandler())
 
 
 class VenueLockedError(RuntimeError):
@@ -126,7 +168,7 @@ class VenueAdapter:
             hdrs.setdefault("Content-Type", "application/json")
         req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with _V4_OPENER.open(req, timeout=10) as resp:
                 raw = resp.read().decode("utf-8")
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:
@@ -307,8 +349,10 @@ class OKXVenue(VenueAdapter):
     def _headers(self, method: str, path: str, body: Optional[str]) -> Dict[str, str]:
         ts = str(time.time())
         prehash = f"{ts}{method.upper()}{path}{body or ''}"
-        sign = hmac.new(self._api_secret.encode(), prehash.encode(),
-                        hashlib.sha256).hexdigest().replace("\n", "")
+        digest = hmac.new(self._api_secret.encode(), prehash.encode(),
+                          hashlib.sha256).digest()
+        # OKX REQUIRES the signature Base64-encoded (hex is Binance/Bybit only).
+        sign = base64.b64encode(digest).decode()
         hdrs = {
             "OK-ACCESS-KEY": self._api_key,
             "OK-ACCESS-SIGN": sign,

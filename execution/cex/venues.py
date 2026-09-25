@@ -92,7 +92,7 @@ def _request_curl(url: str, method: str, headers: Dict[str, str],
     HTTP-level replies (2xx JSON, or 4xx/5xx pages) are returned as data; only
     transport failures raise OSError so callers can fall back.
     """
-    cmd = [_CURL, "-sS", "--max-time", str(timeout), "-X", method,
+    cmd = [_CURL, "-sS", "-4", "--max-time", str(timeout), "-X", method,
            "-w", "\n%{http_code}"]
     for key, val in headers.items():
         cmd += ["-H", f"{key}: {val}"]
@@ -498,7 +498,11 @@ class OKXVenue(VenueAdapter):
         items = {}
         if data.get("data"):
             for line in data["data"][0].get("details", []):
-                avail = float(line.get("availEq", 0.0)) or 0.0
+                raw = line.get("availEq") or "0"
+                try:
+                    avail = float(raw) or 0.0
+                except (TypeError, ValueError):
+                    avail = 0.0
                 if avail:
                     items[line.get("ccy", "")] = {"free": avail, "locked": 0.0}
         return {"ok": True, "balances": items}

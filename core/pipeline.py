@@ -195,6 +195,7 @@ class TradingLoop:
 
         ticket = (self._executor or execution_engine).execute(candidate, decision)
         candidate_board.approve(candidate.candidate_id)
+        self._publish_mt5_signal(candidate)
 
         record = self._decision_record(candidate, decision)
         record.metadata = delib.selected.meta
@@ -358,6 +359,23 @@ class TradingLoop:
             },
         )
 
+    def _publish_mt5_signal(self, candidate) -> None:
+        """Mirror an APPROVED executed signal onto the MT5 terminal bridge.
+
+        Only the real-MT5 rail publishes (LiveMT5Executor.BRIDGE_PUBLISH); the
+        file bridge stays authoritative and the WebSocket relay carries it to
+        the attached terminal-side proxy. Best-effort: the trading path never
+        breaks or blocks on this lane.
+        """
+        try:
+            if not getattr(self._executor, "BRIDGE_PUBLISH", False):
+                return
+            from execution.bridge import MT5Bridge
+            if not MT5Bridge().send_signal(candidate):
+                log.warning(f"{self.symbol}: bridge signal relay skipped")
+        except Exception:  # noqa: BLE001 - bridge is auxiliary, never fatal
+            log.debug(f"{self.symbol}: bridge publish failed (aux lane)")
+
     def _maybe_dspy_refine(self, evidence):
         """Optional DSPy refinement of gathered evidence (opt-in, no-op by
         default; see TRADERAIG_DSPY_PIPELINE in ai/dspy/connect.py)."""
@@ -403,6 +421,7 @@ class TradingLoop:
 
         ticket = (self._executor or execution_engine).execute(candidate, decision)
         candidate_board.approve(candidate.candidate_id)
+        self._publish_mt5_signal(candidate)
 
         if ticket is not None and ticket.status.value == "filled":
             log.info(f"{self.symbol}: trade executed")

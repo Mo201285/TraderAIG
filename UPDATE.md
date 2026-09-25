@@ -1385,3 +1385,10 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1     # 7/7 على
 ملاحظة فنية: كاشف الرموز المحلي (`mt5-dev\Bases\Default\Symbols\*.dat`) قديم ولا يعكس
 الكتالوج الدفعي؛ **سلطة التعرّف هي استعلام التيرمنال الحي** (`symbols_get()`). كل أصل
 يجري في `TradingLoop` مستقل له (نظام/توقيت/مدرس) مع إدارة مراكز/مخاطر منفصلة لكل رمز.
+
+**قناة الإشارة اللحظية (فعِّل كاملة في الإنتاج 2026-09-25):** كل قرار مفوَّض
+(A P P R O V E D) من سكة MT5 الحية يُنشر آليًا إلى (1) الملف الجسري `TraderAIG_bridge.json`
+المُعتمَد، و(2) قناة WebSocket المصدَّرة عبر `scripts/mt5_bridge_proxy.py` (جارٍ حاليًا،
+يستعيد الاتصال ذاتيًا). المُشغَّل الحقيقي هو `LiveMT5Executor.BRIDGE_PUBLISH` — فسكّة CEX
+أو الورقية لا تتسرب إلى قناة السمسار. تحقّق حي: قرار `XAUUSD sell 0.1` تدفق من
+الأنابيب العالمية إلى الملف وإلى `GET /bridge/status` (جلسة `terminal` ترصد `signal`).

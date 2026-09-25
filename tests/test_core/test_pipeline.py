@@ -118,3 +118,50 @@ def test_scalp_timeframe_hardens_spread_gate():
                         use_school_board=True)
     assert loop15._spread_ratio_limit is None
     assert loop1._spread_ratio_limit == 0.0008
+
+
+def test_mt5_bridge_publish_respects_executor_marker(monkeypatch, tmp_path):
+    """Only the real-MT5 rail mirrors approved signals to the terminal bridge."""
+
+    from execution.engine import ExecutionStatus, OrderTicket
+
+    s = CanonicalState()
+    state.__dict__.clear()
+    state.__dict__.update(s.__dict__)
+    state.set_account(AccountState(login=1, balance=10000.0, equity=10000.0))
+    candles = make_demo_candles("XAUUSD", n=400)
+
+    class MT5Exec:
+        BRIDGE_PUBLISH = True
+
+        def execute(self, candidate, decision):
+            return OrderTicket(ticket="T1", order_id="O1",
+                               status=ExecutionStatus.FILLED)
+
+    class PlainExec:
+        def execute(self, candidate, decision):
+            return OrderTicket(ticket="T2", order_id="O2",
+                               status=ExecutionStatus.FILLED)
+
+    def run_loop(executor):
+        loop = TradingLoop("XAUUSD", enable_execution=True, executor=executor)
+        for i in range(50, len(candles)):
+            mk = MarketState(symbol="XAUUSD", bid=candles[i].close,
+                             ask=candles[i].close + 0.05, spread=0.05,
+                             last_price=candles[i].close,
+                             last_tick_time=candles[i].time)
+            state.upsert_market(mk)
+            loop.on_new_candle(candles[:i + 1])
+
+    mt5_dir = tmp_path / "mt5lane"
+    monkeypatch.setenv("MT5_COMMON_DATA", str(mt5_dir))
+    run_loop(MT5Exec())
+    assert (mt5_dir / "TraderAIG_bridge.json").exists()
+
+    state.__dict__.clear()
+    state.__dict__.update(s.__dict__)
+    state.set_account(AccountState(login=1, balance=10000.0, equity=10000.0))
+    cex_dir = tmp_path / "cexlane"
+    monkeypatch.setenv("MT5_COMMON_DATA", str(cex_dir))
+    run_loop(PlainExec())
+    assert not (cex_dir / "TraderAIG_bridge.json").exists()

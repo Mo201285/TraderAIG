@@ -865,6 +865,11 @@ class LiveMT5Executor:
     keeps the canonical order + position state in sync with the broker.
     """
 
+    # The real-MT5 rail mirrors every APPROVED executed signal onto the
+    # terminal bridge channel (file authoritative + WebSocket relay). CEX and
+    # paper loops do not publish to the broker lane (see core/pipeline.py).
+    BRIDGE_PUBLISH = True
+
     def __init__(self, adapter: Optional[MT5Adapter] = None) -> None:
         self._adapter = adapter or mt5_adapter
         self._tickets: Dict[str, Any] = {}

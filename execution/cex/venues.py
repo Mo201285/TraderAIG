@@ -13,12 +13,16 @@ import hashlib
 import hmac
 import http.client
 import json
+import os
+import shutil
 import socket
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from core.config import settings
@@ -64,6 +68,59 @@ class _V4HTTPSHandler(urllib.request.HTTPSHandler):
 
 
 _V4_OPENER = urllib.request.build_opener(_V4HTTPSHandler())
+
+
+def _find_curl() -> Optional[str]:
+    """Prefer the real curl that ships with Windows 10+/ubuntu runners.
+
+    urllib's TLS/browser signature is ban-listed by OKX's Cloudflare WAF
+    ("error code: 1010"), while curl's signature passes -> 200 JSON.
+    """
+    for cand in (r"C:\Windows\System32\curl.exe",):
+        if os.path.exists(cand):
+            return cand
+    return shutil.which("curl")
+
+
+_CURL = _find_curl()
+
+
+def _request_curl(url: str, method: str, headers: Dict[str, str],
+                  data: Optional[bytes], timeout: int = 20) -> Dict[str, Any]:
+    """HTTP via the real curl binary; returns a parsed JSON dict.
+
+    HTTP-level replies (2xx JSON, or 4xx/5xx pages) are returned as data; only
+    transport failures raise OSError so callers can fall back.
+    """
+    cmd = [_CURL, "-sS", "--max-time", str(timeout), "-X", method,
+           "-w", "\n%{http_code}"]
+    for key, val in headers.items():
+        cmd += ["-H", f"{key}: {val}"]
+    if data is not None:
+        cmd += ["--data-binary", data.decode("utf-8")]
+    cmd.append(url)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=timeout + 5, check=False)
+    code = 0
+    body = (proc.stdout or "").rsplit("\n", 1)
+    if len(body) == 2 and proc.returncode == 0:
+        body, code_txt = body
+        try:
+            code = int(code_txt.strip())
+        except ValueError:
+            code = 0
+    else:
+        body = body[0] if body else ""
+    if proc.returncode == 0 and code and 200 <= code < 300:
+        return json.loads(body) if body.strip() else {}
+    if code == 1010 or "error code: 1010" in body:
+        detail = ("Cloudflare banned this HTTP-client signature (error code: "
+                  "1010); the venue is reached with a newer client fingerprint")
+    else:
+        detail = (body or "").strip()[:300] or (proc.stderr or "").strip()[:300]
+    if code:
+        return {"error": f"HTTP {code}: {detail}"}
+    raise OSError((proc.stderr or "").strip()[:300] or f"curl exit {proc.returncode}")
 
 
 class VenueLockedError(RuntimeError):
@@ -166,6 +223,22 @@ class VenueAdapter:
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             hdrs.setdefault("Content-Type", "application/json")
+        if _CURL:
+            try:
+                out = _request_curl(url, method, hdrs, data)
+            except OSError as exc:
+                log.warning(f"{self.name} curl transport failed, urllib fallback: {exc}")
+            else:
+                if "error" in out:
+                    self._last_error = f"{self.name} {out['error']}"
+                    log.warning(f"{self.name} request failed: {self._last_error}")
+                    return out
+                return out
+        return self._request_urllib(method, url, hdrs, data)
+
+    def _request_urllib(self, method: str, url: str,
+                        hdrs: Dict[str, str],
+                        data: Optional[bytes]) -> Dict[str, Any]:
         req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
         try:
             with _V4_OPENER.open(req, timeout=10) as resp:
@@ -337,6 +410,15 @@ class OKXVenue(VenueAdapter):
 
     def __init__(self, mode: Optional[str] = None,
                  api_key: str = "", api_secret: str = "", passphrase: str = "") -> None:
+        _demo = str(mode or "").lower() == self.TESTNET
+        if _demo:
+            # TESTNET uses ONLY the dedicated demo slot; never fall back to live
+            # credentials (that would send x-simulated-trading:1 with live keys).
+            key = api_key or settings.cex.okx_demo_api_key
+            secret = api_secret or settings.cex.okx_demo_api_secret
+            super().__init__(mode=mode, api_key=key, api_secret=secret)
+            self._passphrase = passphrase or settings.cex.okx_demo_passphrase
+            return
         key = api_key or settings.cex.okx_api_key
         secret = api_secret or settings.cex.okx_api_secret
         super().__init__(mode=mode, api_key=key, api_secret=secret)
@@ -347,7 +429,9 @@ class OKXVenue(VenueAdapter):
         return self.BASE_MAIN
 
     def _headers(self, method: str, path: str, body: Optional[str]) -> Dict[str, str]:
-        ts = str(time.time())
+        # OKX requires the timestamp as ISO-8601 UTC (millisecond precision);
+        # epoch-milliseconds parses as garbage and is rejected 50102 wholesale.
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
         prehash = f"{ts}{method.upper()}{path}{body or ''}"
         digest = hmac.new(self._api_secret.encode(), prehash.encode(),
                           hashlib.sha256).digest()

@@ -49,6 +49,60 @@ def test_okx_signature_is_base64():
     assert not re.fullmatch(r"[0-9a-f]{64}", hdrs["OK-ACCESS-SIGN"])
 
 
+def test_okx_timestamp_is_iso8601():
+    """Epoch-milliseconds timestamp headers are rejected by OKX (50102); the
+    auth gate only accepts ISO-8601 UTC with millisecond precision."""
+    v = OKXVenue(mode="paper", api_key="k", api_secret="s", passphrase="p")
+    hdrs = v._headers("GET", "/api/v5/account/balance", None)
+    ts = hdrs["OK-ACCESS-TIMESTAMP"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", ts)
+
+
+def test_okx_testnet_prefers_demo_slot(monkeypatch):
+    """Mode=testnet must prefer the dedicated demo creds, live the main slot."""
+    import execution.cex.venues as vmod
+
+    class _FakeCex:
+        mode = "paper"
+        live_allowed = True
+        okx_api_key = "LIVE-KEY"
+        okx_api_secret = "LIVE-SEC"
+        okx_passphrase = "LIVE-PASS"
+        okx_demo_api_key = "DEMO-KEY"
+        okx_demo_api_secret = "DEMO-SEC"
+        okx_demo_passphrase = "DEMO-PASS"
+
+    class _FakeSettings:
+        cex = _FakeCex()
+
+    monkeypatch.setattr(vmod, "settings", _FakeSettings())
+
+    demo = OKXVenue(mode="testnet")
+    assert demo._api_key == "DEMO-KEY"
+    assert demo._api_secret == "DEMO-SEC"
+    assert demo._passphrase == "DEMO-PASS"
+
+    live = OKXVenue(mode="live")
+    assert live._api_key == "LIVE-KEY"
+    assert live._api_secret == "LIVE-SEC"
+    assert live._passphrase == "LIVE-PASS"
+
+    # TESTNET with an empty demo slot must stay empty, never leaking live creds.
+    monkeypatch.setattr(_FakeSettings, "cex", type("X", (), {
+        "mode": "paper",
+        "live_allowed": True,
+        "okx_api_key": "LIVE-KEY",
+        "okx_api_secret": "LIVE-SEC",
+        "okx_passphrase": "LIVE-PASS",
+        "okx_demo_api_key": "",
+        "okx_demo_api_secret": "",
+        "okx_demo_passphrase": "",
+    }))
+    empty = OKXVenue(mode="testnet")
+    assert empty._api_key == ""
+    assert empty._passphrase == ""
+
+
 def test_v4_handler_wired_into_opener():
     """The module's default opener must carry the IPv4 handler."""
     from execution.cex import venues
@@ -58,7 +112,7 @@ def test_v4_handler_wired_into_opener():
 
 
 def test_request_goes_through_v4_opener(monkeypatch):
-    """_request must egress via _V4_OPENER (forced IPv4), not urlopen."""
+    """_request must egress via _V4_OPENER (forced IPv4) when curl is absent."""
     from execution.cex import venues
 
     class FakeResp:
@@ -78,8 +132,70 @@ def test_request_goes_through_v4_opener(monkeypatch):
         return FakeResp()
 
     monkeypatch.setattr(venues._V4_OPENER, "open", fake_open)
+    monkeypatch.setattr(venues, "_CURL", None)
     venue = OKXVenue(mode="paper")
     out = venue._request("GET", "https://www.okx.com/api/v5/account/balance",
                          headers={"OK-ACCESS-KEY": "k"})
     assert out == {"code": "0", "data": []}
     assert len(calls) == 1 and calls[0].full_url.startswith("https://")
+
+
+def test_request_prefers_curl_transport(monkeypatch):
+    """_request must use the curl transport (Cloudflare-safe) when available."""
+    from execution.cex import venues
+
+    monkeypatch.setattr(venues, "_CURL", "curl")
+    calls = []
+
+    def fake_curl(url, method, headers, data, timeout=20):
+        calls.append((url, method))
+        return {"code": "0", "data": [{"ts": "1"}]}
+
+    monkeypatch.setattr(venues, "_request_curl", fake_curl)
+    venue = OKXVenue(mode="paper")
+    out = venue._request("GET", "https://www.okx.com/api/v5/account/balance")
+    assert out["code"] == "0"
+    assert calls == [("https://www.okx.com/api/v5/account/balance", "GET")]
+
+
+def test_request_curl_parses_json(monkeypatch):
+    """_request_curl returns parsed JSON for 2xx, with the code split off."""
+    from execution.cex import venues
+
+    monkeypatch.setattr(venues, "_CURL", "curl")
+
+    def fake_run(cmd, **kwargs):
+        assert cmd[-1].endswith("public/time")
+
+        class P:
+            returncode = 0
+            stdout = '{"code":"0","data":[{"ts":"1790299746662"}]}\n200'
+            stderr = ""
+
+        return P()
+
+    monkeypatch.setattr(venues.subprocess, "run", fake_run)
+    out = venues._request_curl("https://www.okx.com/api/v5/public/time",
+                               "GET", {}, None)
+    assert out["code"] == "0"
+
+
+def test_request_curl_cloudflare_1010_hints(monkeypatch):
+    """A Cloudflare 1010 page must surface as an explicit fingerprint hint."""
+    from execution.cex import venues
+
+    monkeypatch.setattr(venues, "_CURL", "curl")
+
+    def fake_run(cmd, **kwargs):
+        class P:
+            returncode = 0
+            stdout = "error code: 1010\n403"
+            stderr = ""
+
+        return P()
+
+    monkeypatch.setattr(venues.subprocess, "run", fake_run)
+    out = venues._request_curl("https://www.okx.com/api/v5/account/balance",
+                               "GET", {"OK-ACCESS-KEY": "k"}, None)
+    assert out["error"].startswith("HTTP 403:")
+    assert "Cloudflare" in out["error"]

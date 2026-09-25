@@ -90,6 +90,9 @@ class CexConfig:
     okx_api_secret: str = ""
     okx_passphrase: str = ""
     okx_broker_id: str = ""
+    okx_demo_api_key: str = ""
+    okx_demo_api_secret: str = ""
+    okx_demo_passphrase: str = ""
     bybit_api_key: str = ""
     bybit_api_secret: str = ""
     bybit_testnet_key: str = ""
@@ -187,6 +190,9 @@ def load_settings() -> Settings:
             okx_api_secret=os.getenv("CEX_OKX_API_SECRET", ""),
             okx_passphrase=os.getenv("CEX_OKX_PASSPHRASE", ""),
             okx_broker_id=os.getenv("CEX_OKX_BROKER_ID", ""),
+            okx_demo_api_key=os.getenv("CEX_OKX_DEMO_API_KEY", ""),
+            okx_demo_api_secret=os.getenv("CEX_OKX_DEMO_API_SECRET", ""),
+            okx_demo_passphrase=os.getenv("CEX_OKX_DEMO_PASSPHRASE", ""),
             bybit_api_key=os.getenv("CEX_BYBIT_API_KEY", ""),
             bybit_api_secret=os.getenv("CEX_BYBIT_API_SECRET", ""),
             bybit_testnet_key=os.getenv("CEX_BYBIT_TESTNET_KEY", ""),

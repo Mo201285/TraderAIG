@@ -741,6 +741,7 @@ powershell -ExecutionPolicy Bypass -File scripts\verify_all.ps1  # whole verific
 powershell -ExecutionPolicy Bypass -File scripts/smoke_live.ps1   # boot the real server + drive the console over HTTP (7-step live wiring check)
 powershell -ExecutionPolicy Bypass -File scripts\postgres_prod_test.ps1 -Port 55432 -DataDir "E:\Postgres\data16"  # real PostgreSQL deployment test (WMI-launched server; full suite 584 passed)
 python scripts/mt5_bridge_proxy.py --url ws://127.0.0.1:8000/bridge/ws --bridge-dir "%MT5_COMMON_DATA%" --once   # terminal-side real-time proxy: signals down, acks/status up (needs websockets)
+python scripts/mt5_bridge_live_proof.py      # one-command real-time MT5 bridge certification: boots the real API (in-process uvicorn), runs the real proxy, publishes one APPROVED signal, asserts file-bridge relay + upstream ack — exit 0 = PASS; --port N to pin the port; --go-live to write into MT5_COMMON_DATA instead of a scratch dir
 curl http://127.0.0.1:8000/system/health        # aggregated UPDATE.md §50 component health
 
 # AI Program Compiler (DSPy; optional, research/evolution layer)

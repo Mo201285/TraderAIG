@@ -135,7 +135,7 @@ curl http://127.0.0.1:8000/system/health
 ## الاختبارات
 
 ```bash
-python -m pytest -q                      # المجموعة الكاملة (619 اختباراً)
+python -m pytest -q                      # المجموعة الكاملة (632 اختباراً)
 python -m pytest tests/test_ai_dspy/     # طبقة الذكاء/برامج DSPy فقط
 cd "TAIG Dash" && node .\node_modules\typescript\bin\tsc --noEmit && node .\node_modules\vite\bin\vite.js build   # الواجهة: أنواع + بناء
 powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # فحص حي: إقلاع uvicorn حقيقي + قيادة الكونسول عبر HTTP

@@ -1174,6 +1174,177 @@ def ai_programs_registry() -> Dict:
 
 
 # ---------------------------------------------------------------------------
+# User strategy intake — describe -> vet -> test -> governed production
+#
+# The user describes a strategy; the project scrutinizes it immediately
+# (VetEngine: family mapping + parameter bounds) and, on a PASS, tests it
+# through the strategy-lab pipeline. A tested strategy is registered at
+# RESEARCH/CANDIDATE and advances only via the governed promotion ladder
+# (engine-safety guard applies) — no user shortcut into production.
+# ---------------------------------------------------------------------------
+
+_INTAKE_LOCK = _threading.Lock()
+_INTAKE_TEST_LOCK = _threading.Lock()
+
+
+def _intake_board():
+    from research.strategy_lab.user_intake import IntakeBoard
+    return IntakeBoard(str(LAB_DATA_DIR / "user_intake.json"))
+
+
+def _audit_intake(actor, action, entry_id, details=None, success=True):
+    identity.record_audit(actor, action, "strategy_intake", entry_id,
+                          details or {}, success)
+
+
+@app.post("/strategies/intake")
+def strategy_intake_propose(payload: Dict) -> Dict:
+    """User describes a strategy; the project scrutinizes it on the spot."""
+    from research.strategy_lab.user_intake import (
+        UserStrategySpec,
+        VetEngine,
+    )
+    requested_by = payload.get("requested_by", "operator")
+    try:
+        spec = UserStrategySpec.from_payload(payload)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    vet = VetEngine().vet(spec).as_dict()
+    with _INTAKE_LOCK:
+        entry = _intake_board().propose(spec, requested_by=requested_by,
+                                        vet=vet)
+    _audit_intake(requested_by, "propose", entry["id"],
+                  {"asset": spec.asset, "verdict": vet["verdict"]})
+    return {"ok": True, "entry": entry}
+
+
+@app.get("/strategies/intake")
+def strategy_intake_list(status: str = "") -> Dict:
+    with _INTAKE_LOCK:
+        entries = _intake_board().entries(status=status)
+    return {"ok": True, "count": len(entries), "entries": entries}
+
+
+@app.get("/strategies/intake/{entry_id}")
+def strategy_intake_get(entry_id: str) -> Dict:
+    with _INTAKE_LOCK:
+        entry = _intake_board().get(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="intake entry not found")
+    return {"ok": True, "entry": entry}
+
+
+@app.post("/strategies/intake/{entry_id}/vet")
+def strategy_intake_vet(entry_id: str, payload: Dict) -> Dict:
+    """Re-run the scrutinizer after the user revised the hints (REVISE loop)."""
+    from research.strategy_lab.user_intake import (
+        UserStrategySpec,
+        VetEngine,
+    )
+    with _INTAKE_LOCK:
+        board = _intake_board()
+        entry = board.get(entry_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="intake entry not found")
+        overrides = dict(payload)
+        overrides["description"] = entry["spec"]["description"]
+        overrides["asset"] = entry["spec"]["asset"]
+        spec = UserStrategySpec.from_payload(overrides)
+        vet = VetEngine().vet(spec).as_dict()
+        updated = board.set_vet(entry_id, vet)
+    _audit_intake(entry["requested_by"], "vet", entry_id,
+                  {"verdict": vet["verdict"]})
+    return {"ok": True, "vet": vet, "entry": updated}
+
+
+@app.post("/strategies/intake/{entry_id}/test")
+def strategy_intake_test(entry_id: str, payload: Dict) -> Dict:
+    """Test a PASS-vetted strategy through the real lab pipeline (blocking).
+
+    On completion the strategy is registered in the lab registry
+    (RESEARCH/CANDIDATE). Promotion further up stays governed.
+    """
+    from research.strategy_lab.contracts import (
+        ExitModel,
+        StrategyFamily,
+        TriggerModel,
+    )
+    from research.strategy_lab.user_intake import run_user_test
+    with _INTAKE_LOCK:
+        board = _intake_board()
+        entry = board.get(entry_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="intake entry not found")
+        vet = entry.get("vet") or {}
+        if vet.get("verdict") != "PASS":
+            raise HTTPException(
+                status_code=409,
+                detail="entry must pass vetting (verdict PASS) before testing")
+        spec = entry["spec"]
+    if not _INTAKE_TEST_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=409,
+                            detail="another intake test is already running")
+    try:
+        result = run_user_test(
+            entry_id=entry_id,
+            asset=spec["asset"],
+            family=StrategyFamily(vet["family"]),
+            htf_tf=vet["htf_tf"],
+            setup_tf=vet["setup_tf"],
+            trigger_tf=vet["trigger_tf"],
+            trigger_model=TriggerModel(vet["trigger_model"]),
+            exit_model=ExitModel(vet["exit_model"]),
+            params=vet["params"],
+            sessions=spec.get("sessions") or (),
+            source=str(payload.get("source") or "mt5"),
+            count=int(payload.get("count") or 20000),
+            cost_r=float(payload.get("cost_r") or 0.0),
+            data_dir=LAB_DATA_DIR,
+        )
+    except Exception as exc:  # test failures must never crash the API
+        log.exception("user strategy intake test failed")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        _INTAKE_TEST_LOCK.release()
+    with _INTAKE_LOCK:
+        updated = _intake_board().set_test(entry_id,
+                                           result["strategy_id"], result)
+    _audit_intake(entry["requested_by"], "test", entry_id,
+                  {"strategy_id": result["strategy_id"],
+                   "passed": result["report"]["passed"]})
+    return {"ok": True, "result": result, "entry": updated}
+
+
+@app.post("/strategies/intake/{entry_id}/promote")
+def strategy_intake_promote(entry_id: str, payload: Dict) -> Dict:
+    """Advance a tested user strategy up the governed promotion ladder."""
+    with _INTAKE_LOCK:
+        board = _intake_board()
+        entry = board.get(entry_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="intake entry not found")
+        sid = entry.get("registry_strategy_id")
+    if not sid:
+        raise HTTPException(status_code=409,
+                            detail="entry not tested yet — no registry strategy")
+    requested_by = payload.get("requested_by", "operator")
+    with _lab_lock:
+        result = _lab_apply_guarded("promote", sid, "user_intake")
+    if result["reason"] == "engine_running":
+        raise HTTPException(status_code=409,
+                            detail=result.get("detail") or "engine running")
+    if not result["applied"]:
+        raise HTTPException(status_code=409,
+                            detail="promotion not allowed")
+    _audit_intake(requested_by, "promote", entry_id,
+                  {"strategy_id": sid,
+                   "from": result.get("from_stage"),
+                   "to": result.get("to_stage")})
+    return {"ok": True, "strategy_id": sid, "entry_id": entry_id,
+            "from": result.get("from_stage"), "to": result.get("to_stage")}
+
+
+# ---------------------------------------------------------------------------
 # Phase 8/9 monitoring surfaces (M9.1/M9.2)
 # ---------------------------------------------------------------------------
 

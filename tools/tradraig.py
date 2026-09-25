@@ -873,6 +873,178 @@ def cmd_change(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_vet(vet: Dict[str, Any]) -> None:
+    if not vet:
+        return
+    verdict = str(vet.get("verdict", ""))
+    if verdict == "PASS":
+        fam = vet.get("family")
+        print(f"  {_ANSI['ok']}verdict PASS{_ANSI['off']} family={fam} "
+              f"tf={vet.get('htf_tf')}/{vet.get('setup_tf')}/{vet.get('trigger_tf')} "
+              f"trigger={vet.get('trigger_model')} exit={vet.get('exit_model')} "
+              f"params={vet.get('params')}")
+    else:
+        print(f"  {_ANSI['warn'] if verdict == 'REVISE' else _ANSI['bad']}"
+              f"verdict {verdict}{_ANSI['off']}")
+        for r in vet.get("reasons", []):
+            print(f"    - {r}")
+    for w in vet.get("warnings", []):
+        print(f"  {_ANSI['dim']}warn: {w}{_ANSI['off']}")
+
+
+def cmd_strategy(args: argparse.Namespace) -> int:
+    """User strategy intake — describe -> vet -> test -> governed promote.
+
+    The user describes a strategy in words; the project scrutinizes it
+    immediately (top-level VetEngine), then tests it through the lab
+    pipeline; a passing test registers it (RESEARCH/CANDIDATE) and further
+    promotion rides the governed ladder (engine-safety guard lives in the
+    API). Console commands only ever call the API (single authority).
+    """
+    t = I18N[args.lang]
+    base = f"http://127.0.0.1:{API_PORT}"
+    act = args.action
+
+    def _hints(p: argparse.Namespace) -> Dict[str, Any]:
+        hints: Dict[str, Any] = {}
+        for flag, key in (("family", "family"), ("trigger", "trigger_model"),
+                          ("exit", "exit_model")):
+            val = getattr(p, flag, "")
+            if val:
+                hints[key] = val
+        if getattr(p, "min_rr", None) is not None:
+            hints["min_rr"] = p.min_rr
+        if getattr(p, "session", ""):
+            hints["sessions"] = [p.session]
+        return hints
+
+    if act == "propose":
+        payload = {"description": args.text, "requested_by": args.by,
+                   "asset": args.asset}
+        payload.update(_hints(args))
+        rc, data = http_post_json(f"{base}/strategies/intake", payload,
+                                  timeout=10.0)
+        if rc is None:
+            print(f"{_ANSI['bad']}{t['u_api_down']}{_ANSI['off']}")
+            return 1
+        if rc != 200:
+            print(f"{_ANSI['bad']}HTTP {rc}: {data}{_ANSI['off']}")
+            return 1
+        entry = data.get("entry", {})
+        print(f"{_ANSI['ok']}strategy {entry.get('id')} proposed — "
+              f"{entry.get('status')}{_ANSI['off']}")
+        _print_vet(entry.get("vet"))
+        return 0
+
+    if act == "vet":
+        payload = _hints(args)
+        rc, data = http_post_json(
+            f"{base}/strategies/intake/{args.id}/vet", payload, timeout=10.0)
+        if rc is None:
+            print(f"{_ANSI['bad']}{t['u_api_down']}{_ANSI['off']}")
+            return 1
+        if rc != 200:
+            print(f"{_ANSI['bad']}HTTP {rc}: {data}{_ANSI['off']}")
+            return 1
+        print(f"{_ANSI['ok']}strategy {args.id} re-vetted{_ANSI['off']}")
+        _print_vet(data.get("vet"))
+        return 0
+
+    if act == "test":
+        rc, data = http_post_json(
+            f"{base}/strategies/intake/{args.id}/test",
+            {"source": args.source, "count": args.count,
+             "cost_r": args.cost_r}, timeout=args.timeout)
+        if rc == 409 or rc == 400:
+            print(f"{_ANSI['warn']}HTTP {rc}: {data}{_ANSI['off']}")
+            return 1
+        if rc is None:
+            print(f"{_ANSI['bad']}{t['u_api_down']}{_ANSI['off']}")
+            return 1
+        if rc != 200:
+            print(f"{_ANSI['bad']}HTTP {rc}: {data}{_ANSI['off']}")
+            return 1
+        res = data.get("result", {})
+        rep = res.get("report", {})
+        print(f"{_ANSI['ok']}tested {res.get('strategy_id')} — "
+              f"{res.get('trades')} trades, stage={res.get('stage')}{_ANSI['off']}")
+        print(f"  {res.get('source')} source, {res.get('count')} bars, "
+              f"{res.get('elapsed_seconds')}s, cost_r={res.get('cost_r')}")
+        mark = "PASS" if rep.get("passed") else "FAIL"
+        print(f"  validation [{mark}]: samples={rep.get('samples')} "
+              f"EV={rep.get('expected_value')} PF={rep.get('profit_factor')} "
+              f"OOS_ev={rep.get('oos_ev')} dd={rep.get('max_drawdown')}")
+        failed = [g for g, ok in (rep.get("gates") or {}).items() if not ok]
+        if failed:
+            print(f"  {_ANSI['warn']}failed gates: {', '.join(failed)}"
+                  f"{_ANSI['off']}")
+        return 0
+
+    if act == "list":
+        ok, data = http_json(f"{base}/strategies/intake"
+                             + (f"?status={args.status}" if args.status else ""))
+        if not ok:
+            print(f"{_ANSI['bad']}{t['u_api_down']}{_ANSI['off']}")
+            return 1
+        rows = data.get("entries", [])
+        if not rows:
+            print(f"{_ANSI['dim']}no strategy intake entries{_ANSI['off']}")
+            return 0
+        for e in rows:
+            vet = e.get("vet") or {}
+            print(f"  {str(e.get('id', '')):<12} {str(e.get('status', '')):<9} "
+                  f"{str(vet.get('family') or '-'):<34} "
+                  f"{str(e.get('spec', {}).get('asset', '')):<8} "
+                  f"by={str(e.get('requested_by', ''))[:8]}")
+        return 0
+
+    if act == "show":
+        ok, data = http_json(f"{base}/strategies/intake/{args.id}")
+        if not ok:
+            print(f"{_ANSI['bad']}HTTP 404: intake entry not found"
+                  f"{_ANSI['off']}")
+            return 1
+        entry = data.get("entry", {})
+        spec = entry.get("spec", {})
+        print(f"strategy {entry.get('id')} [{entry.get('status')}] "
+              f"by={entry.get('requested_by')}")
+        print(f"  asset={spec.get('asset')}  "
+              f"description: {spec.get('description')}")
+        _print_vet(entry.get("vet"))
+        test = entry.get("test")
+        if test:
+            rep = test.get("report", {})
+            mark = "PASS" if rep.get("passed") else "FAIL"
+            print(f"  tested: {test.get('strategy_id')} stage={test.get('stage')} "
+                  f"[{mark}] samples={rep.get('samples')} "
+                  f"EV={rep.get('expected_value')} OOS_ev={rep.get('oos_ev')}")
+            print(f"  sources: {test.get('source')} "
+                  f"obs_file={test.get('observations_file')}")
+        else:
+            print(f"  {_ANSI['dim']}not tested yet{_ANSI['off']}")
+        return 0
+
+    if act == "promote":
+        rc, data = http_post_json(
+            f"{base}/strategies/intake/{args.id}/promote",
+            {"requested_by": args.by}, timeout=10.0)
+        if rc == 409:
+            print(f"{_ANSI['warn']}HTTP 409: {data}{_ANSI['off']}")
+            return 1
+        if rc is None:
+            print(f"{_ANSI['bad']}{t['u_api_down']}{_ANSI['off']}")
+            return 1
+        if rc != 200:
+            print(f"{_ANSI['bad']}HTTP {rc}: {data}{_ANSI['off']}")
+            return 1
+        print(f"{_ANSI['ok']}{data.get('strategy_id')} promoted "
+              f"{data.get('from')} -> {data.get('to')}{_ANSI['off']}")
+        return 0
+
+    print(f"{_ANSI['bad']}unknown strategy action: {act}{_ANSI['off']}")
+    return 1
+
+
 def cmd_pay(args: argparse.Namespace) -> int:
     """Billing & wallet — always via the API (single billing authority)."""
     t = I18N[args.lang]
@@ -1122,6 +1294,65 @@ def _parser() -> argparse.ArgumentParser:
     uc.set_defaults(fn=cmd_user)
     ul = ua.add_parser("list", help="list identities")
     ul.set_defaults(fn=cmd_user)
+
+    st = sub.add_parser("strategy", help="user strategy intake: describe -> vet -> test -> governed production")
+    sta = st.add_subparsers(dest="action", required=True)
+
+    sp_p = sta.add_parser("propose", help="describe a strategy in words; the project vets it immediately")
+    sp_p.add_argument("--text", required=True,
+                      help="natural-language strategy description")
+    sp_p.add_argument("--asset", default="XAUUSD")
+    sp_p.add_argument("--family", default="",
+                      help="detector hint: ict / fvg / order block / liquidity sweep / bos / wyckoff / pattern")
+    sp_p.add_argument("--trigger", default="",
+                      choices=("", "zone_touch", "close_confirm", "retest_confirm",
+                               "m1_refinement"))
+    sp_p.add_argument("--exit", default="",
+                      choices=("", "fixed_r", "liquidity_target", "time_stop",
+                               "structure_trail"))
+    sp_p.add_argument("--min-rr", type=float, default=None)
+    sp_p.add_argument("--session", default="",
+                      choices=("", "london", "newyork", "asia", "sydney"))
+    sp_p.add_argument("--by", default="operator")
+    sp_p.set_defaults(fn=cmd_strategy)
+
+    sp_v = sta.add_parser("vet", help="re-run the scrutinizer after revising hints (REVISE loop)")
+    sp_v.add_argument("id")
+    sp_v.add_argument("--family", default="")
+    sp_v.add_argument("--trigger", default="",
+                      choices=("", "zone_touch", "close_confirm", "retest_confirm",
+                               "m1_refinement"))
+    sp_v.add_argument("--exit", default="",
+                      choices=("", "fixed_r", "liquidity_target", "time_stop",
+                               "structure_trail"))
+    sp_v.add_argument("--min-rr", type=float, default=None)
+    sp_v.add_argument("--session", default="",
+                      choices=("", "london", "newyork", "asia", "sydney"))
+    sp_v.set_defaults(fn=cmd_strategy)
+
+    sp_t = sta.add_parser("test", help="run the vetted strategy through the lab pipeline (blocking)")
+    sp_t.add_argument("id")
+    sp_t.add_argument("--source", default="mt5",
+                      choices=("mt5", "csv", "synthetic"))
+    sp_t.add_argument("--count", type=int, default=20000)
+    sp_t.add_argument("--cost-r", type=float, default=0.0)
+    sp_t.add_argument("--timeout", type=int, default=300)
+    sp_t.set_defaults(fn=cmd_strategy)
+
+    sp_l = sta.add_parser("list", help="list intake entries")
+    sp_l.add_argument("--status", default="",
+                      choices=("", "PROPOSED", "VETTED", "REVISE", "REJECTED",
+                               "TESTED"))
+    sp_l.set_defaults(fn=cmd_strategy)
+
+    sp_s = sta.add_parser("show", help="show one intake entry")
+    sp_s.add_argument("id")
+    sp_s.set_defaults(fn=cmd_strategy)
+
+    sp_m = sta.add_parser("promote", help="advance a tested strategy up the governed ladder")
+    sp_m.add_argument("id")
+    sp_m.add_argument("--by", default="operator")
+    sp_m.set_defaults(fn=cmd_strategy)
 
     ex = sub.add_parser("exercise", help="run an in-process demo exercise (populates live veto/learning feeds)")
     ex.add_argument("--seconds", type=float, default=20.0)

@@ -1299,17 +1299,18 @@ Macro                Change               Bybit
 | DSPy AI Program Evolution | ✅ مكتمل (موصول محليًا؛ 1b/3b مُقاستان) | `ai/dspy/README.md`, `tradraig dspy …` |
 | Operator Console — طبل ثنائي اللغة | ✅ 17 أمرًا + فحص حي | `tools/tradraig.py` |
 | Dashboard (Control Plane) | ✅ 11 صفحة + LIVE wiring | `TAIG Dash/` — `tsc` نظيف، `vite build` سليم |
-| الاختبارات | ✅ **619** عبر pytest | حسّي السطح + الحوكمة + الأحداث + التعافي + الجلسة الحية + جسر WebSocket اللحظي + الفواتير 16 + CEX ven/poke (curl/ISO) … |
+| الاختبارات | ✅ **632** عبر pytest | حسّي السطح + الحوكمة + الأحداث + التعافي + الجلسة الحية + جسر WebSocket اللحظي + الفواتير 16 + CEX ven/poke (curl/ISO) + استراتيجيات المستخدم 12 (وصف→تحقيق→اختبار→ترقية محكومة) … |
 | Postgres إنتاجي | ✅ **موثّق على خادم حقيقي 2026-09-25** — كامل السويت 584 ناجحًا على PostgreSQL 16.15 (EDB محمول `E:\Postgres\pgsql`، كتلة `data16` منفذ 55432، إطلاق عبر WMI — لا تثبيت على C:) | `scripts\postgres_prod_test.ps1` + `scripts/postgres_deploytest.py` — خمسة جداول قانونية (`users/experiences/risk_vetoes/ops_runs/audit`)، وSQLite يبقى الافتراضي (`POSTGRES_HOST` فارغ) |
 | دفع (Stripe/Pi) | ✅ **نظرة الرمل أولًا 2026-09-25** — محفظة + دفتر حساب + موفّرون (`governance/payments.py`): sandbox حتمي بلا شبكة؛ Stripe موصول (REST حقيقي، يُفعَّل فقط بـ `PAYMENTS_MODE=live` + `PAYMENTS_LIVE_ALLOWED=1` + مفتاح، الشحن PENDING حتى webhook مُتحقَّق منه HMAC-SHA256)؛ Pi مسخّرة صادقة غير موصولة. برهان حي 9/9 على uvicorn حقيقي (:8124) — أساس **619** | `tradraig pay status|providers|charge|wallet|refund`، `/payments/*`، `.env.example` |
 | MT5 websocket إنتاجي | ✅ **قناة websocket اللحظية مكتملة ومثبتة 2026-09-25** (593 عبر pytest + wire-up حي عبر TCP على uvicorn) — الربط بمضيف التداول الإنتاجي قرار استضافة مستقبلي ⛔ | `operations/ws_bridge.py`, `scripts/mt5_bridge_proxy.py`, `execution/bridge.py` |
+| Strategy Lab — استراتيجيات المستخدم | ✅ **جديدة 2026-09-25: «يصف المستخدم → المشروع يدقّق → يختبر → بعد التحقق ترقية محكومة»**: `research/strategy_lab/user_intake.py` — `UserStrategySpec` + `VetEngine` (تقديم يُدقَّق فورًا: VETTED/REVISE/REJECTED حسب التعيين الحتمي للعائلة: سيولة/متابعة FVG/كسر OB/BOS/CHoCH/Wyckoff/أنماط) + `IntakeBoard` (دفتر `user_intake.json` دائم) + `run_user_test` (نفس خط مختبر الاستراتيجيات؛ عند PASS يُسجَّل ويُرفق التحقق). الترقية للحالة الإنتاجية عبر ReviewLoop المحكوم فقط (`_lab_apply_guarded`، HTTP 409 عند تشغيل المحرك؛ CANDIDATE→VALIDATED يتطلب تقرير نجاح). API `/strategies/intake*` + الكونسول `tradraig strategy propose|vet|test|list|show|promote` — 12 اختبارًا (المرحلة 1/2 من مواصفة `research/USER_STRATEGY_INTAKE_AND_DEPLOYMENT_SPEC.md`؛ الربط بالمضيف/الحساب (المرحلة 3/4) مؤجّل) | `research/strategy_lab/user_intake.py`, `operations/api.py`, `tools/tradraig.py` |
 
 التحقق من جاهزية الأسلاك في أي وقت (غير مدمر):
 
 ```text
 powershell -ExecutionPolicy Bypass -File scripts\verify_all.ps1   # البوابات كلها بأمر واحد (ruff → py_compile → pytest → tsc/vite → smoke)
 python -m ruff check .                                        # فحص نمط نظيف (0)
-python -m pytest -q                                  # 619 اختبارًا
+python -m pytest -q                                  # 632 اختبارًا
 cd "TAIG Dash" && node .\node_modules\typescript\bin\tsc --noEmit && node .\node_modules\vite\bin\vite.js build
 powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1     # 7/7 على خادم uvicorn حقيقي
 ```

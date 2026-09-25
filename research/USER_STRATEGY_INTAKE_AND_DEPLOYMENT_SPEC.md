@@ -2,8 +2,20 @@
 ## Conversational Strategy Creation, Validation, Approval, and Account Binding
 
 **Last Updated:** 2026-09-11
-**Status:** Active Design Document
+**Status:** Active Design Document — **Phase 1/2 IMPLEMENTED 2026-09-25** (see Implementation Status note below)
 **Scope:** User-authored strategies, conversational intake, lab validation, approval flow, MT5/CEX deployment
+
+---
+
+> ## ⚠️ Implementation Status Note (2026-09-25)
+>
+> **Implemented (Phase 1/2):** user describes a strategy → the project scrutinizes it → the lab tests it → after validation it can be promoted under the governed ladder.
+> - Entry point: API `POST /strategies/intake` (auto-vets on propose) + console `tradraig strategy propose|vet|test|list|show|promote`.
+> - Implementation: `research/strategy_lab/user_intake.py` (`UserStrategySpec`, `VetEngine` → VETTED/REVISE/REJECTED, `IntakeBoard` persisted in `research/strategy_lab/data/user_intake.json`, `run_user_test` reuses the Strategy Lab pipeline).
+> - Promotion is governed, not free-form: `promote` runs through `ReviewLoop.apply` via `_lab_apply_guarded` (HTTP 409 while the engine runs; CANDIDATE→VALIDATED requires a passing validation report, 409 `"promotion not allowed"` otherwise).
+> - Naming deviation: implemented under `/strategies/intake` + `user_intake.py` rather than the spec's suggested `/user-strategies` — aligned with the existing `/strategies` resource by decision (see PROJECT_MAP DECISION_LOG 2026-09-25).
+>
+> **Not yet implemented (Phase 3/4):** deployment approval wiring, **venue/account binding** to MT5/CEX execution accounts, and runtime monitoring/quarantine automation for user strategies (external/deployment-host decisions + account binding remain open).
 
 ---
 

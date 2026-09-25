@@ -1369,17 +1369,19 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1     # 7/7 على
 | F5: حماية `PositionManager` من تعاقد محوّل غير مكتمل (لا انهيار، تسجيل صريح) | `operations/position_manager.py` | اختبار |
 | F6: غلق المدى الأخير الآن — E3/E4/L3/L4 | `core/state.py`, `execution/mt5_adapter.py`, `operations/live_engine.py`, `operations/position_manager.py`, `core/pipeline.py`, `learning/experience.py`, `research/strategy_lab/live_feed.py`, `research/strategy_lab/registry.py`, `research/strategy_lab/contracts.py`, `scripts/strategy_lab_run.py`, `ai/dspy/intake.py`, `operations/api.py` | ✅ مُعالَج — 14 اختبار انحدار جديد، cru **584 عبر pytest** |
 
-# الملحق ج: عالم التداول والترتيب (2026-09-25)
+# الملحق ج: عالم التداول والترتيب (2026-09-25، محدَّث)
 
-قرار المشغّل: **BTC هو الأصل الرئيسي والذهب ثانيًا والبقية حسب الاختيار**. يُنفَّذ عبر
-محركي التنفيذ بسّكات تصلهما الأوراق المالية المتاحة:
+قرار المشغّل: **BTC هو الأصل الرئيسي والذهب ثانيًا والبقية حسب الاختيار**، وBTC متاح
+على **وسيط MT5 الحالي مباشرة** (تحقُّق حي `symbols_get()`: الرمز `BTCUSD` بين 60 رمزًا،
+`trade_mode=4` تداول كامل، 0.01–100 لوت). يُنفَّذ على سكّتي التنفيذ معًا:
 
 | الترتيب | الأصل | السكة | الرمز (الافتراضي) | الملاحظة |
 | --- | --- | --- | --- | --- |
-| 1 | **BTC (fireman الرئيسي)** | CEX (Binance/Bybit/OKX) | `BTCUSDT` في `CEX_SYMBOLS` | تغذية عامة مجانية؛ الحشو ورقي افتراضيًا (`CEX_MODE=paper`)، التداول الحي خلف `CEX_LIVE_ALLOWED=1`+مفاتيح |
-| 2 | **الذهب (XAUUSD)** | MT5 (FTTrading-Server، ديمو حي) | `XAUUSD` في `MT5_SYMBOLS` | موثّق حيًا: تعبئة/إغلاق/سجل طويلة الأمد |
-| 3+ | بقية الأزواج حسب الاختيار | CEX أو MT5 | تحرير `CEX_SYMBOLS` / `MT5_SYMBOLS` (قائمة، مفصولة بفواصل) | ملاحظة الواقع: **كتالوج FTTrading-Server خالٍ من العملات الرقمية** (صفر رموز BTC على التيرمنال — تحقّق `symbols-0.dat`)؛ لذا BTC يسكن سكة CEX حصرًا. كتالوج MT5 المتاح للاختيار (بالأحياز): `EURUSD,GBPUSD,USDJPY,USDCAD,AUDUSD,NZDUSD,USDCHF,USDCNH,USDSEK,SP500m,NVDA,AMD,MSFT,INTC` |
+| 1 | **BTC (العرب الرئيسي)** | MT5 النموذج الحي (FTTrading-Server) | `BTCUSD` في `MT5_SYMBOLS` | مُفعَّل الآن: شموع كاملة + تنفيذ حقيقي على المنصة |
+| 1′ | **BTC (نسخة CEX)** | CEX (Binance/Bybit/OKX) | `BTCUSDT` في `CEX_SYMBOLS` | نموذج ورقي مراقبة افتراضيًا (`CEX_MODE=paper`)؛ الحي خلف البوابة `CEX_LIVE_ALLOWED=1`+مفاتيح |
+| 2 | **الذهب (XAUUSD)** | MT5 (FTTrading-Server) | `XAUUSD` في `MT5_SYMBOLS` | موثّق حيًا: تعبئة/إغلاق/سجل طويل |
+| 3+ | بقية الأزواج حسب الاختيار | MT5 أو CEX | تحرير `MT5_SYMBOLS` / `CEX_SYMBOLS` (قائمة مفصولة بفواصل) | كتالوج MT5 المتاح: `BTCUSD,XAUUSD,EURUSD,GBPUSD,USDJPY,USDCAD,AUDUSD,NZDUSD,USDCHF,USDCNH,USDSEK,SP500m,NVDA,AMD,MSFT,INTC` |
 
-الزرقان متوازنان من نفس `main.py`: `--mt5` (سكة السمسار) و`--cex` (سكة العملات الرقمية)
-معًا = الكون الكامل «BTC أولًا، الذهب ثانيًا، والباقي اختياري». كل أصل يجري في `TradingLoop`
-مستقل له (نظام/توقيت/مدرس) مع إدارة مراكز/مخاطر منفصلة لكل رمز.
+ملاحظة فنية: كاشف الرموز المحلي (`mt5-dev\Bases\Default\Symbols\*.dat`) قديم ولا يعكس
+الكتالوج الدفعي؛ **سلطة التعرّف هي استعلام التيرمنال الحي** (`symbols_get()`). كل أصل
+يجري في `TradingLoop` مستقل له (نظام/توقيت/مدرس) مع إدارة مراكز/مخاطر منفصلة لكل رمز.

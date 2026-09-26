@@ -208,12 +208,13 @@ def http_json(url: str, timeout: float = 2.5) -> Tuple[bool, Any]:
 
 
 def http_post_json(url: str, payload: Dict[str, Any],
-                   timeout: float = 5.0) -> Tuple[Optional[int], Any]:
+                   timeout: float = 5.0, method: str = "POST"
+                   ) -> Tuple[Optional[int], Any]:
     import urllib.error
     import urllib.request
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"}, method="POST")
+        headers={"Content-Type": "application/json"}, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
@@ -1124,6 +1125,114 @@ def cmd_pay(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_portfolio(args: argparse.Namespace) -> int:
+    """Portfolio intelligence & capital allocation — always via the API."""
+    t = I18N[args.lang]
+    base = f"http://127.0.0.1:{API_PORT}"
+    act = args.action
+
+    def _down() -> int:
+        print(f"{_ANSI['bad']}{t['u_api_down']}{_ANSI['off']}")
+        return 1
+
+    if act == "state":
+        ok, data = http_json(f"{base}/portfolio/state")
+        if not ok:
+            return _down()
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=1))
+            return 0
+        conc = data.get("concentration", {})
+        print(f"portfolio: equity={data.get('equity')} "
+              f"gross={data.get('gross_exposure')} "
+              f"net={data.get('net_exposure')} "
+              f"positions={data.get('open_positions')}")
+        print(f"  long={data.get('long_exposure')} "
+              f"short={data.get('short_exposure')} "
+              f"unreal={data.get('unrealized_pnl')} "
+              f"realized={data.get('realized_pnl')}")
+        print(f"  concentration: top={conc.get('top_symbol')} "
+              f"share={conc.get('top_share')}")
+        print(f"  by_strategy: {json.dumps(data.get('by_strategy', {}))}")
+        print(f"  by_symbol: {json.dumps(data.get('by_symbol', {}))}")
+        return 0
+
+    if act == "alloc":
+        ok, data = http_json(f"{base}/portfolio/allocation")
+        if not ok:
+            return _down()
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=1))
+            return 0
+        print(f"institutional default cap: "
+              f"{data.get('institutional_default_cap')}")
+        caps = data.get("explicit_caps") or {}
+        live = data.get("live_gate") or {}
+        if not caps:
+            print(f"{_ANSI['dim']}no explicit allocation caps set"
+                  f"{_ANSI['off']}")
+        for sid in sorted(caps):
+            d = live.get(sid, {})
+            print(f"  {sid:<24} cap={caps[sid]:.2%} "
+                  f"used={d.get('used_fraction', 0.0):.2%} "
+                  f"ok={d.get('ok')} ({d.get('reason', '')})")
+        return 0
+
+    if act == "correlation":
+        ok, data = http_json(f"{base}/portfolio/correlation")
+        if not ok:
+            return _down()
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=1))
+            return 0
+        pairs = data.get("pairs") or []
+        if not pairs:
+            print(f"{_ANSI['dim']}no co-tracked strategies yet — "
+                  f"needs enough ledger history{_ANSI['off']}")
+        for p in pairs:
+            tag = ("DIVERSIFYING" if p.get("diversifying")
+                   else ("CONCENTRATED" if p.get("concentrated") else ""))
+            print(f"  {p['a']:<12} ~ {p['b']:<12} "
+                  f"r={p['correlation']:<8} n={p['samples']} {tag}")
+        insuff = data.get("insufficient_data") or []
+        if insuff:
+            print(f"{_ANSI['dim']}insufficient data: {', '.join(insuff)}"
+                  f"{_ANSI['off']}")
+        return 0
+
+    if act == "set":
+        rc, data = http_post_json(f"{base}/portfolio/allocation", {
+            "strategy_id": args.strategy,
+            "cap": args.cap,
+            "allow_override": bool(args.allow_override),
+        })
+        if rc is None:
+            return _down()
+        if rc != 200:
+            print(f"{_ANSI['bad']}HTTP {rc}: {data}{_ANSI['off']}")
+            return 1
+        print(f"{_ANSI['ok']}allocation set: {data.get('strategy_id')} "
+              f"cap={data.get('cap_applied')} "
+              f"clamped={data.get('clamped_to_institutional')}{_ANSI['off']}")
+        return 0
+
+    if act == "clear":
+        rc, data = http_post_json(
+            f"{base}/portfolio/allocation/{args.strategy}", {},
+            method="DELETE")
+        if rc is None:
+            return _down()
+        if rc != 200:
+            print(f"{_ANSI['bad']}HTTP {rc}: {data}{_ANSI['off']}")
+            return 1
+        print(f"{_ANSI['ok']}allocation cleared: {data.get('strategy_id')} "
+              f"removed={data.get('removed')}{_ANSI['off']}")
+        return 0
+
+    print(f"{_ANSI['bad']}unknown action: {act}{_ANSI['off']}")
+    return 1
+
+
 def cmd_events(args: argparse.Namespace) -> int:
     """Tail the live operations event feed (dashboard/copy-engine consumer)."""
     t = I18N[args.lang]
@@ -1412,6 +1521,16 @@ def _parser() -> argparse.ArgumentParser:
     pay.add_argument("--description", default="")
     pay.add_argument("--charge", default="", help="charge_id (refund)")
     pay.set_defaults(fn=cmd_pay)
+
+    pf = sub.add_parser("portfolio", help="Portfolio intelligence & capital allocation (via the API)")
+    pf.add_argument("action", choices=("state", "alloc", "correlation", "set", "clear"),
+                    help="state | alloc | correlation | set | clear")
+    pf.add_argument("--strategy", default="", help="strategy_id (set/clear)")
+    pf.add_argument("--cap", type=float, default=0.0, help="allocation cap, fraction of equity (set)")
+    pf.add_argument("--allow-override", action="store_true",
+                    help="allow widening beyond the institutional default (audited)")
+    pf.add_argument("--json", action="store_true")
+    pf.set_defaults(fn=cmd_portfolio)
 
     bk = sub.add_parser("backup", help="snapshot durable canonical state to a ZIP (M6.4)")
     bk.add_argument("--out", default=None, help="destination dir (default <root>/backups)")

@@ -66,6 +66,7 @@ class ExecutionEngine:
             sl=candidate.stop_loss,
             tp=candidate.take_profit,
             candidate_id=candidate.candidate_id,
+            strategy_id=getattr(candidate, "strategy_id", None),
             status=OrderStatus.SUBMITTED,
         )
         state.add_order(order)
@@ -112,6 +113,7 @@ class ExecutionEngine:
             sl=order.sl,
             tp=order.tp,
             order_id=order.order_id,
+            strategy_id=getattr(order, "strategy_id", None),
         )
         state.add_position(position)
 

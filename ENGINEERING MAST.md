@@ -652,7 +652,7 @@ Every feature/auth-change closes only when **all** pass:
 ```text
 D:\One> python -m ruff check .                                         # lint must be zero (pyproject.toml)
 D:\One> powershell -ExecutionPolicy Bypass -File scripts\verify_all.ps1   # the whole gate in one command (any single-failure -> exit 1)
-D:\One> python -m pytest -q                                   # full suite (632 passing, baseline)
+D:\One> python -m pytest -q                                   # full suite (645 passing, baseline)
 D:\One\TAIG Dash> node .\node_modules\typescript\bin\tsc --noEmit && node .\node_modules\vite\bin\vite.js build
 D:\One> powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # live wiring: 7/7
 ```

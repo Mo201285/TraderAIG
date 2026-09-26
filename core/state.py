@@ -53,6 +53,7 @@ class OrderState:
     tp: Optional[float] = None
     status: OrderStatus = OrderStatus.PENDING
     candidate_id: Optional[str] = None
+    strategy_id: Optional[str] = None
     filled_price: Optional[float] = None
     slippage: float = 0.0
     commission: float = 0.0
@@ -75,6 +76,7 @@ class PositionState:
     tp: Optional[float] = None
     status: PositionStatus = PositionStatus.OPEN
     order_id: Optional[str] = None
+    strategy_id: Optional[str] = None
     open_time: float = field(default_factory=time.time)
     close_time: Optional[float] = None
     unrealized_pnl: float = 0.0

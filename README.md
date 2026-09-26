@@ -137,11 +137,17 @@ curl http://127.0.0.1:8000/system/health
 - **العقد المؤسسي** (`ENGINEERING MAST.md` §27/§28/§3.1): سلطة القرار لل Governance OS حصرًا؛ AI يفسّر
   ويقترح ولا يضع صفقات حية ولا يرقّي؛ الفرصة ≠ صفقة؛ الواجهة ليست مصدر حقيقة ولا تحمل أسرارًا؛
   منتج واحد/نموذج حالة واحد/حوكمة واحدة/تدقيق واحد/واجهات متعددة.
+- **ذكاء المحفظة وتخصيص رأس المال** (`portfolio/`) — بند أول من خريطة الطبقات العشر: تجميع تعرض المحفظة
+  (إجمالي/صافي/طويل/قصير بما يخصّ الرمز والاستراتيجية) عبر `PortfolioIntelligence.snapshot()`، سقوف
+  تخصيص دائمة لكل استراتيجية `CapitalAllocationBoard` (كل ما فوق سقف المؤسسة `20%` يُغلَّق تلقائيًا
+  إلا بتجاوز صريح) وتشتّت عبر `strategy_correlation()`؛ بوابة `portfolio_allocation` في Risk Governor
+  **تمرّ افتراضيًا** وتصبح صلبة فقط حين يضع المشغّل سقفًا صريحًا لاستراتيجية؛ `tradraig portfolio
+  state|alloc|correlation|set|clear` عبر API.
 
 ## الاختبارات
 
 ```bash
-python -m pytest -q                      # المجموعة الكاملة (632 اختباراً)
+python -m pytest -q                      # المجموعة الكاملة (645 اختباراً)
 python -m pytest tests/test_ai_dspy/     # طبقة الذكاء/برامج DSPy فقط
 cd "TAIG Dash" && node .\node_modules\typescript\bin\tsc --noEmit && node .\node_modules\vite\bin\vite.js build   # الواجهة: أنواع + بناء
 powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # فحص حي: إقلاع uvicorn حقيقي + قيادة الكونسول عبر HTTP

@@ -95,6 +95,7 @@ class RiskGovernor:
         checks.append(self._check_price_quality(candidate, reasons,
                                                 spread_ratio_limit))
         checks.append(self._check_strategy_gate(candidate, reasons))
+        checks.append(self._check_portfolio_allocation(candidate, reasons))
 
         approved = not reasons
         kind = RiskDecisionKind.APPROVED if approved else RiskDecisionKind.VETOED
@@ -257,6 +258,40 @@ class RiskGovernor:
             "research": 0, "candidate": 1, "validated": 2,
             "paper": 3, "production": 4, "quarantined": -1,
         }
+
+    def _check_portfolio_allocation(self, candidate: TradeCandidate,
+                                    reasons: List[str]) -> Dict:
+        """Capital Allocation gate (phase A portfolio intelligence).
+
+        Institutional law: a strategy with no *explicit* cap is governed by
+        the institutional default ceiling and is never blocked here. Once the
+        operator assigns an explicit allocation cap to a strategy, this check
+        becomes a hard gate: a candidate whose strategy has consumed its
+        capital budget is rejected regardless of signal quality.
+        """
+        from portfolio.investment import (
+            INSTITUTIONAL_STRATEGY_CAP,
+            allocation_board,
+            allocation_gate,
+        )
+        sid = getattr(candidate, "strategy_id", None)
+        if not sid:
+            return {"name": "portfolio_allocation", "passed": True,
+                    "detail": {"active": False, "strategy_id": None}}
+        if not allocation_board.has_cap(str(sid)):
+            return {"name": "portfolio_allocation", "passed": True,
+                    "active": False,
+                    "detail": {"strategy_id": str(sid),
+                               "cap_fraction": INSTITUTIONAL_STRATEGY_CAP,
+                               "note": "institutional default"}}
+        decision = allocation_gate.decide_candidate(candidate)
+        if not decision.ok:
+            reasons.append(
+                f"strategy {decision.strategy_id} capital budget consumed "
+                f"({decision.used_fraction:.2%} of {decision.cap_fraction:.2%})")
+        return {"name": "portfolio_allocation", "passed": decision.ok,
+                "active": True,
+                "detail": decision.as_dict()}
 
     def _max_sane_size(self, limit: Dict, symbol: Optional[str] = None) -> float:
         symbol = (symbol or "").upper()

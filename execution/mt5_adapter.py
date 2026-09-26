@@ -272,6 +272,9 @@ class MT5Adapter:
             setattr(pos, "origin", origin_meta["origin"])
             setattr(pos, "origin_magic", origin_meta["magic"])
             setattr(pos, "origin_comment", origin_meta["comment"])
+            sid = self._strategy_of_position(p)
+            if sid:
+                setattr(pos, "strategy_id", sid)
             remote[str(p.ticket)] = pos
             state.update_position(pos)
 
@@ -893,6 +896,7 @@ class LiveMT5Executor:
             sl=candidate.stop_loss,
             tp=candidate.take_profit,
             candidate_id=candidate.candidate_id,
+            strategy_id=getattr(candidate, "strategy_id", None),
             status=OrderStatus.SUBMITTED,
         )
         state.add_order(order)

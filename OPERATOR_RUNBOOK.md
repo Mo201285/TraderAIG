@@ -151,6 +151,22 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1
 # SMOKE: 7 steps, 7 passed, 0 failed
 ```
 
+## ذكاء المحفظة وتخصيص رأس المال (Phase A)
+
+بوابة `portfolio_allocation` في حاكم المخاطر **تمرّ افتراضيًا** (استراتيجية بلا سقف
+صريح لا تُحجب أبدًا هنا) وتصبح صلبة فقط حين يضع المشغّل سقفًا صريحًا لاستراتيجية:
+
+```powershell
+python tools\tradraig.py portfolio state          # تعرض المحفظة: إجمالي/صافي + لكل رمز/استراتيجية + تركّز
+python tools\tradraig.py portfolio correlation     # ارتباط PnL بين الاستراتيجيات (تشتيت/تركّز؛ نافذة من 3 صفقات فما فوق)
+python tools\tradraig.py portfolio alloc           # السقوف الصريحة الحالية + السقف المؤسسي
+python tools\tradraig.py portfolio set --strategy s1 --cap 0.15    # سقف 15% — كل ما فوق 20% يُغلَّق لمستوى المؤسسة إلا بـ --allow-override
+python tools\tradraig.py portfolio clear --strategy s1             # حذف سقف صريح = عودة للوضع الافتراضي (لا يُحجب)
+```
+
+السقوف دائمة في `portfolio/data/allocation.json` (حالة تشغيل، مستبعدة من git)؛
+وضع سقف/إزالته يُسجَّل في سجل التدقيق (`allocation.set` / `allocation.clear`).
+
 ## عرَض → إجراء (Symptom → Action)
 
 | العرَض | التفسير | الإجراء |
@@ -164,6 +180,7 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1
 | تحذيرات المخاطر / سجل التعلّم فارغان | لا تمرين سوقي بعد — لا تزوير | `python tools\tradraig.py exercise` (ملء حقيقي داخل العملية) ثم حدّث اللوحة |
 | متابعة حالة التمرين | جارٍ / آخر تشغيل / مدته | `python tools\tradraig.py exercise --status` |
 | `doctor` يخرج 1 | فشل حقيقي (API/Ollama/… متوقف) | نفّذ ما يعرضه العمود "fix" |
+| استراتيجية مرفوضة بسبب "capital budget consumed" | يُوجد سقف تخصيص صريح لها وقد استُنفد | `python tools\tradraig.py portfolio alloc --json` لرؤية السقف، ثم زِد `--allow-override` أو clear |
 | RAM حرة < 1GB | حد التحميل | حرّر الذاكرة؛ استخدم 1b فقط |
 | البوابة «OFF» | افتراض التصميم | `gate on` + أعد تشغيل backend إن أردت تفعيلها |
 | موافقة تغيير ترجع 409 | المحرك قيد التشغيل (حارس السلامة) | الطلب يبقى معلّقًا — أعد المحاولة لاحقًا، لا نصف تطبيق |
@@ -173,7 +190,7 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1
 ## الاختبارات
 
 ```powershell
-python -m pytest -q                        # المجموعة الكاملة (632)
+python -m pytest -q                        # المجموعة الكاملة (645)
 python -m pytest tests/test_ai_dspy/       # طبقة DSPy فقط
 python tests\test_operations\test_operator_console.py   # عبر pytest
 python scripts\mt5_live_session.py --no-trade   # إثبات التغذية الحية قراءةً فقط (بدون أمر)

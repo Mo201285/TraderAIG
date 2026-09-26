@@ -472,6 +472,99 @@ def risk_vetoes(limit: int = 200) -> List[Dict]:
 
 
 # ---------------------------------------------------------------------------
+# Portfolio Intelligence (Phase A)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/portfolio/state")
+def portfolio_state() -> Dict:
+    """Portfolio snapshot: gross/net exposure per symbol and strategy,
+    concentration, and the realized/unrealized PnL view."""
+    from portfolio.investment import portfolio_intelligence
+    return portfolio_intelligence.snapshot().as_dict()
+
+
+@app.get("/portfolio/correlation")
+def portfolio_correlation() -> Dict:
+    """Cross-strategy PnL correlation matrix over the experience ledger.
+
+    Strategies with fewer pairwise samples are reported as insufficient_data
+    rather than fabricated with a number (dashboard honesty).
+    """
+    from portfolio.correlation import strategy_correlation
+    from learning.experience import ledger as _ledger
+    return strategy_correlation(ledger_ref=_ledger)
+
+
+@app.get("/portfolio/allocation")
+def portfolio_allocation() -> Dict:
+    """Explicit allocation caps plus the gate's live view for every strategy."""
+    from portfolio.investment import allocation_board, allocation_gate
+    caps = allocation_board.caps()
+    live: Dict[str, Dict] = {}
+    for sid in sorted(caps):
+        decision = allocation_gate.check(sid)
+        live[sid] = decision.as_dict()
+    return {
+        "institutional_default_cap": allocation_board.cap_for("__default__"),
+        "explicit_caps": caps,
+        "live_gate": live,
+    }
+
+
+@app.post("/portfolio/allocation")
+def portfolio_allocation_set(payload: Dict) -> Dict:
+    """Set a strategy's capital allocation cap (fraction of equity).
+
+    Widening beyond the institutional default requires ``allow_override=true``
+    and is audited. Single authority: only this API mutates allocation state.
+    """
+    from portfolio.investment import (
+        MIN_CAP,
+        MAX_CAP,
+        INSTITUTIONAL_STRATEGY_CAP,
+        allocation_board,
+    )
+    sid = str((payload or {}).get("strategy_id") or "").strip()
+    cap = float((payload or {}).get("cap") or 0.0)
+    if not sid:
+        raise HTTPException(status_code=400, detail="strategy_id is required")
+    if not (MIN_CAP <= cap <= MAX_CAP):
+        raise HTTPException(
+            status_code=400,
+            detail=f"cap must be in [{MIN_CAP}, {MAX_CAP}] (fraction of equity)")
+    allow_override = bool((payload or {}).get("allow_override"))
+    stored = allocation_board.set_cap(sid, cap, allow_override=allow_override)
+    if stored is None:
+        raise HTTPException(status_code=400, detail="cap out of bounds")
+    if not allow_override and cap > INSTITUTIONAL_STRATEGY_CAP:
+        stored = INSTITUTIONAL_STRATEGY_CAP
+    try:
+        identity.record_audit("portfolio", "allocation.set", {
+            "strategy_id": sid, "cap": cap, "applied": stored,
+            "widened": cap > INSTITUTIONAL_STRATEGY_CAP,
+        })
+    except Exception:  # noqa: BLE001
+        pass
+    return {"strategy_id": sid, "cap_applied": stored,
+            "clamped_to_institutional": cap > INSTITUTIONAL_STRATEGY_CAP}
+
+
+@app.delete("/portfolio/allocation/{strategy_id}")
+def portfolio_allocation_clear(strategy_id: str) -> Dict:
+    """Remove an explicit allocation cap (falls back to institutional default)."""
+    from portfolio.investment import allocation_board
+    removed = allocation_board.clear_cap(strategy_id)
+    try:
+        identity.record_audit("portfolio", "allocation.clear", {
+            "strategy_id": strategy_id, "removed": removed,
+        })
+    except Exception:  # noqa: BLE001
+        pass
+    return {"strategy_id": strategy_id, "removed": removed}
+
+
+# ---------------------------------------------------------------------------
 # Learning
 # ---------------------------------------------------------------------------
 

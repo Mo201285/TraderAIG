@@ -167,6 +167,25 @@ python tools\tradraig.py portfolio clear --strategy s1             # حذف سق
 السقوف دائمة في `portfolio/data/allocation.json` (حالة تشغيل، مستبعدة من git)؛
 وضع سقف/إزالته يُسجَّل في سجل التدقيق (`allocation.set` / `allocation.clear`).
 
+## الصلاحيات جهة الخادم (Entitlements، 28.17)
+
+نقاط القرار (سياسة المخاطر، محرك/تنفيذ CEX وMT5، تخصيص رأس المال،
+`research promote/quarantine/revalidate`، `ops/review/apply`، طلبات التغيير،
+ترقية/اختبار استراتيجيات المستخدم) تقفل على اشتراك **الهوية الأساسية** (أول مستخدم) قبل
+أي تغيير دائم؛ اللوحة تعكس فقط ولا تمنح. لا هوية بعد = وضع bootstrap: البوابة تُبلَّغ `inactive`
+وتمر بصدق (لا "مفتوحة مزيفة")؛ بمجرد وجود هوية تصبح صلبة:
+
+```powershell
+python tools\tradraig.py api /entitlements/status --get   # هل البوابة فعّالة؟ من هو المشغّل؟
+python tools\tradraig.py user list                        # من الهوية الحالية؟ ما خطتها وحالتها؟
+```
+
+الحالة الفعلية: `active + institutional` يعطي `can_trade` + `can_manage_risk`؛
+`active + pro` يعطي `can_trade` فقط؛ `pending/free` لا يعطي شيئًا. الرفض يُسجَّل
+`entitlement.denied`. القنوات تكون بلا أذونات فعلية — الهدف: المشغّل الحقيقي يفعّل اشتراكه من
+نفسه بعد أن يكسبه عبر `/payments/charge` أو يُفعّله مباشرة عبر `/users/{id}/subscription/activate`
+(المسار ذاته الذي استخدمته لوحة الدفع). تستمر خدمات الدفع مفتوحة لأنها طريق الاكتساب وليست صفقة قرار.
+
 ## عرَض → إجراء (Symptom → Action)
 
 | العرَض | التفسير | الإجراء |
@@ -181,6 +200,7 @@ python tools\tradraig.py portfolio clear --strategy s1             # حذف سق
 | متابعة حالة التمرين | جارٍ / آخر تشغيل / مدته | `python tools\tradraig.py exercise --status` |
 | `doctor` يخرج 1 | فشل حقيقي (API/Ollama/… متوقف) | نفّذ ما يعرضه العمود "fix" |
 | استراتيجية مرفوضة بسبب "capital budget consumed" | يُوجد سقف تخصيص صريح لها وقد استُنفد | `python tools\tradraig.py portfolio alloc --json` لرؤية السقف، ثم زِد `--allow-override` أو clear |
+| نقطة قرار رجعت `403 entitlement '...' required` | الهوية الأساسية لا تملك الصلاحية (اشتراك pending/ناقص) | افحص `user list` — فعّل الاشتراك (`/users/{id}/subscription/activate`) أو قم بترقية الخطة؛ الرفض موثّق في `/audit` |
 | RAM حرة < 1GB | حد التحميل | حرّر الذاكرة؛ استخدم 1b فقط |
 | البوابة «OFF» | افتراض التصميم | `gate on` + أعد تشغيل backend إن أردت تفعيلها |
 | موافقة تغيير ترجع 409 | المحرك قيد التشغيل (حارس السلامة) | الطلب يبقى معلّقًا — أعد المحاولة لاحقًا، لا نصف تطبيق |
@@ -190,7 +210,7 @@ python tools\tradraig.py portfolio clear --strategy s1             # حذف سق
 ## الاختبارات
 
 ```powershell
-python -m pytest -q                        # المجموعة الكاملة (645)
+python -m pytest -q                        # المجموعة الكاملة (656)
 python -m pytest tests/test_ai_dspy/       # طبقة DSPy فقط
 python tests\test_operations\test_operator_console.py   # عبر pytest
 python scripts\mt5_live_session.py --no-trade   # إثبات التغذية الحية قراءةً فقط (بدون أمر)

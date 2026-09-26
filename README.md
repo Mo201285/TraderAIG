@@ -143,11 +143,16 @@ curl http://127.0.0.1:8000/system/health
   إلا بتجاوز صريح) وتشتّت عبر `strategy_correlation()`؛ بوابة `portfolio_allocation` في Risk Governor
   **تمرّ افتراضيًا** وتصبح صلبة فقط حين يضع المشغّل سقفًا صريحًا لاستراتيجية؛ `tradraig portfolio
   state|alloc|correlation|set|clear` عبر API.
+- **الصلاحيات جهة الخادم (28.17)** — `operations/api.py::_guard` يقفل نقاط القرار (سياسة المخاطر،
+  محرك/تنفيذ CEX وMT5، تخصيص رأس المال، research promote/quarantine/revalidate، مراجعة التشغيل،
+  طلبات التغيير، ترقية/اختبار استراتيجيات المستخدم) على اشتراك الهوية الأساسية؛ في وضع bootstrap
+  (لا هوية بعد) تُبلَّغ البوابة `inactive` وتمر بصدق، وبمجرد وجود هوية تصبح صلبة — 403 + سطر تدقيق
+  عند الرفض. `GET /entitlements/status` يعرض الحالة الفعلية.
 
 ## الاختبارات
 
 ```bash
-python -m pytest -q                      # المجموعة الكاملة (645 اختباراً)
+python -m pytest -q                      # المجموعة الكاملة (656 اختباراً)
 python -m pytest tests/test_ai_dspy/     # طبقة الذكاء/برامج DSPy فقط
 cd "TAIG Dash" && node .\node_modules\typescript\bin\tsc --noEmit && node .\node_modules\vite\bin\vite.js build   # الواجهة: أنواع + بناء
 powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # فحص حي: إقلاع uvicorn حقيقي + قيادة الكونسول عبر HTTP

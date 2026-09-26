@@ -37,6 +37,45 @@ app = FastAPI(
     description="Governance, Research, Decision, Risk/Execution, Learning.",
 )
 
+
+def _guard(ent: Entitlement, owner_user_id: Optional[str] = None) -> Dict:
+    """Server-side authoritative entitlement gate (ENGINEERING MAST 28.17).
+
+    The acting identity is the primary (first configured) user, or the
+    explicit ``owner_user_id`` when an endpoint scopes to one owner. While NO
+    identity is configured the control plane is in bootstrap mode and passes
+    (a fresh install has no principal to be checked against); the dashboard
+    surfaces "no identity yet — create one via POST /users". Once a primary
+    identity exists, this gate is HARD: a decision endpoint that mutates
+    durable state (risk policy, engine, allocation, review apply, change
+    requests, MT5 connect, research promote/quarantine/revalidate) is rejected
+    with 403 when the acting identity lacks the required entitlement — the
+    dashboard never substitutes for this authority.
+    """
+    primary = identity.list_users()
+    actor = owner_user_id or (primary[0].user_id if primary else None)
+    if actor is None:
+        return {"active": False, "actor": None, "entitlement": ent.value}
+    user = identity.get_user(actor)
+    if user is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    allowed = identity.can(actor, ent)
+    if not allowed:
+        try:
+            identity.record_audit(
+                "api", "entitlement.denied", "User", actor,
+                {"entitlement": ent.value,
+                 "status": user.subscription_status.value,
+                 "plan": user.plan.value})
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(
+            status_code=403,
+            detail=(f"entitlement '{ent.value}' required — "
+                    f"subscription={user.subscription_status.value}, "
+                    f"plan={user.plan.value}"))
+    return {"active": True, "actor": actor, "entitlement": ent.value}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -246,6 +285,30 @@ def can_do(user_id: str, entitlement: str) -> Dict:
     except ValueError:
         raise HTTPException(status_code=400, detail=f"unknown entitlement {entitlement}")
     return {"allowed": identity.can(user_id, ent)}
+
+
+@app.get("/entitlements/status")
+def entitlements_status() -> Dict:
+    """Effective server-side authority: is the entitlement gate live, and for
+    which acting identity? The gate is hard once a primary identity exists;
+    before that the control plane is in bootstrap mode (dashboard shows
+    "create your identity first")."""
+    primary = identity.list_users()
+    actor = primary[0].user_id if primary else None
+    if actor is None:
+        return {
+            "enforcement_active": False,
+            "actor": None,
+            "bootstrap": True,
+            "entitlements": {},
+        }
+    ent = {e.value: identity.can(actor, e) for e in Entitlement}
+    return {
+        "enforcement_active": True,
+        "actor": actor,
+        "bootstrap": False,
+        "entitlements": ent,
+    }
 
 
 @app.get("/users/current/plan")
@@ -519,6 +582,7 @@ def portfolio_allocation_set(payload: Dict) -> Dict:
     Widening beyond the institutional default requires ``allow_override=true``
     and is audited. Single authority: only this API mutates allocation state.
     """
+    _guard(Entitlement.CAN_MANAGE_RISK)
     from portfolio.investment import (
         MIN_CAP,
         MAX_CAP,
@@ -553,6 +617,7 @@ def portfolio_allocation_set(payload: Dict) -> Dict:
 @app.delete("/portfolio/allocation/{strategy_id}")
 def portfolio_allocation_clear(strategy_id: str) -> Dict:
     """Remove an explicit allocation cap (falls back to institutional default)."""
+    _guard(Entitlement.CAN_MANAGE_RISK)
     from portfolio.investment import allocation_board
     removed = allocation_board.clear_cap(strategy_id)
     try:
@@ -644,6 +709,7 @@ def send_test_alert(payload: Dict) -> Dict:
 
 @app.put("/users/{user_id}/risk-policy")
 def set_user_risk_policy(user_id: str, payload: Dict) -> Dict:
+    _guard(Entitlement.CAN_MANAGE_RISK, owner_user_id=user_id)
     allowed_fields = {
         "max_risk_per_trade", "max_daily_loss", "max_drawdown",
         "max_open_positions", "max_leverage", "require_stop_loss",
@@ -697,6 +763,7 @@ def cex_positions() -> List[Dict]:
 @app.post("/cex/paper/execute")
 def cex_paper_execute(payload: Dict) -> Dict:
     """Paper-only on-demand candidate execution (no live gate involved)."""
+    _guard(Entitlement.CAN_TRADE)
     from core.contracts import TradeDirection
     from decision.thesis import TradeCandidate
     from execution.cex.gateway import cex_gateway
@@ -735,6 +802,7 @@ def cex_engine_status() -> Dict:
 def cex_engine_start(payload: Dict) -> Dict:
     """Start the CEX feed loop. Defaults to paper watch; venue orders only
     when the gate is explicitly armed (CEX_MODE/CEX_LIVE_ALLOWED/keys)."""
+    _guard(Entitlement.CAN_TRADE)
     from operations.cex_engine import cex_live_engine
     interval = float(payload.get("interval", 15))
     symbols = payload.get("symbols")
@@ -746,6 +814,7 @@ def cex_engine_start(payload: Dict) -> Dict:
 
 @app.post("/cex/engine/stop")
 def cex_engine_stop() -> Dict:
+    _guard(Entitlement.CAN_TRADE)
     from operations.cex_engine import cex_live_engine
     cex_live_engine.stop()
     return {"stopped": True, "status": cex_live_engine.status()}
@@ -876,12 +945,14 @@ def mt5_status() -> Dict:
 
 @app.post("/mt5/connect")
 def mt5_connect() -> Dict:
+    _guard(Entitlement.CAN_TRADE)
     mt5_adapter.connect()
     return mt5_adapter.status()
 
 
 @app.post("/mt5/sync")
 def mt5_sync(payload: Dict) -> Dict:
+    _guard(Entitlement.CAN_TRADE)
     symbols = payload.get("symbols")
     result = mt5_adapter.run_sync_cycle(symbols)
     return {"account": state.account.as_dict(),
@@ -891,6 +962,7 @@ def mt5_sync(payload: Dict) -> Dict:
 
 @app.post("/mt5/watcher")
 def mt5_watcher(payload: Dict) -> Dict:
+    _guard(Entitlement.CAN_TRADE)
     interval = payload.get("interval_seconds", 5.0)
     symbols = payload.get("symbols")
     started = mt5_adapter.start_watcher(interval_seconds=interval,
@@ -1026,6 +1098,7 @@ def lab_revalidate(payload: Dict) -> Dict:
     - lab_veto: strict lab cap, governance cannot override.
     - gov_approve: lab closes; governance may override to approve.
     """
+    _guard(Entitlement.CAN_MANAGE_RISK)
     from research.strategy_lab.contracts import DrawdownMode, DrawdownPolicy
     if not _lab_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="another run is active")
@@ -1139,6 +1212,7 @@ def _lab_apply_guarded(kind: str, strategy_id: str, reason: str) -> Dict:
 @app.post("/research/promote")
 def lab_promote(payload: Dict) -> Dict:
     """Move one stage up (CANDIDATE->VALIDATED requires a passing report)."""
+    _guard(Entitlement.CAN_MANAGE_RISK)
     strategy_id = payload.get("strategy_id", "")
     registry = _lab_registry()
     entry = registry.get(strategy_id)
@@ -1164,6 +1238,7 @@ def lab_promote(payload: Dict) -> Dict:
 @app.post("/research/quarantine")
 def lab_quarantine(payload: Dict) -> Dict:
     """Demote any stage into QUARANTINED (governed sink)."""
+    _guard(Entitlement.CAN_MANAGE_RISK)
     strategy_id = payload.get("strategy_id", "")
     reason = payload.get("reason", "risk_gate")
     registry = _lab_registry()
@@ -1363,6 +1438,7 @@ def strategy_intake_test(entry_id: str, payload: Dict) -> Dict:
         TriggerModel,
     )
     from research.strategy_lab.user_intake import run_user_test
+    _guard(Entitlement.CAN_TRADE)
     with _INTAKE_LOCK:
         board = _intake_board()
         entry = board.get(entry_id)
@@ -1411,6 +1487,7 @@ def strategy_intake_test(entry_id: str, payload: Dict) -> Dict:
 @app.post("/strategies/intake/{entry_id}/promote")
 def strategy_intake_promote(entry_id: str, payload: Dict) -> Dict:
     """Advance a tested user strategy up the governed promotion ladder."""
+    _guard(Entitlement.CAN_MANAGE_RISK)
     with _INTAKE_LOCK:
         board = _intake_board()
         entry = board.get(entry_id)
@@ -1639,6 +1716,7 @@ def review_apply(payload: Dict) -> Dict:
     kind = payload.get("kind", "")
     strategy_id = payload.get("strategy_id", "")
     reason = payload.get("reason", "")
+    _guard(Entitlement.CAN_MANAGE_RISK)
     if kind not in ("promote", "quarantine"):
         raise HTTPException(status_code=400,
                             detail="kind must be 'promote' or 'quarantine'")
@@ -1722,6 +1800,7 @@ def change_request_approve(cr_id: str, payload: Dict) -> Dict:
     pending, 409) instead of destabilizing live execution."""
     decided_by = payload.get("decided_by", "operator")
     reason = payload.get("reason", "")
+    _guard(Entitlement.CAN_MANAGE_RISK)
     with _lab_lock:
         result = _cr_store().approve(
             cr_id, decided_by=decided_by, reason=reason,
@@ -1747,6 +1826,7 @@ def change_request_approve(cr_id: str, payload: Dict) -> Dict:
 
 @app.post("/governance/change-requests/{cr_id}/deny")
 def change_request_deny(cr_id: str, payload: Dict) -> Dict:
+    _guard(Entitlement.CAN_MANAGE_RISK)
     decided_by = payload.get("decided_by", "operator")
     reason = payload.get("reason", "")
     result = _cr_store().deny(cr_id, decided_by=decided_by, reason=reason)
@@ -1764,6 +1844,7 @@ def change_request_deny(cr_id: str, payload: Dict) -> Dict:
 
 @app.post("/governance/change-requests/{cr_id}/cancel")
 def change_request_cancel(cr_id: str, payload: Dict) -> Dict:
+    _guard(Entitlement.CAN_MANAGE_RISK)
     requested_by = payload.get("requested_by", "operator")
     result = _cr_store().cancel(cr_id, requested_by=requested_by)
     if not result["ok"]:

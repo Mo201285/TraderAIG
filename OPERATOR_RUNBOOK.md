@@ -184,3 +184,4 @@ python scripts\mt5_live_session.py --no-trade   # إثبات التغذية ال
 - هذا الدليل + `README.md` (بدء سريع) + `PROJECT_MAP.md` (خريطة/سجل قرارات)
 - `ai/dspy/README.md` — تفاصيل طبقة الذكاء
 - `UPDATE.md` §50 — مواصفة المقاطع التشغيلية IIOS
+- `ENGINEERING MAST.md` §27 (قواعد ذكاء واستثمار TrederAIG) و§28 (قواعد المنتج/الموقع) و§3.1 (تسلسل مصدر الحقيقة الاستثماري) — العقد المؤسسي الحاكم

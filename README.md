@@ -131,6 +131,12 @@ curl http://127.0.0.1:8000/system/health
   (sandbox حتمي بلا شبكة / Stripe REST حقيقي للعن حي فقط مع `PAYMENTS_LIVE_ALLOWED=1` + مفتاح،
   يُستكمل عبر webhook مُتحقَّق منه / Pi مسخّرة صادقة غير موصولة)؛ الشحن يفعّل الاشتراك تلقائيًا؛
   `tradraig pay status|providers|charge|wallet|refund` عبر API (سلطة فوترة واحدة).
+- **استراتيجيات المستخدم** (`research/strategy_lab/user_intake.py`): يصف المستخدم باللغة الطبيعية →
+  دقّق فوري (VETTED/REVISE/REJECTED) → مختبر الاستراتيجيات (تحقق/اختبار) → ترقية محكومة عبر
+  ReviewLoop فقط؛ `tradraig strategy propose|vet|test|list|show|promote` عبر API.
+- **العقد المؤسسي** (`ENGINEERING MAST.md` §27/§28/§3.1): سلطة القرار لل Governance OS حصرًا؛ AI يفسّر
+  ويقترح ولا يضع صفقات حية ولا يرقّي؛ الفرصة ≠ صفقة؛ الواجهة ليست مصدر حقيقة ولا تحمل أسرارًا؛
+  منتج واحد/نموذج حالة واحد/حوكمة واحدة/تدقيق واحد/واجهات متعددة.
 
 ## الاختبارات
 

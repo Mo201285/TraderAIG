@@ -1,8 +1,9 @@
 # AGENTS.md — TraderAIG Institutional Operating Core
 
 Brief for new agents/explorers. The complete engineering discipline lives in
-`ENGINEERING MAST.md` (its §26 binds the universal rules to this repo); this
-file is the 60-second brief that points at it.
+`ENGINEERING MAST.md` (its §26 binds the universal rules to this repo; §27 adds the
+TrederAIG Intelligence & Investment Engineering Rules, §28 the Product & Website
+Engineering Rules); this file is the 60-second brief that points at it.
 
 ## What this is
 
@@ -15,7 +16,7 @@ without the API up). Windows / PowerShell 5.1.
 
 1. Explicit user requirements
 2. `PROJECT_MAP.md` — roadmap, milestone map, ORPHANS & PENDING, QUICK_COMMANDS, DECISION_LOG
-3. `ENGINEERING MAST.md` — universal rules + THIS repo's annex (must-read §26)
+3. `ENGINEERING MAST.md` — universal rules + THIS repo's annex (must-read §26, §27 TrederAIG Intelligence & Investment Engineering Rules, §28 Product & Website Engineering Rules; §3.1 Investment Source-of-Truth Hierarchy)
 4. `UPDATE.md` — Unified Operating Spec v1.1.0 + Appendix A (implementation status table)
 5. `OPERATOR_RUNBOOK.md` — operator workflows + symptom→action table
 6. `README.md` — quick start / feature map (bilingual EN/AR)
@@ -36,6 +37,8 @@ If any two conflict: STOP, surface the conflict, never silently pick one.
 - **Single authority**: anything that mutates durable decision state flows through the API; console commands call the API, they never mutate directly.
 - **Engine-safety guard**: promote/quarantine applies run under the ReviewLoop guard — a running engine means HTTP 409 and the request stays pending (retryable). This contract is tested; preserve it.
 - **No research→live shortcut**: DSPy/Strategy Lab produce candidates that reach production only via governed change requests.
+- **Governance is the final operational authority**: approval/rejection/risk limits/promotion/quarantine/production activation all route through Governance OS. AI/LLMs/DSPy are reasoning components — they may interpret/propose/generate, never place live trades, promote, or modify production risk without governed approval (§27). The user interface is a surface of the Control Plane, never a second authority and never the source of truth (§28).
+- **User strategy lifecycle**: a natural-language description is captured verbatim → canonical Strategy Specification → ambiguity detection → user confirmation → vetting → research → validation → paper → governance → production; failure yields explicit REJECTED/QUARANTINED/NEEDS_REVISION, never silent deletion (§27.3–27.4, §28.5–28.8).
 - **Docs discipline**: completing any milestone/orphan flips `[ ]`→`[x]` in PROJECT_MAP, adds a dated DECISION_LOG row (Accepted/Rationale/Rejected), and keeps README/RUNBOOK/UPDATE-annex in sync.
 - **Dashboard honesty**: no fabricated numbers; absent sources render `EmptyState`/`—` with the live/mock banner; mocks in `lib/mocks.ts`, API→UI adapters in `lib/adapters.ts`.
 

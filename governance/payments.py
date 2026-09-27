@@ -268,16 +268,30 @@ _PROVIDERS = {
 }
 
 
+def _secret(slot: str) -> str:
+    """Resolve a secret slot from the vault, falling back to env (bootstrap).
+
+    The vault (28.18) overrides env once a slot is written; until then a
+    fresh install keeps working from env vars. Values are never logged.
+    """
+    try:
+        from core.secrets_vault import vault
+        return vault.resolve(slot)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def build_provider(name: str) -> PaymentProvider:
-    """Build a provider from settings (key/webhook overrides from env)."""
+    """Build a provider from settings (vault first, env fallback)."""
     cls = _PROVIDERS.get((name or "").lower())
     if cls is None:
         raise ValueError(f"unknown payment provider: {name}")
     if cls is StripePaymentProvider:
-        return cls(secret_key=settings.payments.stripe_secret_key,
-                   webhook_secret=settings.payments.stripe_webhook_secret)
+        return cls(secret_key=_secret("payments.stripe.secret_key"),
+                   webhook_secret=_secret("payments.stripe.webhook_secret"))
     if cls is SandboxPaymentProvider:
-        return cls(webhook_secret=settings.payments.stripe_webhook_secret)
+        return cls(webhook_secret=_secret("payments.stripe.webhook_secret") or
+                   settings.payments.stripe_webhook_secret)
     return cls()
 
 
@@ -302,6 +316,20 @@ class PaymentService:
         self._provider = provider or build_provider(settings.payments.provider)
         self._ledger: List[WalletEntry] = []
         self._last_error: str = ""
+
+    def refresh_provider(self) -> None:
+        """Re-derive the provider from the Secrets Vault (28.18) so a rotated
+        key applies to this running service without a restart. The in-memory
+        wallet ledger is preserved (only the credential-bound provider is
+        rebuilt)."""
+        old = self._provider
+        try:
+            self._provider = build_provider(settings.payments.provider)
+        except Exception:  # noqa: BLE001
+            self._provider = old
+            log.warning("payment provider refresh failed; keeping previous provider")
+        if self._provider.name != old.name:
+            log.info("payment provider refreshed from the vault")
 
     # -- Gate ----------------------------------------------------------
     @property

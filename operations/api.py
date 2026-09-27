@@ -311,6 +311,90 @@ def entitlements_status() -> Dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Secrets Vault (28.18 Security Boundary)
+# ---------------------------------------------------------------------------
+
+
+def _refresh_vault_consumers() -> None:
+    """Re-derive the credential-bound singletons from the vault so a rotated
+    key applies to the running control plane without a restart. Never raises:
+    a refresh failure is logged and the previous credential keeps serving."""
+    try:
+        from execution.cex.gateway import cex_gateway
+        cex_gateway.refresh()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from governance.payments import payments_service
+        payments_service.refresh_provider()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@app.get("/secrets/status")
+def secrets_status() -> Dict:
+    """Vault status: encryption backend + which slots are set (never values).
+
+    Reading status is open (bootstrap-friendly); it exposes only booleans and
+    never the material itself, so a fresh control plane can render the
+    "enroll keys" surface without any principal. Writing/revoking keys is a
+    decision endpoint gated by API_ACCESS below.
+    """
+    from core.secrets_vault import vault
+    st = vault.status()
+    return {
+        "backend": st["backend"],
+        "persistable": st["persistable"],
+        "count": st["count"],
+        "slots": st["slots"],
+    }
+
+
+@app.put("/secrets/{slot}")
+def secrets_set(slot: str, payload: Dict) -> Dict:
+    """Enroll/rotate a canonical secret slot. Value is stored encrypted and
+    never echoed back. API_ACCESS (institutional) required once an identity
+    exists; bootstrap (no identity) passes so the operator can enroll keys on
+    a fresh control plane."""
+    _guard(Entitlement.API_ACCESS)
+    from core.secrets_vault import VAULT_SLOTS, vault
+    if slot not in VAULT_SLOTS:
+        raise HTTPException(status_code=400, detail=f"unknown vault slot: {slot}")
+    value = (payload or {}).get("value", "")
+    if not value:
+        raise HTTPException(status_code=400, detail="value is required")
+    rotated = vault.exists(slot)
+    try:
+        vault.set(slot, value)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    _refresh_vault_consumers()
+    try:
+        identity.record_audit(
+            "api", "secrets.set", "Secret", slot, {"rotated": rotated})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "slot": slot, "set": True, "rotated": rotated}
+
+
+@app.delete("/secrets/{slot}")
+def secrets_delete(slot: str) -> Dict:
+    """Revoke a secret slot (falls back to env, then unset)."""
+    _guard(Entitlement.API_ACCESS)
+    from core.secrets_vault import VAULT_SLOTS, vault
+    if slot not in VAULT_SLOTS:
+        raise HTTPException(status_code=400, detail=f"unknown vault slot: {slot}")
+    removed = vault.delete(slot)
+    _refresh_vault_consumers()
+    try:
+        identity.record_audit(
+            "api", "secrets.delete", "Secret", slot, {"removed": removed})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "slot": slot, "removed": removed}
+
+
 @app.get("/users/current/plan")
 def current_plan() -> Dict:
     """Primary (first) identity's plan, shaped for the dashboard subscriber card."""
@@ -924,10 +1008,10 @@ def build_payment_provider_for_name(name: str):
         StripePaymentProvider,
     )
     if name == PaymentProviderKind.STRIPE.value:
-        from core.config import settings
+        from core.secrets_vault import vault
         return StripePaymentProvider(
-            secret_key=settings.payments.stripe_secret_key,
-            webhook_secret=settings.payments.stripe_webhook_secret)
+            secret_key=vault.resolve("payments.stripe.secret_key"),
+            webhook_secret=vault.resolve("payments.stripe.webhook_secret"))
     if name == PaymentProviderKind.SANDBOX.value:
         return SandboxPaymentProvider()
     raise HTTPException(status_code=400, detail=f"unknown provider {name}") from None

@@ -186,6 +186,22 @@ python tools\tradraig.py user list                        # من الهوية ا
 نفسه بعد أن يكسبه عبر `/payments/charge` أو يُفعّله مباشرة عبر `/users/{id}/subscription/activate`
 (المسار ذاته الذي استخدمته لوحة الدفع). تستمر خدمات الدفع مفتوحة لأنها طريق الاكتساب وليست صفقة قرار.
 
+## خزنة الأسرار (Secrets Vault، 28.18)
+
+مفاتيح CEX وStripe/Pi تُخزَّن مشفّرة عند الراحة (Windows DPAPI) ولا تُطبع أبدًا.
+الكونسول يمر عبر API حصرًا ويُظهر **bool الحالة فقط** — لا قيمة سرية في أي رد:
+
+```powershell
+python tools\tradraig.py secrets status                          # أي خانة مضبوطة؟ (SET/env فقط، بلا قيم)
+python tools\tradraig.py secrets set --slot cex.okx.demo_api_secret --value "..."   # تفعيل/تدوير (لا يُصدّر)
+python tools\tradraig.py secrets delete --slot cex.okx.demo_api_secret             # إبطال → يتراجع إلى env
+```
+
+الكتابة/الإبطال خلف `_guard(API_ACCESS)` (مؤسسي فقط) ما إن توجد هوية، موثَّقة
+`secrets.set/secrets.delete` في `/audit`. أي خانة لم تُضبط تتراجع إلى متغير البيئة
+(bootstrap). على غير-Windows، الخزنة ترفض الحفظ بلا تشفير (لا ملفات نصابة) —
+المفاتيح تبقى env.
+
 ## عرَض → إجراء (Symptom → Action)
 
 | العرَض | التفسير | الإجراء |
@@ -201,6 +217,8 @@ python tools\tradraig.py user list                        # من الهوية ا
 | `doctor` يخرج 1 | فشل حقيقي (API/Ollama/… متوقف) | نفّذ ما يعرضه العمود "fix" |
 | استراتيجية مرفوضة بسبب "capital budget consumed" | يُوجد سقف تخصيص صريح لها وقد استُنفد | `python tools\tradraig.py portfolio alloc --json` لرؤية السقف، ثم زِد `--allow-override` أو clear |
 | نقطة قرار رجعت `403 entitlement '...' required` | الهوية الأساسية لا تملك الصلاحية (اشتراك pending/ناقص) | افحص `user list` — فعّل الاشتراك (`/users/{id}/subscription/activate`) أو قم بترقية الخطة؛ الرفض موثّق في `/audit` |
+| `secrets set` رجع 403 | الخزنة تتطلب API_ACCESS (مؤسسي) لدى وجود هوية | `tradraig user list` ثم تفعيل الخطة المؤسسية من الهوية الأساسية |
+| `secrets status` لا يعرض قيمًا | هذا التصميم (لا تسريب عبر أي سطح) | القيم الحقيقية في الخزنة؛ للتحقق الأعمى جرّب `api /secrets/status --get` واطلع على التوقيت/backend فقط |
 | RAM حرة < 1GB | حد التحميل | حرّر الذاكرة؛ استخدم 1b فقط |
 | البوابة «OFF» | افتراض التصميم | `gate on` + أعد تشغيل backend إن أردت تفعيلها |
 | موافقة تغيير ترجع 409 | المحرك قيد التشغيل (حارس السلامة) | الطلب يبقى معلّقًا — أعد المحاولة لاحقًا، لا نصف تطبيق |
@@ -210,7 +228,7 @@ python tools\tradraig.py user list                        # من الهوية ا
 ## الاختبارات
 
 ```powershell
-python -m pytest -q                        # المجموعة الكاملة (656)
+python -m pytest -q                        # المجموعة الكاملة (674)
 python -m pytest tests/test_ai_dspy/       # طبقة DSPy فقط
 python tests\test_operations\test_operator_console.py   # عبر pytest
 python scripts\mt5_live_session.py --no-trade   # إثبات التغذية الحية قراءةً فقط (بدون أمر)

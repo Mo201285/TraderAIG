@@ -59,28 +59,29 @@ def test_okx_timestamp_is_iso8601():
 
 
 def test_okx_testnet_prefers_demo_slot(monkeypatch):
-    """Mode=testnet must prefer the dedicated demo creds, live the main slot."""
-    import execution.cex.venues as vmod
+    """Mode=testnet must prefer the dedicated demo creds, live the main slot.
 
-    class _FakeCex:
-        mode = "paper"
-        live_allowed = True
-        okx_api_key = "LIVE-KEY"
-        okx_api_secret = "LIVE-SEC"
-        okx_passphrase = "LIVE-PASS"
-        okx_demo_api_key = "DEMO-KEY"
-        okx_demo_api_secret = "DEMO-SEC"
-        okx_demo_passphrase = "DEMO-PASS"
-
-    class _FakeSettings:
-        cex = _FakeCex()
-
-    monkeypatch.setattr(vmod, "settings", _FakeSettings())
+    Credential source is the Secrets Vault (28.18) -> env fallback; venues no
+    longer read settings.cex.* directly. Inject env to simulate bootstrap.
+    """
+    monkeypatch.setenv("CEX_OKX_DEMO_API_KEY", "DEMO-KEY")
+    monkeypatch.setenv("CEX_OKX_DEMO_API_SECRET", "DEMO-SEC")
+    monkeypatch.setenv("CEX_OKX_DEMO_PASSPHRASE", "DEMO-PASS")
+    monkeypatch.setenv("CEX_OKX_API_KEY", "")
+    monkeypatch.setenv("CEX_OKX_API_SECRET", "")
+    monkeypatch.setenv("CEX_OKX_PASSPHRASE", "")
 
     demo = OKXVenue(mode="testnet")
     assert demo._api_key == "DEMO-KEY"
     assert demo._api_secret == "DEMO-SEC"
     assert demo._passphrase == "DEMO-PASS"
+
+    monkeypatch.setenv("CEX_OKX_API_KEY", "LIVE-KEY")
+    monkeypatch.setenv("CEX_OKX_API_SECRET", "LIVE-SEC")
+    monkeypatch.setenv("CEX_OKX_PASSPHRASE", "LIVE-PASS")
+    monkeypatch.setenv("CEX_OKX_DEMO_API_KEY", "")
+    monkeypatch.setenv("CEX_OKX_DEMO_API_SECRET", "")
+    monkeypatch.setenv("CEX_OKX_DEMO_PASSPHRASE", "")
 
     live = OKXVenue(mode="live")
     assert live._api_key == "LIVE-KEY"
@@ -88,16 +89,6 @@ def test_okx_testnet_prefers_demo_slot(monkeypatch):
     assert live._passphrase == "LIVE-PASS"
 
     # TESTNET with an empty demo slot must stay empty, never leaking live creds.
-    monkeypatch.setattr(_FakeSettings, "cex", type("X", (), {
-        "mode": "paper",
-        "live_allowed": True,
-        "okx_api_key": "LIVE-KEY",
-        "okx_api_secret": "LIVE-SEC",
-        "okx_passphrase": "LIVE-PASS",
-        "okx_demo_api_key": "",
-        "okx_demo_api_secret": "",
-        "okx_demo_passphrase": "",
-    }))
     empty = OKXVenue(mode="testnet")
     assert empty._api_key == ""
     assert empty._passphrase == ""

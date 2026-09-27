@@ -35,6 +35,19 @@ class CexGateway:
         self._tickets: Dict[str, Any] = {}
         self._last_error: str = ""
 
+    def refresh(self) -> None:
+        """Re-derive the venue from the Secrets Vault (28.18) so a rotated
+        key applies to the running singleton without a restart. Keeps the
+        in-flight ticket registry; only the credential-bound venue is rebuilt."""
+        old = self._venue
+        try:
+            self._venue = build_venue(settings.cex.venue, settings.cex.mode)
+        except Exception:  # noqa: BLE001
+            self._venue = old
+            log.warning("CEX gateway refresh failed; keeping previous venue")
+        if self._venue is not old:
+            log.info("CEX gateway refreshed credentials from the vault")
+
     # -- Public execution contract --------------------------------------
     def execute(self, candidate: TradeCandidate,
                 decision: RiskDecision) -> Optional[Any]:

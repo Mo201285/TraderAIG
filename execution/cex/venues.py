@@ -29,6 +29,19 @@ from core.config import settings
 from core.logging import get_logger
 
 
+def _secret(slot: str) -> str:
+    """Resolve a secret slot from the vault, falling back to env (bootstrap).
+
+    The vault (28.18) overrides env once a slot is written; until then a
+    fresh install keeps working from env vars. Values are never logged.
+    """
+    try:
+        from core.secrets_vault import vault
+        return vault.resolve(slot)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 log = get_logger("execution.cex")
 
 
@@ -309,12 +322,12 @@ class BinanceVenue(VenueAdapter):
 
     def __init__(self, mode: Optional[str] = None,
                  api_key: str = "", api_secret: str = "") -> None:
-        key = api_key or (settings.cex.binance_api_key
-                          if mode == self.LIVE
-                          else settings.cex.binance_testnet_key)
-        secret = api_secret or (settings.cex.binance_api_secret
-                                if mode == self.LIVE
-                                else settings.cex.binance_testnet_secret)
+        key = api_key or _secret("cex.binance.api_key"
+                                 if mode == self.LIVE
+                                 else "cex.binance.testnet_key")
+        secret = api_secret or _secret("cex.binance.api_secret"
+                                       if mode == self.LIVE
+                                       else "cex.binance.testnet_secret")
         super().__init__(mode=mode, api_key=key, api_secret=secret)
 
     @property
@@ -414,15 +427,15 @@ class OKXVenue(VenueAdapter):
         if _demo:
             # TESTNET uses ONLY the dedicated demo slot; never fall back to live
             # credentials (that would send x-simulated-trading:1 with live keys).
-            key = api_key or settings.cex.okx_demo_api_key
-            secret = api_secret or settings.cex.okx_demo_api_secret
+            key = api_key or _secret("cex.okx.demo_api_key")
+            secret = api_secret or _secret("cex.okx.demo_api_secret")
             super().__init__(mode=mode, api_key=key, api_secret=secret)
-            self._passphrase = passphrase or settings.cex.okx_demo_passphrase
+            self._passphrase = passphrase or _secret("cex.okx.demo_passphrase")
             return
-        key = api_key or settings.cex.okx_api_key
-        secret = api_secret or settings.cex.okx_api_secret
+        key = api_key or _secret("cex.okx.api_key")
+        secret = api_secret or _secret("cex.okx.api_secret")
         super().__init__(mode=mode, api_key=key, api_secret=secret)
-        self._passphrase = passphrase or settings.cex.okx_passphrase
+        self._passphrase = passphrase or _secret("cex.okx.passphrase")
 
     @property
     def _base(self) -> str:
@@ -531,12 +544,12 @@ class BybitVenue(VenueAdapter):
 
     def __init__(self, mode: Optional[str] = None,
                  api_key: str = "", api_secret: str = "") -> None:
-        key = api_key or (settings.cex.bybit_api_key
-                          if mode == self.LIVE
-                          else settings.cex.bybit_testnet_key)
-        secret = api_secret or (settings.cex.bybit_api_secret
-                                if mode == self.LIVE
-                                else settings.cex.bybit_testnet_secret)
+        key = api_key or _secret("cex.bybit.api_key"
+                                 if mode == self.LIVE
+                                 else "cex.bybit.testnet_key")
+        secret = api_secret or _secret("cex.bybit.api_secret"
+                                       if mode == self.LIVE
+                                       else "cex.bybit.testnet_secret")
         super().__init__(mode=mode, api_key=key, api_secret=secret)
 
     @property

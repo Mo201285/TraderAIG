@@ -20,6 +20,7 @@ mt5-portable/
 research/strategy_lab/data/
 ai/dspy/registry/data/
 portfolio/data/
+core/secrets/data/
 
 # Python tooling cache
 .ruff_cache/

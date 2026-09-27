@@ -1233,6 +1233,78 @@ def cmd_portfolio(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_secrets(args: argparse.Namespace) -> int:
+    """Secrets Vault (28.18) — status shows set flags only, NEVER values.
+
+    Values are provided once at enroll/rotate time and never echoed back;
+    the vault encrypts at rest and venues/billing read through it. All writes
+    go through the API (single governance authority, audited).
+    """
+    t = I18N[args.lang]
+    base = f"http://127.0.0.1:{API_PORT}"
+    act = args.action
+
+    def _down() -> int:
+        print(f"{_ANSI['bad']}{t['u_api_down']}{_ANSI['off']}")
+        return 1
+
+    if act == "status":
+        ok, data = http_json(f"{base}/secrets/status")
+        if not ok:
+            return _down()
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=1))
+            return 0
+        print(f"secrets vault: backend={data.get('backend')} "
+              f"persistable={data.get('persistable')} "
+              f"enrolled={data.get('count')}")
+        slots = data.get("slots") or {}
+        if not any(slots.values()):
+            print(f"{_ANSI['dim']}no secret slots enrolled yet — keys come "
+                  f"from env (bootstrap){_ANSI['off']}")
+        for slot, isset in slots.items():
+            mark = _ANSI["ok"] + "SET" if isset else _ANSI["dim"] + "env"
+            print(f"  {slot:<38} {mark}{_ANSI['off']}")
+        return 0
+
+    if act == "set":
+        if not args.slot or not args.value:
+            print(f"{_ANSI['bad']}secrets set requires --slot and --value"
+                  f"{_ANSI['off']}")
+            return 1
+        rc, data = http_post_json(
+            f"{base}/secrets/{args.slot}",
+            {"value": args.value},
+            method="PUT")
+        if rc is None:
+            return _down()
+        if rc != 200:
+            print(f"{_ANSI['bad']}HTTP {rc}: {data}{_ANSI['off']}")
+            return 1
+        print(f"{_ANSI['ok']}secret enrolled: {data.get('slot')} "
+              f"(rotated={data.get('rotated')}) — stored encrypted, "
+              f"never echoed{_ANSI['off']}")
+        return 0
+
+    if act == "delete":
+        if not args.slot:
+            print(f"{_ANSI['bad']}secrets delete requires --slot{_ANSI['off']}")
+            return 1
+        rc, data = http_post_json(f"{base}/secrets/{args.slot}", {},
+                                  method="DELETE")
+        if rc is None:
+            return _down()
+        if rc != 200:
+            print(f"{_ANSI['bad']}HTTP {rc}: {data}{_ANSI['off']}")
+            return 1
+        print(f"{_ANSI['ok']}secret revoked: {data.get('slot')} "
+              f"removed={data.get('removed')} (falls back to env){_ANSI['off']}")
+        return 0
+
+    print(f"{_ANSI['bad']}unknown action: {act}{_ANSI['off']}")
+    return 1
+
+
 def cmd_events(args: argparse.Namespace) -> int:
     """Tail the live operations event feed (dashboard/copy-engine consumer)."""
     t = I18N[args.lang]
@@ -1531,6 +1603,14 @@ def _parser() -> argparse.ArgumentParser:
                     help="allow widening beyond the institutional default (audited)")
     pf.add_argument("--json", action="store_true")
     pf.set_defaults(fn=cmd_portfolio)
+
+    sv = sub.add_parser("secrets", help="Secrets Vault (28.18): status shows set flags only, never values")
+    sv.add_argument("action", choices=("status", "set", "delete"),
+                    help="status | set | delete")
+    sv.add_argument("--slot", default="", help="canonical slot (set/delete), e.g. cex.okx.demo_api_secret")
+    sv.add_argument("--value", default="", help="secret value to enroll/rotate (set; never echoed)")
+    sv.add_argument("--json", action="store_true")
+    sv.set_defaults(fn=cmd_secrets)
 
     bk = sub.add_parser("backup", help="snapshot durable canonical state to a ZIP (M6.4)")
     bk.add_argument("--out", default=None, help="destination dir (default <root>/backups)")

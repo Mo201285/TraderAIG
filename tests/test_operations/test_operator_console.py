@@ -246,3 +246,66 @@ def test_cmd_dspy_proposal_no_candidate(monkeypatch):
     monkeypatch.setattr(tc, "_save_proposal", lambda p: {"candidate": None})
     rc = tc.cmd_dspy(argparse.Namespace(action="proposal", program="ict_scalping", lang="en"))
     assert rc == 2
+
+
+def test_cmd_secrets_status_prints_flags_only(monkeypatch, capsys):
+    import argparse
+    import tools.tradraig as tc
+    monkeypatch.setattr(tc, "http_json", lambda url: (True, {
+        "backend": "dpapi",
+        "persistable": True,
+        "count": 1,
+        "slots": {"cex.okx.demo_api_secret": True,
+                  "cex.okx.api_secret": False},
+    }))
+    rc = tc.cmd_secrets(argparse.Namespace(action="status", lang="en", json=False))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "dpapi" in out and "SET" in out and "env" in out
+    assert "cex.okx.demo_api_secret" in out
+
+
+def test_cmd_secrets_set_uses_put_and_never_echoes(monkeypatch, capsys):
+    import argparse
+    import tools.tradraig as tc
+    captured = {}
+    monkeypatch.setattr(tc, "http_post_json", lambda url, payload, method="POST": (
+        captured.update(url=url, method=method, payload=dict(payload)),
+        (200, {"ok": True, "slot": "cex.okx.demo_api_secret",
+               "set": True, "rotated": False}),
+    )[1])
+    rc = tc.cmd_secrets(argparse.Namespace(
+        action="set", slot="cex.okx.demo_api_secret",
+        value="value-never-should-print", lang="en", json=False))
+    assert rc == 0
+    assert captured["method"] == "PUT"
+    assert captured["url"].endswith("/secrets/cex.okx.demo_api_secret")
+    assert captured["payload"] == {"value": "value-never-should-print"}
+    out = capsys.readouterr().out
+    assert "value-never-should-print" not in out
+    assert "stored encrypted" in out
+
+
+def test_cmd_secrets_delete_sends_delete(monkeypatch, capsys):
+    import argparse
+    import tools.tradraig as tc
+    captured = {}
+    monkeypatch.setattr(tc, "http_post_json", lambda url, payload, method="POST": (
+        captured.update(url=url, method=method),
+        (200, {"ok": True, "slot": "cex.okx.demo_api_secret", "removed": True}),
+    )[1])
+    rc = tc.cmd_secrets(argparse.Namespace(
+        action="delete", slot="cex.okx.demo_api_secret",
+        value="", lang="en", json=False))
+    assert rc == 0
+    assert captured["method"] == "DELETE"
+    assert "removed=True" in capsys.readouterr().out
+
+
+def test_cmd_secrets_set_offline_fails(monkeypatch):
+    import argparse
+    import tools.tradraig as tc
+    monkeypatch.setattr(tc, "http_post_json", lambda url, payload, method="POST": (None, "down"))
+    rc = tc.cmd_secrets(argparse.Namespace(
+        action="set", slot="cex.okx.demo_api_secret", value="x", lang="en", json=False))
+    assert rc == 1

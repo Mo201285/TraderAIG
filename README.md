@@ -148,11 +148,15 @@ curl http://127.0.0.1:8000/system/health
   طلبات التغيير، ترقية/اختبار استراتيجيات المستخدم) على اشتراك الهوية الأساسية؛ في وضع bootstrap
   (لا هوية بعد) تُبلَّغ البوابة `inactive` وتمر بصدق، وبمجرد وجود هوية تصبح صلبة — 403 + سطر تدقيق
   عند الرفض. `GET /entitlements/status` يعرض الحالة الفعلية.
+- **خزنة الأسرار (28.18)** — `core/secrets_vault.py` يخزّن مفاتيح CEX/Stripe/Pi مشفّرة عند
+  الراحة (Windows DPAPI) ولا يُطبع أي سر عبر أي واجهة؛ `GET /secrets/status` يعرض `SET/env`
+  فقط، والكتابة/الإبطال خلف `_guard(API_ACCESS)` (مؤسسي) مع تدقيق، و`tradraig secrets`
+  يمر دائمًا عبر API. أي خانة غير مضبوطة تتراجع إلى متغير البيئة (bootstrap).
 
 ## الاختبارات
 
 ```bash
-python -m pytest -q                      # المجموعة الكاملة (656 اختباراً)
+python -m pytest -q                      # المجموعة الكاملة (674 اختباراً)
 python -m pytest tests/test_ai_dspy/     # طبقة الذكاء/برامج DSPy فقط
 cd "TAIG Dash" && node .\node_modules\typescript\bin\tsc --noEmit && node .\node_modules\vite\bin\vite.js build   # الواجهة: أنواع + بناء
 powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # فحص حي: إقلاع uvicorn حقيقي + قيادة الكونسول عبر HTTP

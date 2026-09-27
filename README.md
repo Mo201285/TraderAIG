@@ -152,11 +152,24 @@ curl http://127.0.0.1:8000/system/health
   الراحة (Windows DPAPI) ولا يُطبع أي سر عبر أي واجهة؛ `GET /secrets/status` يعرض `SET/env`
   فقط، والكتابة/الإبطال خلف `_guard(API_ACCESS)` (مؤسسي) مع تدقيق، و`tradraig secrets`
   يمر دائمًا عبر API. أي خانة غير مضبوطة تتراجع إلى متغير البيئة (bootstrap).
+- **محرك الفرص (27.10/28.11: الفرصة ≠ الصفقة)** — `decision/opportunity.py` يجعل «الفرصة» نوعًا
+  صريحًا دائمًا ومزوَّدًا بالأدلة: `OpportunityEngine.screen()` يحزم حكم Risk Governor الحقيقي
+  (الفحوصات والسبب) + صفّ تخصيص رأس المال + مرحلة الترقية في ملف أدلة كامل، واللوحة محدودة
+  (250) مع كتابة مؤجَّلة حتى لا تتحوّل تسجيلات كل شمعة إلى عبء. كلا نقطتَي تنفيذ خط الأنابيب
+  تسجّلان الفرصة **قبل** التنفيذ: المرفوضة مخبريًا `REJECTED` بسبب الرفض الحقيقي، والمقبولة
+  `QUALIFIED`. `TRADERAIG_OPPORTUNITY_GATE=0` (افتراضي) يُبقي التنفيذ المحكوم الآلي؛ `=1` هو وضع
+  **تأكيد المشغّل**: لا تنفيذ تلقائي، الموافقة عبر `POST /opportunities/{id}/approve`
+  (`CAN_TRADE`) أو الرفض (`CAN_MANAGE_RISK`) مع تدقيق، ثم ينفّذها خط الأنابيب على الشمعة التالية
+  بفحص Risk Governor **جديد وقت التنفيذ** (رفض متأخر = رفض صريح، لا تجاهل صامت)، وعند البوابة
+  التلقائية يمرّ السجل `approved -> executed` برقم التذكرة بعد الملء الحقيقي وليس بقية معلّقة.
+  الأسطح:
+  `GET /opportunities[/status|{id}]`، `GET /paper/requests` (يُغلق فجوة اللوحة)، و
+  `tradraig opportunity status|list|show|approve|reject`.
 
 ## الاختبارات
 
 ```bash
-python -m pytest -q                      # المجموعة الكاملة (674 اختباراً)
+python -m pytest -q                      # المجموعة الكاملة (710 اختباراً)
 python -m pytest tests/test_ai_dspy/     # طبقة الذكاء/برامج DSPy فقط
 cd "TAIG Dash" && node .\node_modules\typescript\bin\tsc --noEmit && node .\node_modules\vite\bin\vite.js build   # الواجهة: أنواع + بناء
 powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # فحص حي: إقلاع uvicorn حقيقي + قيادة الكونسول عبر HTTP

@@ -11,12 +11,13 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 if TYPE_CHECKING:
     from research.strategy_lab.registry import StrategyRegistry
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import Body, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.logging import get_logger
 from core.state import state
 from decision.candidate import candidate_board
+from decision.opportunity import OpportunityStatus
 from execution.mt5_adapter import mt5_adapter
 from governance.identity import (
     Entitlement,
@@ -478,6 +479,145 @@ def recommendations() -> List[Dict]:
             "page": "risk",
         })
     return out
+
+
+# ---------------------------------------------------------------------------
+# Opportunity Engine surface (Phase B — 27.10/28.11: opportunity != trade)
+
+@app.get("/opportunities/status")
+def opportunities_status() -> Dict:
+    """Gate mode + board counts. Open read (like /secrets/status): it exposes
+    state, never decision authority."""
+    from decision.opportunity import opportunity_board, opportunity_gate_mode
+    counts: Dict[str, int] = {}
+    for o in opportunity_board.list():
+        counts[o.status.value] = counts.get(o.status.value, 0) + 1
+    return {
+        "mode": opportunity_gate_mode(),
+        "counts": counts,
+        "pending": len(opportunity_board.ready_to_execute()),
+    }
+
+
+@app.get("/opportunities")
+def list_opportunities(status: Optional[str] = Query(None)) -> List[Dict]:
+    """Surfaced opportunities (newest first), optional ?status= filter."""
+    from decision.opportunity import opportunity_board
+    statuses = [s.strip() for s in status.split(",")] if status else None
+    return [o.as_dict() for o in opportunity_board.list(statuses=statuses)]
+
+
+@app.get("/opportunities/{opportunity_id}")
+def get_opportunity(opportunity_id: str) -> Dict:
+    """Full evidence dossier for one opportunity (governor checks, allocation,
+    stage, screen rubric). Open read for the operator surface."""
+    from decision.opportunity import opportunity_board
+    opp = opportunity_board.get(opportunity_id)
+    if opp is None:
+        raise HTTPException(status_code=404, detail=f"unknown opportunity: {opportunity_id}")
+    return opp.as_dict()
+
+
+@app.post("/opportunities/{opportunity_id}/approve")
+def approve_opportunity(opportunity_id: str) -> Dict:
+    """Explicit operator approval (gate=confirm). Marks APPROVED +
+    execute_pending; the pipeline runs it on the next bar with a fresh
+    execution-time Risk Governor check. This endpoint never touches the
+    executor directly."""
+    _guard(Entitlement.CAN_TRADE)
+    from decision.opportunity import opportunity_board, opportunity_gate_mode
+    opp = opportunity_board.get(opportunity_id)
+    if opp is None:
+        raise HTTPException(status_code=404, detail=f"unknown opportunity: {opportunity_id}")
+    if opp.status.value != OpportunityStatus.QUALIFIED.value:
+        raise HTTPException(status_code=409,
+                            detail=f"opportunity not awaiting approval (status={opp.status.value})")
+    opp.approve(note="operator approved via API")
+    opportunity_board.update(opp)
+    try:
+        identity.record_audit(
+            "api", "opportunity.approve", "Opportunity", opportunity_id,
+            {"mode": opportunity_gate_mode(), "symbol": opp.symbol, "direction": opp.direction})
+    except Exception:  # noqa: BLE001
+        pass
+    return opp.as_dict()
+
+
+@app.post("/opportunities/{opportunity_id}/reject")
+def reject_opportunity(opportunity_id: str, payload: Dict = Body(default={})) -> Dict:
+    """Explicit operator rejection. Marks REJECTED; nothing will execute."""
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    from decision.opportunity import opportunity_board
+    opp = opportunity_board.get(opportunity_id)
+    if opp is None:
+        raise HTTPException(status_code=404, detail=f"unknown opportunity: {opportunity_id}")
+    if opp.status.value in (OpportunityStatus.REJECTED.value, OpportunityStatus.EXPIRED.value):
+        raise HTTPException(status_code=409,
+                            detail=f"opportunity already closed ({opp.status.value})")
+    reason = (payload or {}).get("reason") or "operator rejected via API"
+    opp.reject(reason)
+    opportunity_board.update(opp)
+    try:
+        identity.record_audit(
+            "api", "opportunity.reject", "Opportunity", opportunity_id, {"reason": reason})
+    except Exception:  # noqa: BLE001
+        pass
+    return opp.as_dict()
+
+
+@app.get("/paper/requests")
+def paper_requests() -> List[Dict]:
+    """Fills the dashboard's paper-requests surface from the Opportunity board.
+    Everything is honest: only real fields; `pnl` is absent until an executed
+    opportunity reports a realized outcome. Extra fields (opportunityStatus,
+    screenReasons, evidence) are carried for the operator surface."""
+    from decision.opportunity import opportunity_board, opportunity_gate_mode
+    mode = opportunity_gate_mode()
+    rows: List[Dict] = []
+    for o in opportunity_board.list():
+        state = _paper_state(o.status.value, o.execute_pending, mode,
+                             executed=bool(o.executed_at))
+        row = {
+            "id": o.opportunity_id,
+            "strategyId": o.strategy_id or f"THE-{o.thesis_id or 'none'}",
+            "symbol": o.symbol,
+            "direction": o.direction,
+            "state": state,
+            "size": o.size,
+            "entry": o.entry,
+            "sl": o.stop_loss,
+            "tp": o.take_profit,
+            "createdAt": o.as_dict()["detected_at"],
+            "opportunityStatus": o.status.value,
+            "screenReasons": o.screen_reasons,
+            "riskReason": o.risk_reason,
+            "score": o.score,
+            "evidence": o.evidence,
+            "history": o.history,
+        }
+        if o.executed_at:
+            row["executedAt"] = o.as_dict()["executed_at"]
+        if o.executed_at and o.ticket_key:
+            row["exitReason"] = "executed"
+        rows.append(row)
+    return rows
+
+
+def _paper_state(status: str, execute_pending: bool, mode: str,
+                 executed: bool = False) -> str:
+    if executed:
+        # Real fill happened (ticket recorded on the opportunity) — the row is
+        # a dispatched paper request, whatever the terminal status is.
+        return "dispatched"
+    if status == OpportunityStatus.EXPIRED.value:
+        return "vetoed"
+    if status == OpportunityStatus.REJECTED.value:
+        return "vetoed"
+    if status == OpportunityStatus.APPROVED.value:
+        return "dispatched" if execute_pending else "approved"
+    if status == OpportunityStatus.QUALIFIED.value:
+        return "approved" if mode == "confirm" else "handoff"
+    return "queued"
 
 
 # ---------------------------------------------------------------------------

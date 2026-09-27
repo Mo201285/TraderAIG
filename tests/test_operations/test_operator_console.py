@@ -309,3 +309,122 @@ def test_cmd_secrets_set_offline_fails(monkeypatch):
     rc = tc.cmd_secrets(argparse.Namespace(
         action="set", slot="cex.okx.demo_api_secret", value="x", lang="en", json=False))
     assert rc == 1
+
+
+# -- Opportunity Engine (Phase B) -------------------------------------------
+
+
+def test_cmd_opportunity_status_prints_gate_and_counts(monkeypatch, capsys):
+    import argparse
+    import tools.tradraig as tc
+    monkeypatch.setattr(tc, "http_json", lambda url: (True, {
+        "mode": "confirm", "counts": {"qualified": 2, "rejected": 1},
+        "pending": 2}))
+    rc = tc.cmd_opportunity(argparse.Namespace(
+        action="status", id="", status="", reason="", lang="en", json=False))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "confirm" in out and "qualified=2" in out and "pending execution: 2" in out
+
+
+def test_cmd_opportunity_list_filters_by_status(monkeypatch, capsys):
+    import argparse
+    import tools.tradraig as tc
+    captured = {}
+    monkeypatch.setattr(tc, "http_json", lambda url: (
+        captured.update(url=url),
+        (True, [{"opportunity_id": "OPP-1", "symbol": "XAUUSD",
+                 "direction": "long", "status": "qualified", "risk_ok": True,
+                 "score": 88.0, "source": "schools:structure",
+                 "detected_at": "2026-09-27T10:00:00Z",
+                 "history": [{"status": "qualified", "note": "screen passed"}]}]))[1])
+    rc = tc.cmd_opportunity(argparse.Namespace(
+        action="list", id="", status="qualified", reason="",
+        lang="en", json=False))
+    assert rc == 0
+    assert captured["url"].endswith("/opportunities?status=qualified")
+    out = capsys.readouterr().out
+    assert "OPP-1" in out and "XAUUSD" in out and "88.0" in out
+
+
+def test_cmd_opportunity_show_prints_evidence(monkeypatch, capsys):
+    import argparse
+    import tools.tradraig as tc
+    monkeypatch.setattr(tc, "http_json", lambda url: (True, {
+        "opportunity_id": "OPP-1", "symbol": "XAUUSD", "direction": "long",
+        "status": "qualified", "source": "schools:structure", "score": 88.0,
+        "priority": 88, "entry": 2400.0, "stop_loss": 2390.0,
+        "take_profit": 2420.0, "size": 0.1, "risk_reward": 2.0,
+        "confidence": 0.8, "risk_ok": True, "risk_reason": "all checks passed",
+        "allocation_ok": True, "allocation_reason": "within limit",
+        "live_eligible": True, "live_eligibility_reason": "stage=paper",
+        "screen_reasons": [], "evidence": {"risk_decision": {
+            "checks": [{"check": "daily_loss", "ok": True, "detail": {}}]}},
+        "history": [{"ts": "2026-09-27T10:00:00Z", "status": "qualified",
+                     "note": "screen passed"}],
+    }))
+    rc = tc.cmd_opportunity(argparse.Namespace(
+        action="show", id="OPP-1", status="", reason="", lang="en", json=False))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "OPP-1" in out and "daily_loss" in out and "all checks passed" in out
+
+
+def test_cmd_opportunity_approve_posts_to_api(monkeypatch, capsys):
+    import argparse
+    import tools.tradraig as tc
+    captured = {}
+    monkeypatch.setattr(tc, "http_post_json", lambda url, payload, method="POST": (
+        captured.update(url=url, payload=dict(payload)),
+        (200, {"opportunity_id": "OPP-1", "status": "approved",
+               "execute_pending": True,
+               "history": [{"status": "approved",
+                            "note": "operator approved via API"}]}))[1])
+    rc = tc.cmd_opportunity(argparse.Namespace(
+        action="approve", id="OPP-1", status="", reason="", lang="en", json=False))
+    assert rc == 0
+    assert captured["url"].endswith("/opportunities/OPP-1/approve")
+    out = capsys.readouterr().out
+    assert "approved" in out and "execute_pending=True" in out
+
+
+def test_cmd_opportunity_reject_sends_reason_and_surfaces_403(monkeypatch, capsys):
+    import argparse
+    import tools.tradraig as tc
+    captured = {}
+    monkeypatch.setattr(tc, "http_post_json", lambda url, payload, method="POST": (
+        captured.update(url=url, payload=dict(payload)),
+        (200, {"opportunity_id": "OPP-1", "status": "rejected",
+               "execute_pending": False,
+               "history": [{"status": "rejected",
+                            "note": "withdrawn by operator"}]}))[1])
+    rc = tc.cmd_opportunity(argparse.Namespace(
+        action="reject", id="OPP-1", status="", reason="withdrawn by operator",
+        lang="en", json=False))
+    assert rc == 0
+    assert captured["payload"] == {"reason": "withdrawn by operator"}
+    assert "rejected" in capsys.readouterr().out
+
+    monkeypatch.setattr(tc, "http_post_json",
+                        lambda url, payload, method="POST": (403, "entitlement denied"))
+    rc = tc.cmd_opportunity(argparse.Namespace(
+        action="reject", id="OPP-1", status="", reason="", lang="en", json=False))
+    assert rc == 1
+    assert "HTTP 403" in capsys.readouterr().out
+
+
+def test_cmd_opportunity_show_requires_id(monkeypatch):
+    import argparse
+    import tools.tradraig as tc
+    rc = tc.cmd_opportunity(argparse.Namespace(
+        action="show", id="", status="", reason="", lang="en", json=False))
+    assert rc == 1
+
+
+def test_cmd_opportunity_offline_fails(monkeypatch):
+    import argparse
+    import tools.tradraig as tc
+    monkeypatch.setattr(tc, "http_json", lambda url: (False, "down"))
+    rc = tc.cmd_opportunity(argparse.Namespace(
+        action="list", id="", status="", reason="", lang="en", json=False))
+    assert rc == 1

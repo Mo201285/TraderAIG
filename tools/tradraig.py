@@ -1305,6 +1305,122 @@ def cmd_secrets(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_opportunity(args: argparse.Namespace) -> int:
+    """Opportunity Engine (Phase B) — surfacing + operator decision (via API).
+
+    An opportunity is a screened, fully-evidenced setup — it is never a
+    trade until it passes the institutional screen and, under the
+    operator-confirmation gate (TRADERAIG_OPPORTUNITY_GATE=1), an explicit
+    operator decision. Approve/reject go through the API, the single
+    governance authority (audited).
+    """
+    t = I18N[args.lang]
+    base = f"http://127.0.0.1:{API_PORT}"
+    act = args.action
+
+    def _down() -> int:
+        print(f"{_ANSI['bad']}{t['u_api_down']}{_ANSI['off']}")
+        return 1
+
+    if act == "status":
+        ok, data = http_json(f"{base}/opportunities/status")
+        if not ok:
+            return _down()
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=1))
+            return 0
+        counts = data.get("counts") or {}
+        print(f"opportunity gate: {data.get('mode')} "
+              f"(TRADERAIG_OPPORTUNITY_GATE; 'confirm' waits for operator)")
+        summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        print(f"board: {summary or 'empty'}")
+        print(f"approved pending execution: {data.get('pending')}")
+        return 0
+
+    if act == "list":
+        url = f"{base}/opportunities"
+        if getattr(args, "status", ""):
+            url += f"?status={args.status}"
+        ok, data = http_json(url)
+        if not ok:
+            return _down()
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=1))
+            return 0
+        if not data:
+            print(f"{_ANSI['dim']}no opportunities recorded yet{_ANSI['off']}")
+            return 0
+        for o in data:
+            mark = _ANSI["ok"] if o["risk_ok"] else _ANSI["bad"]
+            print(f"{o['opportunity_id']} {o['symbol']:<7} {o['direction']:<5} "
+                  f"{mark}{o['status']:<9}{_ANSI['off']} score={o['score']:<3} "
+                  f"{o['source']:<24} {o['detected_at'][:19]}Z")
+            if o["history"]:
+                print(f"  {_ANSI['dim']}{o['history'][-1]['status']}: "
+                      f"{o['history'][-1]['note']}{_ANSI['off']}")
+        return 0
+
+    if act == "show":
+        if not args.id:
+            print(f"{_ANSI['bad']}opportunity show requires --id{_ANSI['off']}")
+            return 1
+        ok, data = http_json(f"{base}/opportunities/{args.id}")
+        if not ok:
+            print(f"{_ANSI['bad']}HTTP/API: {data}{_ANSI['off']}")
+            return 1
+        print(f"{data['opportunity_id']} {data['symbol']} {data['direction']} "
+              f"[{data['status']}]")
+        print(f"  source={data['source']} score={data['score']} "
+              f"priority={data['priority']}")
+        print(f"  entry={data['entry']} sl={data['stop_loss']} "
+              f"tp={data['take_profit']} size={data['size']}")
+        print(f"  rr={data['risk_reward']} conf={data['confidence']}")
+        print(f"  risk_ok={data['risk_ok']} reason={data['risk_reason']}")
+        print(f"  allocation_ok={data['allocation_ok']} "
+              f"reason={data['allocation_reason']}")
+        print(f"  live_eligible={data['live_eligible']} "
+              f"({data['live_eligibility_reason']})")
+        if data["screen_reasons"]:
+            print("  screen_reasons:")
+            for r in data["screen_reasons"]:
+                print(f"    - {r}")
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=1))
+            return 0
+        ev = data.get("evidence") or {}
+        rd = ev.get("risk_decision") or {}
+        print("  risk checks:")
+        for c in rd.get("checks") or []:
+            print(f"    - {c.get('check')}: ok={c.get('ok')} {c.get('detail', '')}")
+        print("  history:")
+        for h in data["history"]:
+            print(f"    {h['ts'][:19]}Z {h['status']}: {h['note']}")
+        return 0
+
+    if act in ("approve", "reject"):
+        if not args.id:
+            print(f"{_ANSI['bad']}opportunity {act} requires --id{_ANSI['off']}")
+            return 1
+        if act == "approve":
+            rc, data = http_post_json(f"{base}/opportunities/{args.id}/approve", {})
+        else:
+            body = {"reason": args.reason} if args.reason else {"reason": "operator rejected via console"}
+            rc, data = http_post_json(f"{base}/opportunities/{args.id}/reject", body)
+        if rc is None:
+            return _down()
+        if rc != 200:
+            print(f"{_ANSI['bad']}HTTP {rc}: {data}{_ANSI['off']}")
+            return 1
+        print(f"{_ANSI['ok']}opportunity {args.id} -> {data.get('status')} "
+              f"(execute_pending={data.get('execute_pending')}){_ANSI['off']}")
+        print(f"  {_ANSI['dim']}{data['history'][-1]['status']}: "
+              f"{data['history'][-1]['note']}{_ANSI['off']}")
+        return 0
+
+    print(f"{_ANSI['bad']}unknown action: {act}{_ANSI['off']}")
+    return 1
+
+
 def cmd_events(args: argparse.Namespace) -> int:
     """Tail the live operations event feed (dashboard/copy-engine consumer)."""
     t = I18N[args.lang]
@@ -1611,6 +1727,15 @@ def _parser() -> argparse.ArgumentParser:
     sv.add_argument("--value", default="", help="secret value to enroll/rotate (set; never echoed)")
     sv.add_argument("--json", action="store_true")
     sv.set_defaults(fn=cmd_secrets)
+
+    op = sub.add_parser("opportunity", help="Opportunity Engine (Phase B): screened setups — surfacing + operator decision (via API)")
+    op.add_argument("action", choices=("status", "list", "show", "approve", "reject"),
+                    help="status | list | show | approve | reject")
+    op.add_argument("--id", default="", help="opportunity_id (show/approve/reject)")
+    op.add_argument("--status", default="", help="filter list by status (comma-separated)")
+    op.add_argument("--reason", default="", help="rejection reason (reject)")
+    op.add_argument("--json", action="store_true")
+    op.set_defaults(fn=cmd_opportunity)
 
     bk = sub.add_parser("backup", help="snapshot durable canonical state to a ZIP (M6.4)")
     bk.add_argument("--out", default=None, help="destination dir (default <root>/backups)")

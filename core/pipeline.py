@@ -18,6 +18,12 @@ from core.contracts import Candle, RegimeSnapshot, TradeDirection
 from core.logging import get_logger
 from core.state import CanonicalState, state
 from decision.candidate import candidate_board
+from decision.opportunity import (
+    opportunity_board,
+    opportunity_engine,
+    opportunity_gate_mode,
+    rebuild_candidate,
+)
 from decision.thesis import Thesis, ThesisStatus, TradeCandidate, thesis_engine
 from execution.engine import execution_engine
 from intelligence.context import context_classifier
@@ -130,11 +136,58 @@ class TradingLoop:
             volume_tick=self._volume(),
         )
 
+        # Operator-confirmed opportunities (gate=confirm) execute on the next
+        # bar with a fresh Risk Governor check at execution time.
+        self._execute_approved_opportunities(candles, context)
+
         # Run the intelligence pipeline on new/meaningful candles only.
         if self.use_school_board:
             self._run_school_board(candles, context)
         else:
             self._run_full_pipeline(candles, context)
+
+    # -- Opportunity Engine: operator-approved execution (gate=confirm) ------
+    def _execute_approved_opportunities(self, candles: Sequence[Candle],
+                                        context) -> None:
+        """Execute operator-approved opportunities on the next bar.
+
+        Only active under TRADERAIG_OPPORTUNITY_GATE=1 and never in dry-run
+        (enable_execution off). Each approved opportunity is re-checked by the
+        Risk Governor at execution time: a fresh veto means REJECTED, never a
+        silent skip. Authorization for execution was granted at approve-time
+        (audited); this is the pipeline's governed execution step, not a new
+        authority.
+        """
+        if not self.enable_execution or opportunity_gate_mode() != "confirm":
+            return
+        for opp in opportunity_board.ready_to_execute(symbol=self.symbol):
+            candidate = rebuild_candidate(opp)
+            try:
+                decision = risk_governor.veto_reason(
+                    candidate,
+                    policy=context.user_policy
+                    if getattr(context, "user_policy", None) else None,
+                    spread_ratio_limit=self._spread_ratio_limit)
+            except Exception as exc:  # noqa: BLE001 - never brick a bar
+                log.warning(f"{self.symbol}: approved opportunity {opp.opportunity_id} "
+                            f"re-check failed ({exc}); keeping pending")
+                continue
+
+            if decision.kind != RiskDecisionKind.APPROVED:
+                opp.reject(decision.reason or "fresh risk veto at execution time")
+                opportunity_board.update(opp)
+                log.info(f"{self.symbol}: approved opportunity {opp.opportunity_id} "
+                         f"rejected at execution time ({decision.reason})")
+                continue
+
+            ticket = (self._executor or execution_engine).execute(candidate, decision)
+            opp.executed(
+                ticket_key=getattr(ticket, "ticket", None)
+                if ticket is not None else "no-ticket")
+            opportunity_board.update(opp)
+            self._publish_mt5_signal(candidate)
+            ledger.record(self._decision_record(candidate, decision))
+            log.info(f"{self.symbol}: approved opportunity {opp.opportunity_id} executed")
 
     # -- School-board pipeline (analytical schools trade the same way) --
     def _run_school_board(self, candles: Sequence[Candle], context) -> None:
@@ -177,6 +230,15 @@ class TradingLoop:
                                              if getattr(context, "user_policy", None) else None,
                                              spread_ratio_limit=self._spread_ratio_limit)
         if decision.kind != RiskDecisionKind.APPROVED:
+            # A vetoed setup is still an opportunity the operator must be able
+            # to see with the real reason (28.11), so it is screened as
+            # REJECTED before the pipeline drops it. No execution follows.
+            opportunity_engine.screen(
+                candidate, decision,
+                source=f"schools:{delib.selected.school_id}",
+                live_eligible=False,
+                live_eligibility_reason=f"risk veto: {decision.reason}",
+            )
             ledger.record(self._decision_record(candidate, decision))
             return
 
@@ -186,11 +248,42 @@ class TradingLoop:
                                              if getattr(context, "user_policy", None) else None,
                                              spread_ratio_limit=self._spread_ratio_limit)
         if decision.kind != RiskDecisionKind.APPROVED:
+            # Late veto (post-sizing): surface it as REJECTED with the true
+            # reason instead of a silent skip.
+            opportunity_engine.screen(
+                candidate, decision,
+                source=f"schools:{delib.selected.school_id}",
+                live_eligible=False,
+                live_eligibility_reason=f"risk veto: {decision.reason}",
+            )
             ledger.record(self._decision_record(candidate, decision))
             return
 
+        # -- Opportunity Engine (27.10/28.11): record every screener setup
+        # before execution. The screen packages the governor's real decision
+        # into an evidenced Opportunity (never fabricated numbers).
+        opp = opportunity_engine.screen(
+            candidate, decision,
+            source=f"schools:{delib.selected.school_id}",
+            live_eligible=True,
+            live_eligibility_reason=(
+                f"school live gate passed; stage="
+                f"{getattr(candidate, 'strategy_stage', None) or 'none'}"
+            ),
+        )
+
         if not self.enable_execution:
             candidate_board.approve(candidate.candidate_id)
+            return
+
+        if opportunity_gate_mode() == "confirm":
+            # Qualified but awaiting explicit operator confirmation. The
+            # pipeline executes it on the next bar via the approval-execution
+            # hook only after POST /opportunities/{id}/approve.
+            candidate_board.approve(candidate.candidate_id)
+            ledger.record(self._decision_record(candidate, decision))
+            log.info(f"{self.symbol}: opportunity {opp.opportunity_id} qualified, "
+                     "awaiting operator confirmation (TRADERAIG_OPPORTUNITY_GATE=1)")
             return
 
         ticket = (self._executor or execution_engine).execute(candidate, decision)
@@ -217,6 +310,13 @@ class TradingLoop:
         if ticket is not None and ticket.status.value == "filled":
             record.metadata["ticket"] = ticket.ticket
             school_board.attribute_ticket(ticket.ticket, dict(record.metadata))
+            # gate=auto: the governor approved and the executor filled inside
+            # the same bar, so the opportunity record follows that truth
+            # (approved -> executed) instead of staying `qualified`.
+            opp.approve(note="governed auto-execution "
+                             "(TRADERAIG_OPPORTUNITY_GATE=0)")
+            opp.executed(ticket.ticket, note="executed by pipeline (auto gate)")
+            opportunity_board.update(opp)
         ledger.record(record)
 
         if ticket is not None and ticket.status.value == "filled":
@@ -409,14 +509,41 @@ class TradingLoop:
         decision = risk_governor.veto_reason(
             candidate, spread_ratio_limit=self._spread_ratio_limit)
         if decision.kind != RiskDecisionKind.APPROVED:
+            # Surface the vetoed setup as REJECTED with the real reason (28.11)
+            # instead of dropping it silently.
+            opportunity_engine.screen(
+                candidate, decision,
+                source="legacy-evidence",
+                live_eligible=False,
+                live_eligibility_reason=f"risk veto: {decision.reason}",
+            )
             ledger.record(self._decision_record(candidate, decision))
             return
 
         # 5) Size + Execute
         risk_governor.compute_volume(candidate)
+
+        # -- Opportunity Engine (27.10/28.11): record every screener setup
+        # before execution (see school-board path for the same contract).
+        opp = opportunity_engine.screen(
+            candidate, decision,
+            source="legacy-evidence",
+            live_eligible=True,
+            live_eligibility_reason=(
+                f"stage={getattr(candidate, 'strategy_stage', None) or 'none'}"
+            ),
+        )
+
         if not self.enable_execution:
             log.debug(f"{self.symbol}: candidate approved but execution disabled")
             candidate_board.approve(candidate.candidate_id)
+            return
+
+        if opportunity_gate_mode() == "confirm":
+            candidate_board.approve(candidate.candidate_id)
+            ledger.record(self._decision_record(candidate, decision))
+            log.info(f"{self.symbol}: opportunity {opp.opportunity_id} qualified, "
+                     "awaiting operator confirmation (TRADERAIG_OPPORTUNITY_GATE=1)")
             return
 
         ticket = (self._executor or execution_engine).execute(candidate, decision)
@@ -424,6 +551,12 @@ class TradingLoop:
         self._publish_mt5_signal(candidate)
 
         if ticket is not None and ticket.status.value == "filled":
+            # gate=auto: governed approval + fill happened in this bar, so the
+            # opportunity record follows that truth (approved -> executed).
+            opp.approve(note="governed auto-execution "
+                             "(TRADERAIG_OPPORTUNITY_GATE=0)")
+            opp.executed(ticket.ticket, note="executed by pipeline (auto gate)")
+            opportunity_board.update(opp)
             log.info(f"{self.symbol}: trade executed")
 
         # 6) Learning ledger entry

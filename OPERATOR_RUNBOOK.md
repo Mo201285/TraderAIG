@@ -202,6 +202,27 @@ python tools\tradraig.py secrets delete --slot cex.okx.demo_api_secret          
 (bootstrap). على غير-Windows، الخزنة ترفض الحفظ بلا تشفير (لا ملفات نصابة) —
 المفاتيح تبقى env.
 
+## محرك الفرص (Opportunity Engine، 27.10/28.11)
+
+الفرصة ليست صفقة: كل إعداد يمرّ الفحص المؤسسي ويُسجَّل بدليله الكامل قبل أي تنفيذ.
+الافتراضي `TRADERAIG_OPPORTUNITY_GATE=0` يُبقي التنفيذ المحكوم الآلي (مع تسجيل كل فرصة)،
+ووضع التأكيد `=1` يوقف التنفيذ التلقائي حتى قرار المشغّل الصريح:
+
+```powershell
+python tools\tradraig.py opportunity status                 # gate +counts
+python tools\tradraig.py opportunity list                   # كل الفرص (الأحدث أولًا)
+python tools\tradraig.py opportunity list --status qualified
+python tools\tradraig.py opportunity show --id OPP-XXXX      # الدليل الكامل + سجل الحالة
+python tools\tradraig.py opportunity approve --id OPP-XXXX   # CAN_TRADE (mode=confirm فقط)
+python tools\tradraig.py opportunity reject --id OPP-XXXX --reason "جلسة ملغاة"
+```
+
+الموافقة **لا تنفّذ الصفقة**: تضع `approved` + `execute_pending`، ثم ينفّذها خط الأنابيب على
+الشمعة التالية بفحص Risk Governor جديد وقت التنفيذ (رفض متأخر = رفض صريح). الرفض يتطلّب
+`CAN_MANAGE_RISK`. كلا القرارين موثّق في `/audit` (`opportunity.approve/reject`).
+لوحة `decision/data/opportunities.json` محدودة (250) ومكتوبة بتأخير، والانتقالات المحكومة
+تُكتب فورًا.
+
 ## عرَض → إجراء (Symptom → Action)
 
 | العرَض | التفسير | الإجراء |
@@ -209,7 +230,7 @@ python tools\tradraig.py secrets delete --slot cex.okx.demo_api_secret          
 | `start backend` لا يستجيب | فشل في الإقلاع | اقرأ `logs\backend.err.log` ثم `stop backend` + `start backend` |
 | شارة `MOCK PREVIEW` باللوحة | الواجهة متوقفة | `start backend` ثم حدّث الصفحة |
 | `/system/health` overall=Degraded فقط في `reconciliation` | لا سوق حي — متوقع | لا إجراء |
-| بطاقة Paper ثابتة | لا يوجد `/paper/requests` حي (تصميم موثّق) | قائمة الترقية مصدرها `/strategies` الحقيقي |
+| بطاقة Paper ثابتة | لا فرص مسجّلة بعد (المصدر الآن حقيقي) | `tradraig opportunity list` — المنفذ الحي `/paper/requests` يعرض سجل الفرص الحقيقي بلا أي `pnl` مُختلق |
 | بطاقة الاشتراك ثابتة 404 | لا هوية بعد — بدون تزوير | `python tools\tradraig.py user create --email exec@institution.com --display "Omar Haddad" --plan institutional` ثم حدّث اللوحة |
 | عرض الهويات | تعرف من يملك ماذا | `python tools\tradraig.py user list` |
 | تحذيرات المخاطر / سجل التعلّم فارغان | لا تمرين سوقي بعد — لا تزوير | `python tools\tradraig.py exercise` (ملء حقيقي داخل العملية) ثم حدّث اللوحة |
@@ -219,6 +240,10 @@ python tools\tradraig.py secrets delete --slot cex.okx.demo_api_secret          
 | نقطة قرار رجعت `403 entitlement '...' required` | الهوية الأساسية لا تملك الصلاحية (اشتراك pending/ناقص) | افحص `user list` — فعّل الاشتراك (`/users/{id}/subscription/activate`) أو قم بترقية الخطة؛ الرفض موثّق في `/audit` |
 | `secrets set` رجع 403 | الخزنة تتطلب API_ACCESS (مؤسسي) لدى وجود هوية | `tradraig user list` ثم تفعيل الخطة المؤسسية من الهوية الأساسية |
 | `secrets status` لا يعرض قيمًا | هذا التصميم (لا تسريب عبر أي سطح) | القيم الحقيقية في الخزنة؛ للتحقق الأعمى جرّب `api /secrets/status --get` واطلع على التوقيت/backend فقط |
+| فرصة `qualified` لا تُنفَّذ | `TRADERAIG_OPPORTUNITY_GATE=1` — الموافقة مطلوبة | `tradraig opportunity approve --id OPP-XXXX` (سطر `approved` + `execute_pending=true`)؛ التنفيذ يbart عند الشمعة التالية |
+| `opportunity approve` رجع 403 | الموافقة تتطلّب `CAN_TRADE` لدى وجود هوية | `tradraig user list` ثم تفعيل الاشتراك (Pro فأعلى) من الهوية الأساسية |
+| `opportunity reject` رجع 403 | الرفض يتطلّب `CAN_MANAGE_RISK` (مؤسسي فقط) | فعّل الخطة المؤسسية؛ الرفض موثّق في `/audit` |
+| `opportunity approve` رجع 409 | الفرصة ليست `qualified` (مرفوضة/منتهية/نفّذت) | `tradraig opportunity show --id OPP-XXXX` لراجعتها؛ قرار جديد = فرصة جديدة |
 | RAM حرة < 1GB | حد التحميل | حرّر الذاكرة؛ استخدم 1b فقط |
 | البوابة «OFF» | افتراض التصميم | `gate on` + أعد تشغيل backend إن أردت تفعيلها |
 | موافقة تغيير ترجع 409 | المحرك قيد التشغيل (حارس السلامة) | الطلب يبقى معلّقًا — أعد المحاولة لاحقًا، لا نصف تطبيق |
@@ -228,7 +253,7 @@ python tools\tradraig.py secrets delete --slot cex.okx.demo_api_secret          
 ## الاختبارات
 
 ```powershell
-python -m pytest -q                        # المجموعة الكاملة (674)
+python -m pytest -q                        # المجموعة الكاملة (710)
 python -m pytest tests/test_ai_dspy/       # طبقة DSPy فقط
 python tests\test_operations\test_operator_console.py   # عبر pytest
 python scripts\mt5_live_session.py --no-trade   # إثبات التغذية الحية قراءةً فقط (بدون أمر)

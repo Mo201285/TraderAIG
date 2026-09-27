@@ -230,9 +230,15 @@ class OpportunityBoard:
     def _prune(self) -> None:
         if len(self._opportunities) <= self._MAX_ENTRIES:
             return
-        ordered = sorted(self._opportunities.values(),
-                         key=lambda o: o.detected_at, reverse=True)
-        keep = {o.opportunity_id for o in ordered[:self._MAX_ENTRIES]}
+        # Keep the newest MAX entries. Ties on `detected_at` (coarse clocks make
+        # several records share one stamp) must break by insertion order, not by
+        # dict/hash order — a stable sort on the insertion-ordered list does
+        # exactly that, so the last-added record is never the one dropped.
+        newest_first = sorted(
+            enumerate(self._opportunities.values()),
+            key=lambda pair: (pair[1].detected_at, pair[0]),
+            reverse=True)
+        keep = {o.opportunity_id for _, o in newest_first[:self._MAX_ENTRIES]}
         self._opportunities = {
             k: v for k, v in self._opportunities.items() if k in keep}
 

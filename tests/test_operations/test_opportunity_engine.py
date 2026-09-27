@@ -159,7 +159,10 @@ def test_board_saves_are_debounced_and_updates_flush(tmp_path):
                         confidence=0.5, priority=50, score=50.0)
     b.add(first)
     assert path.exists()  # first record persists immediately
-    stamp = path.stat().st_mtime
+    # Assert on file CONTENT, never on mtime: filesystem timestamp resolution
+    # is coarse on CI and makes mtime comparisons flaky.
+    written = path.read_text(encoding="utf-8")
+    assert "OPP-1" in written and "OPP-2" not in written
     second = Opportunity(opportunity_id="OPP-2", symbol="X", direction="long",
                          source="s", session_key="k2", thesis_id="t",
                          candidate_id="c", strategy_id=None,
@@ -168,10 +171,10 @@ def test_board_saves_are_debounced_and_updates_flush(tmp_path):
                          confidence=0.5, priority=50, score=50.0)
     b.add(second)          # inside the debounce window: memory only
     assert b.get("OPP-2") is not None
-    assert path.stat().st_mtime == stamp
+    assert path.read_text(encoding="utf-8") == written  # still not on disk
     b.flush()              # explicit flush persists the batch
-    assert path.stat().st_mtime != stamp
-    assert "OPP-2" in path.read_text(encoding="utf-8")
+    flushed = path.read_text(encoding="utf-8")
+    assert "OPP-2" in flushed and flushed != written
     second.approve()
     b.update(second)       # governed transition: immediate durable write
     assert '"approved"' in path.read_text(encoding="utf-8")
@@ -188,8 +191,23 @@ def test_board_prunes_bounded_entries(tmp_path):
                           take_profit=1.2, size=1.0, risk_reward=2.0,
                           confidence=0.5, priority=50, score=50.0))
     assert len(b.list()) == 5
-    assert b.get("OPP-8") is not None      # newest kept
-    assert b.get("OPP-0") is None         # oldest pruned
+    # Newest kept, oldest pruned — including when every record shares one
+    # timestamp (a coarse clock ties `detected_at`), where insertion order
+    # must break the tie in favour of the last added record.
+    assert b.get("OPP-8") is not None
+    assert b.get("OPP-0") is None
+    tied = OpportunityBoard(path=tmp_path / "tied.json")
+    tied._MAX_ENTRIES = 3
+    for i in range(6):
+        opp = Opportunity(opportunity_id=f"T-{i}", symbol="X", direction="long",
+                          source="s", session_key=f"k{i}", thesis_id="t",
+                          candidate_id="c", strategy_id=None,
+                          strategy_stage=None, entry=1.0, stop_loss=0.9,
+                          take_profit=1.2, size=1.0, risk_reward=2.0,
+                          confidence=0.5, priority=50, score=50.0)
+        opp.detected_at = 1_700_000_000.0  # identical stamps on purpose
+        tied.add(opp)
+    assert [o.opportunity_id for o in tied.list()] == ["T-3", "T-4", "T-5"]
 
 
 def test_screen_qualified_packages_real_decision(board):

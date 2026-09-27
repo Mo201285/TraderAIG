@@ -1391,7 +1391,8 @@ def cmd_opportunity(args: argparse.Namespace) -> int:
         rd = ev.get("risk_decision") or {}
         print("  risk checks:")
         for c in rd.get("checks") or []:
-            print(f"    - {c.get('check')}: ok={c.get('ok')} {c.get('detail', '')}")
+            print(f"    - {c.get('name')}: passed={c.get('passed')} "
+                  f"{c.get('detail', '')}")
         print("  history:")
         for h in data["history"]:
             print(f"    {h['ts'][:19]}Z {h['status']}: {h['note']}")

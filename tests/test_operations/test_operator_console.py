@@ -359,7 +359,11 @@ def test_cmd_opportunity_show_prints_evidence(monkeypatch, capsys):
         "allocation_ok": True, "allocation_reason": "within limit",
         "live_eligible": True, "live_eligibility_reason": "stage=paper",
         "screen_reasons": [], "evidence": {"risk_decision": {
-            "checks": [{"check": "daily_loss", "ok": True, "detail": {}}]}},
+            # real RiskDecision.as_dict() keys (name/passed) - the console must
+            # render the real check names, not None.
+            "checks": [{"name": "daily_loss", "passed": True, "detail": {}},
+                       {"name": "symbol_exposure", "passed": False,
+                        "detail": {"current": 6.0, "max": 5.0}}]}},
         "history": [{"ts": "2026-09-27T10:00:00Z", "status": "qualified",
                      "note": "screen passed"}],
     }))
@@ -367,7 +371,10 @@ def test_cmd_opportunity_show_prints_evidence(monkeypatch, capsys):
         action="show", id="OPP-1", status="", reason="", lang="en", json=False))
     assert rc == 0
     out = capsys.readouterr().out
-    assert "OPP-1" in out and "daily_loss" in out and "all checks passed" in out
+    assert "OPP-1" in out and "all checks passed" in out
+    assert "daily_loss" in out and "passed=True" in out
+    assert "symbol_exposure" in out and "passed=False" in out
+    assert "None" not in out.split("risk checks:")[1].split("history:")[0]
 
 
 def test_cmd_opportunity_approve_posts_to_api(monkeypatch, capsys):

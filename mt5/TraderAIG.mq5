@@ -50,11 +50,19 @@ input int    InpMarketIntervalMS = 1000;      // Market publish cadence (ms)
 //+------------------------------------------------------------------+
 CTrade   trade;
 string   g_symbol;
+// The market publisher follows the CHART's own symbol, not the trading
+// filter. `InpSymbolFilter` is a decision about what to trade; the data this
+// EA publishes must be the symbol the terminal is actually streaming here.
+// Conflating the two was silent: on a BTCUSD chart the publisher went looking
+// for XAUUSD ticks, found none, and wrote nothing at all while looking
+// perfectly healthy in the Experts log.
+string   g_marketSymbol;
 ulong    g_lastTicket        = 0;
 datetime g_lastBridgeCheck   = 0;
 bool     g_hardStopTriggered = false;
 double   g_sessionStartEquity = 0.0;
 datetime g_lastMarketWrite   = 0;
+bool     g_marketWriteReported = false;   // one diagnostic per session, not one per tick
 
 //+------------------------------------------------------------------+
 //| Initialization                                                   |
@@ -62,6 +70,7 @@ datetime g_lastMarketWrite   = 0;
 int OnInit()
   {
    g_symbol = InpSymbolFilter;
+   g_marketSymbol = _Symbol;
 
    trade.SetExpertMagicNumber(123456);
    trade.SetDeviationInPoints(20);
@@ -70,8 +79,8 @@ int OnInit()
    g_sessionStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    g_hardStopTriggered  = false;
 
-   PrintFormat("TraderAIG EA initialized on %s | equity=%.2f",
-               g_symbol, g_sessionStartEquity);
+   PrintFormat("TraderAIG EA initialized on %s | equity=%.2f | publishing %s",
+               g_symbol, g_sessionStartEquity, g_marketSymbol);
    return(INIT_SUCCEEDED);
   }
 
@@ -367,7 +376,7 @@ string JsonInt(const long value)
 string MarketFrameJson()
   {
    MqlTick tick;
-   if(!SymbolInfoTick(g_symbol, tick))
+   if(!SymbolInfoTick(g_marketSymbol, tick))
       return("");
 
    string tfName = MarketTimeframeName((ENUM_TIMEFRAMES)InpMarketTimeframe);
@@ -381,20 +390,36 @@ string MarketFrameJson()
    double last = tick.last;
    double bid  = tick.bid;
    double ask  = tick.ask;
-   if(last <= 0.0 || bid <= 0.0 || ask <= 0.0)
+   // Two real sides is what makes a quote usable. `last` is NOT part of that
+   // test: plenty of real venues (every crypto CFD here, for one) report no
+   // last trade at all and only ever fill bid/ask. Gating on `last > 0` meant
+   // the publisher stayed silent on exactly the symbol the operator trades.
+   // The server derives last from the mid when the terminal has no last, so
+   // nothing is invented here.
+   if(bid <= 0.0 || ask <= 0.0)
       return("");   // no real two-sided price: publish nothing rather than guess
+   if(ask < bid)
+      return("");   // crossed book: not a real market state
 
    datetime now      = TimeCurrent();
    datetime barStart = (datetime)(((long)now / barSeconds) * barSeconds);
 
    string json = "{";
-   json += "\"symbol\":\"" + g_symbol + "\",";
+   json += "\"symbol\":\"" + g_marketSymbol + "\",";
    json += "\"timeframe\":\"" + tfName + "\",";
    json += "\"time\":" + JsonInt((long)now) + ",";
+   // When the venue reports no last trade, the mid of the two real sides is
+   // published instead -- the same rule `execution/mt5_adapter.py` already
+   // applies to this terminal's ticks, so nothing downstream has to invent a
+   // price of its own. `last_source` says which it is, so a consumer can tell
+   // a traded last from a derived mid; the frame is self-describing rather
+   // than quietly presenting a mid as a trade.
+   bool lastIsTrade = (last > 0.0);
    json += "\"quote\":{";
    json += "\"bid\":"       + JsonNumber(bid) + ",";
    json += "\"ask\":"       + JsonNumber(ask) + ",";
-   json += "\"last\":"      + JsonNumber(last) + ",";
+   json += "\"last\":"      + JsonNumber(lastIsTrade ? last : (bid + ask) / 2.0) + ",";
+   json += "\"last_source\":\"" + (lastIsTrade ? "trade" : "mid") + "\",";
    json += "\"spread\":"    + JsonNumber(ask - bid) + ",";
    json += "\"tick_time\":" + JsonInt((long)tick.time);
    json += "}";
@@ -402,11 +427,11 @@ string MarketFrameJson()
    // The forming bar: real o/h/l/c so far, re-sent on every publish. The
    // server replaces the bar with the same timestamp, so this is a stream,
    // not duplicate history.
-   double barOpen  = iOpen (g_symbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
-   double barHigh  = iHigh (g_symbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
-   double barLow   = iLow  (g_symbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
-   double barClose = iClose(g_symbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
-   long   barVol   = iVolume(g_symbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
+   double barOpen  = iOpen (g_marketSymbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
+   double barHigh  = iHigh (g_marketSymbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
+   double barLow   = iLow  (g_marketSymbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
+   double barClose = iClose(g_marketSymbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
+   long   barVol   = iVolume(g_marketSymbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
    if(barOpen > 0.0 && barHigh > 0.0 && barLow > 0.0 && barClose > 0.0)
      {
       json += ",\"bars\":[{";
@@ -439,20 +464,43 @@ void PublishMarketFrame()
    if(StringLen(json) < 2)
       return;
 
+   // MQL5 will not write outside its sandbox, and with FILE_COMMON it resolves
+   // a RELATIVE path against the shared root `<TERMINAL_COMMONDATA_PATH>\Files`.
+   // A live attach proved both halves of that: an absolute path under Common
+   // returned err 5002 while a probe file in the common root wrote fine, and
+   // FolderCreate on that absolute path failed the same way. So: relative here,
+   // `<common>\Files\market\<SYMBOL>.json` on disk, and the server points
+   // MT5_COMMON_DATA at `<common>\Files`.
    string commonPath = TerminalInfoString(TERMINAL_COMMONDATA_PATH);
-   string dir        = commonPath + "\\" + InpMarketSubDir;
-   string filePath   = dir + "\\" + g_symbol + ".json";
+   string relDir     = InpMarketSubDir;                 // resolved under Common\Files
+   string dir        = commonPath + "\\Files\\" + relDir;
+   string filePath   = relDir + "\\" + g_marketSymbol + ".json";
 
-   // FolderCreate returns false when the folder already exists, which is the
-   // normal case after the first tick, so its return value alone proves
-   // nothing. The FileOpen below is the real test: if the directory is not
-   // there, that is where it shows up.
-   FolderCreate(dir);
+   bool dirMade = FolderCreate(relDir, FILE_COMMON);
+   int  dirErr  = GetLastError();
 
-   int handle = FileOpen(filePath, FILE_WRITE | FILE_TXT | FILE_ANSI);
+   int handle = FileOpen(filePath, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
    if(handle == INVALID_HANDLE)
      {
-      PrintFormat("TraderAIG market: cannot write %s", filePath);
+      int err = GetLastError();
+      // Say exactly once per session why the publisher is dead, and whether
+      // the shared root itself is writable: "cannot write" with no cause is
+      // what made the first live attach pointless.
+      if(!g_marketWriteReported)
+        {
+         g_marketWriteReported = true;
+         int probe = FileOpen("TraderAIG_probe.tmp",
+                              FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
+         bool rootWritable = (probe != INVALID_HANDLE);
+         if(probe != INVALID_HANDLE)
+            FileClose(probe);
+         PrintFormat("TraderAIG market: cannot write %s (err %d) | common=%s | "
+                     "dirCreated=%d dirErr=%d | commonRootWritable=%d",
+                     filePath, err, commonPath, (int)dirMade, dirErr,
+                     (int)rootWritable);
+        }
+      // Throttle the failure too, or a bad path spams the log on every tick.
+      g_lastMarketWrite = now;
       return;
      }
 

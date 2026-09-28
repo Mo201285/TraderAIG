@@ -195,10 +195,13 @@ python scripts\mt5_live_session.py [--no-trade]   # جلسة MT5 حقيقية (�
   `market` مُصادَق عليه بـ `TRADERAIG_BRIDGE_TOKEN` ومحدود المعدل (120 إطارًا/10
   ثوانٍ لكل جلسة)، أو ملف `<bridge>/market/<SYMBOL>.json` تكتبه `mt5/TraderAIG.mq5`
   v1.100. تُدخَل دائمًا ضمن طبقة `bridge` الأقل من mt5/cex، فلا تُبطل نافذة حيّة.
-  المجلد على الخادم `<bridge directory>/market/` — اضبط `MT5_COMMON_DATA` على
-  المجلد المشترك في الطرفية (نفس مجلد ملف الإشارة `TraderAIG_bridge.json`) وعلى
-  الطرفية `InpMarketSubDir="market"`؛ اختلاف المسار يجعل الطرفية تنشر في مجلد
-  لا يقرأه الخادم إطلاقًا.
+  المسار **متحقَّق منه على طرفية MT5 حقيقية** (ديمو FTTrading-Server): تكتب
+  الطرفية في `<TERMINAL_COMMONDATA_PATH>\Files\market\<SYMBOL>.json`، فاضبط
+  `MT5_COMMON_DATA` على `<TERMINAL_COMMONDATA_PATH>\Files` (لاحظ `Files`) وعلى
+  الطرفية `InpMarketSubDir="market"`. الاختلاف في المسار يجعل الطرفية تنشر في
+  مجلد لا يقرأه الخادم إطلاقًا — وقد كان هذا خللًا صامتًا ثلاث مرات: المسار
+  المطلق خارج صندوق MQL5 (خطأ 5002)، و`last=0.0` عند venues التي تملأ bid/ask
+  فقط (BTCUSD هنا)، والناشر يتبع `InpSymbolFilter` بدل رمز الـchart.
   الإطار الناقص (بلا رمز)، أو بإطار زمني غير معروف، أو بقيمة مبتورة، أو بتكة
   أحادية الجانب، أو بلا وقت تكة حقيقي **يُرفض بسببه ولا يُخمَّن**.
 - **الاستطلاع**: `GET /market/data` · `GET /market/quote` · `GET /market/feeds` ·

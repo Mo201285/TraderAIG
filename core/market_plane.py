@@ -701,17 +701,27 @@ class MarketPlane:
         ask = float(quote.get("ask") or 0.0)
         if bid <= 0 or ask <= 0:
             raise ValueError("quote needs a real positive bid and ask")
+        if ask < bid:
+            raise ValueError("crossed quote: ask is below bid, not a real book")
         tick_time = float(quote.get("time") or quote.get("timestamp")
                           or quote.get("tick_time") or frame.get("time")
                           or fetched_at or 0.0)
         if tick_time <= 0:
             raise ValueError("quote has no real tick time")
+        # Many venues never report a last trade (every crypto CFD here fills
+        # bid/ask only). Leaving last_price at 0 would not be "honest", it
+        # would be dangerous: risk/governor.py computes spread_ratio as
+        # spread/last_price, so a 0 silently turns that check off. The mid of
+        # two real sides is the same substitution execution/mt5_adapter.py
+        # already makes for this terminal's ticks.
+        reported_last = float(quote.get("last_price") or quote.get("price")
+                              or quote.get("last") or 0.0)
+        last_price = reported_last if reported_last > 0 else (bid + ask) / 2.0
         return MarketState(
             symbol=sym,
             bid=bid, ask=ask,
             spread=float(quote.get("spread") or (ask - bid)),
-            last_price=float(quote.get("last_price") or quote.get("price")
-                             or quote.get("last") or 0.0),
+            last_price=last_price,
             last_tick_time=tick_time,
             tick_size=float(quote.get("tick_size") or 0.0),
             contract_size=float(quote.get("contract_size") or 0.0),

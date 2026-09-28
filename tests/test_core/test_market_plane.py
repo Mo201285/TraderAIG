@@ -835,6 +835,47 @@ def test_bridge_quote_without_a_tick_time_is_rejected():
     assert p.quote("XAUUSD") is None
 
 
+def test_quote_with_no_reported_last_uses_the_mid_not_zero():
+    """A venue that fills bid/ask only must not leave last_price at 0.
+
+    risk/governor.py computes spread_ratio as spread/last_price, so a zero
+    there silently switches the check off. The mid of two real sides is the
+    substitution execution/mt5_adapter.py already makes for the same terminal.
+    Found by a real attach: FTTrading's BTCUSD reports last=0.0 on every tick.
+    """
+    p = MarketPlane()
+    got = p.ingest_bridge_frame({"symbol": "BTCUSD", "timeframe": "M1",
+                                 "quote": {"bid": 83679.7, "ask": 83692.6,
+                                           "tick_time": BASE}},
+                                source="bridge")
+    assert "rejected" not in got, got.get("rejected")
+    q = p.quote("BTCUSD")
+    assert q is not None
+    assert q.last_price == pytest.approx((83679.7 + 83692.6) / 2.0)
+    assert q.spread == pytest.approx(12.9)
+    # and the risk check that depends on it stays live
+    assert q.spread / q.last_price > 0.0
+
+
+def test_reported_last_is_kept_and_not_overwritten_by_the_mid():
+    p = MarketPlane()
+    p.ingest_bridge_frame({"symbol": "XAUUSD", "timeframe": "M1",
+                           "quote": {"bid": 2400.0, "ask": 2400.5,
+                                     "last": 2400.25, "tick_time": BASE}},
+                          source="bridge")
+    assert p.quote("XAUUSD").last_price == pytest.approx(2400.25)
+
+
+def test_crossed_bridge_quote_is_rejected():
+    """bid above ask is not a real book state, whatever the payload claims."""
+    p = MarketPlane()
+    got = p.ingest_bridge_frame({"symbol": "XAUUSD", "timeframe": "M1",
+                                 "quote": {"bid": 2400.5, "ask": 2400.0,
+                                           "tick_time": BASE}}, source="bridge")
+    assert "crossed" in got["rejected"]
+    assert p.quote("XAUUSD") is None
+
+
 def test_junk_bridge_bars_without_a_quote_are_rejected_outright():
     p = MarketPlane()
     got = p.ingest_bridge_frame({"symbol": "XAUUSD", "timeframe": "M1",

@@ -129,6 +129,70 @@ def test_ea_compiles_with_zero_errors(tmp_path: Path) -> None:
     )
 
 
+def test_ea_does_not_gate_publishing_on_a_reported_last_trade() -> None:
+    """The live attach found this: FTTrading's BTCUSD fills bid/ask only.
+
+    `last=0.0` on every tick of the symbol the operator actually trades, and
+    the publisher required `last > 0` before it would write anything. The EA
+    looked healthy, was loaded, and published nothing at all. Two real sides
+    is the usability test; `last` is not part of it.
+    """
+    src = EA.read_text(encoding="utf-8", errors="replace")
+    assert "if(last <= 0.0 || bid <= 0.0 || ask <= 0.0)" not in src
+    assert "if(bid <= 0.0 || ask <= 0.0)" in src, (
+        "the two-sided quote test should stand on bid/ask alone"
+    )
+    # the mid substitution is declared, not silent
+    assert "last_source" in src
+    assert "(bid + ask) / 2.0" in src
+
+
+def test_ea_publishes_the_chart_symbol_not_the_trading_filter() -> None:
+    """Second live-attach defect: the publisher followed InpSymbolFilter.
+
+    On the operator's BTCUSD chart, `g_symbol = InpSymbolFilter` (XAUUSD) sent
+    the market publisher looking for XAUUSD ticks. It found none, wrote
+    nothing, and logged nothing - a healthy-looking EA publishing no market at
+    all. The data path must be the symbol the chart is actually streaming;
+    InpSymbolFilter stays a trading decision.
+    """
+    src = EA.read_text(encoding="utf-8", errors="replace")
+    assert "g_marketSymbol = _Symbol;" in src
+
+    start = src.index("string MarketFrameJson()")
+    end = src.index("//| Timer (fallback if tick frequency is low)")
+    market_region = src[start:end]
+    assert "g_marketSymbol" in market_region
+    assert "g_symbol" not in market_region, (
+        "the market publisher must not read the trading filter symbol"
+    )
+    # ...and the trading path still gates on the filter
+    assert "trade.PositionOpen(g_symbol" in src
+
+
+def test_ea_writes_inside_the_mql5_sandbox_with_the_common_flag() -> None:
+    """Third live-attach defect: the write path was outside the sandbox.
+
+    MQL5 refuses to write outside its own folders, and with FILE_COMMON it
+    resolves a *relative* path against `<TERMINAL_COMMONDATA_PATH>\\Files`. A
+    live attach proved it empirically: an absolute path under Common returned
+    err 5002 from both FolderCreate and FileOpen, while a probe file in the
+    common root wrote fine. So the frame path must be relative.
+    """
+    src = EA.read_text(encoding="utf-8", errors="replace")
+    assert "FILE_COMMON" in src
+    assert 'string relDir     = InpMarketSubDir;' in src, (
+        "the market dir must be a relative path resolved under the common root"
+    )
+    assert 'string filePath   = relDir + "\\\\" + g_marketSymbol + ".json";' in src
+    assert "FolderCreate(dir, FILE_COMMON)" not in src, (
+        "FolderCreate on the absolute path is what failed with err 5002"
+    )
+    # a failed write must say why, and must not retry on every tick
+    assert "cannot write %s (err %d)" in src
+    assert "commonRootWritable" in src
+
+
 def test_ea_frame_json_uses_no_uncompilable_constructs() -> None:
     """Guard the exact constructs that broke the build, as source facts.
 

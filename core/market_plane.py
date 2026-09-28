@@ -804,6 +804,18 @@ class MarketPlane:
             owner_registered = win.source in self._feeds if win is not None else False
         if win is None or not win.bars:
             return True
+        # A window owned by a publishing producer that is NOT a registered
+        # feed (e.g. `bridge:file` appending frames) must still be able to yield
+        # to a higher-ranked registered feed holding real history. Without
+        # this, once such a producer creates the window it is current-bar and
+        # fresh forever, so the rank-100 owner is never consulted and the
+        # canonical read stays history-starved while health reports "fresh".
+        if not owner_registered:
+            with self._lock:
+                feeds = dict(self._feeds)
+            if win.source and any(source_rank(f) > source_rank(win.source)
+                                  for f in feeds):
+                return True
         # The window is behind the market: a newer bar may already exist.
         if not win.is_current_bar(now):
             return True
@@ -817,8 +829,12 @@ class MarketPlane:
               now: float) -> Optional[FeedWindow]:
         """Pull from the highest-ranked registered feed for this symbol.
 
-        Preference: the source that already owns the window, else the highest
-        priority registered feed.
+        Preference: the source that already owns the window *if it is a
+        registered feed*, else the highest priority registered feed. An owner
+        that is not a registered feed (a publishing producer such as
+        `bridge:file`, which appends bars as frames arrive) is never a pull
+        target — otherwise a low-ranked publisher can hold a window forever and
+        starve a higher-ranked feed that holds real history.
         """
         with self._lock:
             feeds = dict(self._feeds)

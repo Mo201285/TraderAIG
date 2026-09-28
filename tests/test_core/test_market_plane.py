@@ -1017,3 +1017,80 @@ def test_publish_is_thread_safe_under_concurrent_producers():
         t.join()
     assert len(p.candles("SYMA", "M1")) == 200
     assert p.snapshot()["counters"]["appends"] == 600
+
+
+def test_unregistered_publisher_cannot_starve_a_higher_ranked_feed():
+    """A streaming publisher that is not a registered feed must not own a
+    window forever. This is the live M15 defect: `bridge:file` created the
+    window, so the window was current-bar and fresh, so no pull was ever due,
+    so the rank-100 mt5 feed holding real history was never consulted."""
+    calls = []
+
+    def feed(symbol, timeframe, count):
+        calls.append(count)
+        return series(count, start=current_bar_start("M15") - 900.0 * count,
+                      close=500.0)
+
+    p = MarketPlane(min_pull_interval=0.0)
+    p.register_feed("mt5", feed)
+    now = live()
+    # bridge:file is a publishing producer only - it is never registered.
+    p.append_bars("XAUUSD", "M15",
+                  [bar(current_bar_start("M15", now), 100.0)], source="bridge:file")
+    assert p.window("XAUUSD", "M15").source == "bridge:file"
+
+    read = p.read("XAUUSD", "M15", count=5)
+
+    assert calls, "a higher-ranked registered feed must be pulled"
+    assert read.source == "mt5"
+    assert read.candles[-1].close >= 500.0
+    assert len(read.candles) == 5, "the real history must replace the frame"
+
+
+def test_registered_owner_is_never_demoted_by_the_new_rule():
+    p = MarketPlane(min_pull_interval=0.0)
+    p.register_feed("mt5", lambda s, t, c: series(3, start=BASE, close=7.0))
+    p.read("XAUUSD", "M15", count=3)
+    win = p.window("XAUUSD", "M15")
+    assert win is not None and win.source == "mt5"
+
+    # A rank-50 publisher must not take the window away from the owner.
+    p.append_bars("XAUUSD", "M15", [bar(BASE + 3600.0, 1.0)], source="bridge:file")
+
+    assert p.window("XAUUSD", "M15").source == "mt5"
+    assert p.window("XAUUSD", "M15").shadowed
+
+
+def test_equal_or_lower_ranked_feeds_do_not_trigger_an_extra_pull():
+    """The new clause must not turn every read into a pull when the owner is
+    already the best available feed. Same name, so the owner IS a registered
+    feed and the pre-existing `owner_registered` path already handles it."""
+    calls = []
+
+    def feed(symbol, timeframe, count):
+        calls.append(count)
+        start = current_bar_start("M15") - 900.0 * (count - 1)
+        return series(count, start=start, close=9.0)
+
+    p = MarketPlane(min_pull_interval=0.0)
+    p.register_feed("bridge:file", feed)
+    p.append_bars("XAUUSD", "M15",
+                  [bar(current_bar_start("M15"), 2.0)], source="bridge:file")
+    p.read("XAUUSD", "M15", count=3)
+    first = len(calls)
+
+    p.read("XAUUSD", "M15", count=3)
+
+    assert len(calls) == first, "a registered owner must not be re-pulled"
+
+
+def test_no_registered_feeds_leaves_a_publisher_owned_window_alone():
+    p = MarketPlane(min_pull_interval=0.0)
+    now = live()
+    p.append_bars("XAUUSD", "M15",
+                  [bar(current_bar_start("M15", now), 3.0)], source="bridge:file")
+
+    read = p.read("XAUUSD", "M15", count=5)
+
+    assert read.source == "bridge:file"
+    assert read.candles[-1].close == 3.0

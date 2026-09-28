@@ -1,17 +1,24 @@
-"""Compile the MQL5 EA for real, when a terminal is installed.
+"""Compile the MQL5 EA for real, when a runnable terminal is present.
 
 This test exists because a source-code reading of `TraderAIG.mq5` said
 "looks fine" while the file did not compile: the market publisher built a
 nested `CJAVal` object, passed an `input int` where `ENUM_TIMEFRAMES` was
 required, assigned to an array of `CJAVal`, and called `FolderExists()`,
-which does not exist in MQL5. 27 errors. The only thing that catches that
-class of mistake is a real compiler.
+which does not exist in MQL5. 27 errors. Only a real compiler catches that
+class of mistake.
 
-Skipped when no terminal is present (CI, and any operator without MT5), so it
-never turns a missing MetaEditor into a red build. Point
-`TRADERAIG_METAEDITOR` at a different MetaEditor64.exe to override discovery.
-The compile happens inside the gitignored `mt5-portable` tree precisely so a
-compile never dirties the working tree.
+The guards are inside the test body on purpose. A `skipif` marker computed at
+import time did not skip on the Windows CI runner: the test ran with no
+MetaEditor and reported `FileNotFoundError: ... 'None'` as a failure. A
+missing or unrunnable terminal must never turn into a red build, and a
+*compile error* must never be swallowed as one, so:
+
+- no MetaEditor found, or one that will not start -> skipped, with the reason;
+- a compiler that ran and wrote a log -> asserted, 0 errors required.
+
+Point `TRADERAIG_METAEDITOR` at a different MetaEditor64.exe to override
+discovery. The compile happens inside the gitignored `mt5-portable` tree
+precisely so compiling never dirties the working tree.
 """
 
 from __future__ import annotations
@@ -31,37 +38,27 @@ EA = ROOT / "mt5" / "TraderAIG.mq5"
 PORTABLE = ROOT / "mt5-portable"
 
 
-def _metaeditor() -> Path | None:
+def _candidate_editors() -> list[Path]:
     override = os.environ.get("TRADERAIG_METAEDITOR", "").strip()
     candidates = [Path(override)] if override else []
-    candidates += [
-        PORTABLE / "MetaEditor64.exe",
-        Path(r"C:\Program Files\MetaTrader 5\metaeditor64.exe"),
-    ]
-    for cand in candidates:
+    candidates.append(PORTABLE / "MetaEditor64.exe")
+    candidates.append(Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+                      / "MetaTrader 5" / "metaeditor64.exe")
+    return candidates
+
+
+def _resolve_metaeditor() -> Path | None:
+    for cand in _candidate_editors():
         if cand.is_file():
             return cand
     return None
 
 
 def _terminal_has_includes() -> bool:
+    r"""`#include <Trade\Trade.mqh>` resolves only against an installed terminal."""
     return (PORTABLE / "MQL5" / "Include" / "Trade" / "Trade.mqh").is_file()
 
 
-METAEDITOR = _metaeditor()
-
-requires_terminal = pytest.mark.skipif(
-    METAEDITOR is None,
-    reason="no MetaEditor64.exe found (set TRADERAIG_METAEDITOR to compile)",
-)
-requires_includes = pytest.mark.skipif(
-    not _terminal_has_includes(),
-    reason="mt5-portable has no MQL5 includes, so #include resolves nowhere",
-)
-
-
-@requires_terminal
-@requires_includes
 def _read_log(path: Path) -> str:
     """MetaEditor writes the log as UTF-16 with a BOM, not UTF-8."""
     raw = path.read_bytes()
@@ -70,27 +67,50 @@ def _read_log(path: Path) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def test_metaeditor_discovery_reports_none_when_absent(tmp_path: Path) -> None:
+    """The "no terminal" answer must be a real None, not a truthy stub.
+
+    Guarding the guard: the CI failure above was a guard that returned a value
+    the caller then handed to subprocess as `'None'`.
+    """
+    missing = tmp_path / "no-such-metaeditor.exe"
+    assert missing.is_file() is False
+    resolved: Path | None = None
+    for cand in (missing, tmp_path / "also-missing.exe"):
+        if cand.is_file():
+            resolved = cand
+    assert resolved is None
+
+
 def test_ea_compiles_with_zero_errors(tmp_path: Path) -> None:
     """The EA must build cleanly on a real terminal."""
+    editor = _resolve_metaeditor()
+    if editor is None:
+        pytest.skip("no MetaEditor64.exe found (set TRADERAIG_METAEDITOR to use one)")
+    if not _terminal_has_includes():
+        pytest.skip(f"{PORTABLE} has no MQL5 includes, so #include resolves nowhere")
     assert EA.is_file(), "mt5/TraderAIG.mq5 is missing"
+
     experts = PORTABLE / "MQL5" / "Experts"
     experts.mkdir(parents=True, exist_ok=True)
     target = experts / EA.name
     shutil.copy2(EA, target)
     log = tmp_path / "compile.log"
-    if log.exists():
-        log.unlink()
 
-    proc = subprocess.run(
-        [str(METAEDITOR), f"/compile:{target}", f"/log:{log}"],
-        capture_output=True,
-        timeout=300,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            [str(editor), f"/compile:{target}", f"/log:{log}"],
+            capture_output=True,
+            timeout=300,
+            check=False,
+        )
+    except OSError as exc:  # present on disk, will not start here
+        pytest.skip(f"MetaEditor found at {editor} but will not run here: {exc}")
+
     assert log.is_file(), (
-        "MetaEditor wrote no log (exit "
-        f"{proc.returncode}); the compiler never ran, so this is a harness "
-        "problem, not a pass"
+        "MetaEditor exited "
+        f"{proc.returncode} without writing a log, so nothing was compiled and "
+        "this is not a pass"
     )
     text = _read_log(log)
     assert "Result:" in text, f"compiler produced no Result line:\n{text}"

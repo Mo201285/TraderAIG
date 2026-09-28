@@ -17,6 +17,7 @@ import pytest
 from core.contracts import Candle
 from research.strategy_lab.contracts import StrategyFamily
 from research.strategy_lab.market_spec import (
+    LAB_BAR_TIMEFRAME,
     MIN_FEATURE_BARS,
     MIN_SPLIT_BARS,
     detect_ambiguity,
@@ -123,6 +124,26 @@ def test_required_market_data_normalizes_symbol_and_timeframes():
     block = required_market_data("btc-usdt", "1h", "15m", "1m", 1000)
     assert block["symbol"] == "BTCUSDT"
     assert block["timeframes"] == {"htf": "H1", "setup": "M15", "trigger": "M1"}
+
+
+def test_required_market_data_states_the_timeframe_the_run_really_uses():
+    """It must not claim the family setup timeframe was the replayed series.
+
+    `strategy_lab_run.load_candles` is pinned to M1 for every source, so a
+    `bar_timeframe` of `setup_tf` (M15/H1/...) was stating a requirement the
+    lab never met. The definition's timeframes stay visible separately, and the
+    constant is tied to the loader so it cannot drift from it.
+    """
+    import inspect
+
+    from scripts.strategy_lab_run import load_candles
+
+    block = required_market_data("XAUUSD", "H1", "M15", "M1", 1000)
+    assert block["bar_timeframe"] == "M1" == LAB_BAR_TIMEFRAME
+    assert "M1" in block["bar_timeframe_note"]
+    assert block["timeframes"] == {"htf": "H1", "setup": "M15", "trigger": "M1"}
+    # the loader really is M1: that is where the constant comes from
+    assert '"M1"' in inspect.getsource(load_candles)
 
 
 def test_required_market_data_records_session_requirements():

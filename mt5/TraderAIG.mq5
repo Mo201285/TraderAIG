@@ -41,7 +41,7 @@ input int    InpBridgePollMS     = 1000;      // Bridge check engine (ms)
 
 input group "=== Market Publisher (28.6) ==="
 input bool   InpPublishMarket    = true;      // Publish tick/bar frames to the backend
-input string InpMarketSubDir     = "bridge\\market"; // market frame directory (Common folder)
+input string InpMarketSubDir     = "market";  // <Common>\market\ must match the server's bridge market dir
 input int    InpMarketTimeframe  = PERIOD_M15; // Bar timeframe published with each tick
 input int    InpMarketIntervalMS = 1000;      // Market publish cadence (ms)
 

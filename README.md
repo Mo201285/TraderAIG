@@ -169,7 +169,7 @@ curl http://127.0.0.1:8000/system/health
 ## الاختبارات
 
 ```bash
-python -m pytest -q                      # المجموعة الكاملة (877 اختباراً)
+python -m pytest -q                      # المجموعة الكاملة (879 اختباراً)
 python -m pytest tests/test_ai_dspy/     # طبقة الذكاء/برامج DSPy فقط
 cd "TAIG Dash" && node .\node_modules\typescript\bin\tsc --noEmit && node .\node_modules\vite\bin\vite.js build   # الواجهة: أنواع + بناء
 powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # فحص حي: إقلاع uvicorn حقيقي + قيادة الكونسول عبر HTTP
@@ -195,6 +195,10 @@ python scripts\mt5_live_session.py [--no-trade]   # جلسة MT5 حقيقية (�
   `market` مُصادَق عليه بـ `TRADERAIG_BRIDGE_TOKEN` ومحدود المعدل (120 إطارًا/10
   ثوانٍ لكل جلسة)، أو ملف `<bridge>/market/<SYMBOL>.json` تكتبه `mt5/TraderAIG.mq5`
   v1.100. تُدخَل دائمًا ضمن طبقة `bridge` الأقل من mt5/cex، فلا تُبطل نافذة حيّة.
+  المجلد على الخادم `<bridge directory>/market/` — اضبط `MT5_COMMON_DATA` على
+  المجلد المشترك في الطرفية (نفس مجلد ملف الإشارة `TraderAIG_bridge.json`) وعلى
+  الطرفية `InpMarketSubDir="market"`؛ اختلاف المسار يجعل الطرفية تنشر في مجلد
+  لا يقرأه الخادم إطلاقًا.
   الإطار الناقص (بلا رمز)، أو بإطار زمني غير معروف، أو بقيمة مبتورة، أو بتكة
   أحادية الجانب، أو بلا وقت تكة حقيقي **يُرفض بسببه ولا يُخمَّن**.
 - **الاستطلاع**: `GET /market/data` · `GET /market/quote` · `GET /market/feeds` ·

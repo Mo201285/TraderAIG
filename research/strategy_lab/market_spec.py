@@ -37,6 +37,14 @@ MIN_FEATURE_BARS = 30
 # Bars the lab needs on top of that for a usable out-of-sample split.
 MIN_SPLIT_BARS = 200
 
+# The timeframe the lab actually replays. `scripts/strategy_lab_run.py` loads
+# M1 bars for every source and `extract_features` derives everything from that
+# one series, so a specification claiming the family's `setup_tf` was tested on
+# those bars would be claiming data it never loaded. The definition's
+# htf/setup/trigger stay visible under `timeframes`; `bar_timeframe` states
+# what the run actually consumed.
+LAB_BAR_TIMEFRAME = "M1"
+
 #: Fields every lab run needs from the candle series itself.
 BASE_CANDLE_FIELDS = ("time", "open", "high", "low", "close")
 
@@ -203,7 +211,11 @@ def required_market_data(asset: str, htf_tf: str, setup_tf: str,
             "setup": canonical_timeframe(setup_tf),
             "trigger": canonical_timeframe(trigger_tf),
         },
-        "bar_timeframe": canonical_timeframe(setup_tf),
+        "bar_timeframe": LAB_BAR_TIMEFRAME,
+        "bar_timeframe_note": (
+            "the lab replays M1 bars: every source is loaded at M1 and all "
+            "features are derived from that one series, so the htf/setup/trigger "
+            "above describe the family definition, not the bars this run used"),
         "required_bars": min_bars,
         "requested_bars": int(count),
         "sufficient": int(count) >= min_bars,

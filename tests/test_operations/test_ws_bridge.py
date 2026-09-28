@@ -10,6 +10,7 @@ never displace an MT5-owned quote or bar window.
 """
 
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -385,6 +386,27 @@ def test_market_frame_write_requires_a_symbol(tmp_path):
     bridge = MT5Bridge(filename="sig.json", directory=str(tmp_path))
     assert bridge.write_market_frame({"quote": {"bid": 1.0}}) is False
     assert bridge.read_market_frames() == {}
+
+
+def test_the_ea_and_the_server_agree_on_the_market_directory(monkeypatch,
+                                                             tmp_path):
+    """The EA's default and the server's read path must be the same folder.
+
+    The EA writes `<TERMINAL_COMMONDATA_PATH>\\<InpMarketSubDir>\\<SYMBOL>.json`
+    and the server reads `<bridge directory>/<market_subdir>/<SYMBOL>.json`.
+    With `MT5_COMMON_DATA` pointed at the terminal's common-data folder (the only
+    setting under which the *signal* file also lines up, since the EA reads
+    `<common>\\TraderAIG_bridge.json`), the subdirectory must be plain `market`
+    on both sides. It was `bridge\\market` in the EA, so the terminal would have
+    published into a folder the server never reads.
+    """
+    mq5 = (Path(__file__).resolve().parents[2] / "mt5" / "TraderAIG.mq5")
+    source = mq5.read_text(encoding="utf-8", errors="replace")
+    m = re.search(r'input string InpMarketSubDir\s*=\s*"([^"]+)"', source)
+    assert m, "InpMarketSubDir not found in TraderAIG.mq5"
+    monkeypatch.setenv("MT5_COMMON_DATA", str(tmp_path))
+    bridge = MT5Bridge()
+    assert bridge.market_directory == tmp_path / m.group(1)
 
 
 def test_unreadable_market_frame_is_skipped_not_guessed(tmp_path):

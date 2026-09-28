@@ -174,6 +174,12 @@ class FeedWindow:
     source: str = ""
     version: int = 0
     fetched_at: float = 0.0
+    # Monotonic publish sequence. `fetched_at` is a wall clock and its
+    # resolution is coarse on some platforms (time.time() steps every ~15ms on
+    # CPython/Windows < 3.13), so several publishes inside one tick tie and any
+    # "keep the newest windows" eviction would then drop the newest data and
+    # keep the oldest. The sequence makes that order exact and clock-independent.
+    seq: int = 0
     shadowed: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
@@ -344,6 +350,9 @@ class MarketPlane:
         self._reads = 0
         self._pulls = 0
         self._appends = 0
+        # Never reset: it is the plane's monotonic publish order, not a counter
+        # an operator or test resets.
+        self._seq = 0
 
     # -- feed registry ---------------------------------------------------
     def register_feed(self, source: str, fetcher: CandleFetcher) -> None:
@@ -495,6 +504,8 @@ class MarketPlane:
             win.source = source or win.source or "unknown"
             win.version += 1
             win.fetched_at = float(fetched_at) if fetched_at else _now()
+            self._seq += 1
+            win.seq = self._seq
             self._publishes += 1
             self._prune_windows()
             return win
@@ -548,6 +559,8 @@ class MarketPlane:
                 win.source = source or win.source or "unknown"
                 win.version += 1
                 win.fetched_at = float(fetched_at) if fetched_at else _now()
+                self._seq += 1
+                win.seq = self._seq
                 self._appends += 1
                 self._prune_windows()
             return accepted
@@ -879,8 +892,12 @@ class MarketPlane:
         with self._lock:
             if len(self._windows) <= self._max_windows:
                 return
+            # `seq` first: a coarse wall clock (time.time() steps ~15ms on
+            # CPython/Windows < 3.13) ties several publishes into one tick, and
+            # a tie would evict the newest windows and keep the oldest.
             ordered = sorted(self._windows.items(),
-                             key=lambda kv: kv[1].fetched_at, reverse=True)
+                             key=lambda kv: (kv[1].seq, kv[1].fetched_at),
+                             reverse=True)
             for key, _ in ordered[self._max_windows:]:
                 self._windows.pop(key, None)
                 self._last_pull_at.pop(key, None)

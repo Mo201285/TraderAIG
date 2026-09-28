@@ -106,7 +106,10 @@ def test_current_bar_start_is_aligned_to_the_bar_duration():
 
 def test_window_reports_whether_its_last_bar_is_the_forming_one():
     p = MarketPlane()
-    now = live()
+    # anchor 60s into the CURRENT M15 bar: using the raw wall clock made this
+    # test fail whenever it ran within the first 100s of a bar (~11% of the
+    # time), because `now + 100` had already rolled into the next bar.
+    now = current_bar_start("M15", live()) + 60.0
     forming = current_bar_start("M15", now)
     p.publish_candles("XAUUSD", "M15", [bar(forming, 1.0)], source="mt5")
     win = p.window("XAUUSD", "M15")
@@ -220,6 +223,39 @@ def test_window_count_is_bounded_by_most_recent_publish():
         p.publish_candles(sym, "M15", series(1, start=BASE + i * 900), source="mt5")
     assert len(p.snapshot()["windows"]) == 3
     assert "EEE" in p.symbols() and "AAA" not in p.symbols()
+
+
+def test_window_eviction_keeps_the_newest_when_the_clock_does_not_move():
+    """Eviction order must not depend on the wall clock's resolution.
+
+    Regression found in CI (CPython 3.12/Windows): `time.time()` there steps
+    every ~15ms, so five publishes in one tick share a `fetched_at` and the
+    eviction tie kept the OLDEST windows and dropped the newest data. Local
+    Python 3.13+ has a finer clock, so it passed only here.
+    """
+    p = MarketPlane(max_windows=3)
+    frozen = BASE
+    for i, sym in enumerate(["AAA", "BBB", "CCC", "DDD", "EEE"]):
+        p.publish_candles(sym, "M15", series(1, start=BASE + i * 900),
+                          source="mt5", fetched_at=frozen)
+    assert len(p.snapshot()["windows"]) == 3
+    assert p.symbols() == ["CCC", "DDD", "EEE"]
+    assert p.window("AAA", "M15") is None and p.window("EEE", "M15") is not None
+
+
+def test_appending_to_a_window_also_refreshes_its_eviction_position():
+    """A streaming append is a publish too: the active window must not be
+    evicted in favour of one that has been idle."""
+    p = MarketPlane(max_windows=2)
+    p.publish_candles("AAA", "M15", series(1, start=BASE), source="mt5")
+    p.publish_candles("BBB", "M15", series(1, start=BASE + 900), source="mt5")
+    p.append_bars("AAA", "M15",
+                  [bar(BASE + 1800, 1.5, symbol="AAA", timeframe="M15")],
+                  source="mt5")
+    p.publish_candles("CCC", "M15", series(1, start=BASE + 2700), source="mt5")
+    assert p.window("BBB", "M15") is None
+    assert p.window("AAA", "M15") is not None
+    assert p.window("CCC", "M15") is not None
 
 
 # -- single-source windows (no silent mixing) ------------------------------

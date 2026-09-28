@@ -20,8 +20,9 @@ from typing import Any, Dict, List, Optional
 
 from core.config import settings
 from core.logging import get_logger
+from core.market_plane import MarketPlane, canonical_symbol, market_plane
 from core.pipeline import TradingLoop
-from core.state import state
+from core.state import MarketState, state
 from execution.cex.gateway import CexGateway
 from execution.cex.venues import build_venue
 from learning.experience import ledger
@@ -52,6 +53,8 @@ class CexLiveEngine:
                  learn_every: int = 5,
                  htf_timeframe: Optional[str] = None,
                  htf_refresh_seconds: float = 300.0,
+                 poll_seconds: float = 15.0,
+                 plane: Optional[MarketPlane] = None,
                  paper: Optional[bool] = None) -> None:
         self._venue = build_venue(
             venue_name or settings.cex.venue,
@@ -63,10 +66,18 @@ class CexLiveEngine:
         self._learn_every = learn_every
         self._htf_timeframe = htf_timeframe
         self._htf_refresh_seconds = htf_refresh_seconds
+        self._poll_seconds = float(poll_seconds)
         self._paper_seeded = False
         self._paper_desks: Dict[str, PaperExecutor] = {}
         self._executor = CexGateway(venue=self._venue)
         self._loops = {}
+        # `cex:<venue>` ranks below `mt5` and above the file bridge, so a CEX
+        # window can never overwrite a terminal window for the same symbol, and
+        # the plane can serve this venue even with no MT5 terminal at all.
+        self._feed_source = f"cex:{getattr(self._venue, 'name', 'venue')}"
+        self._plane = plane if plane is not None else market_plane
+        self._registered_fetcher = None
+        self._ensure_feed()
         for sym in self._symbols:
             desk = PaperExecutor() if self._paper else None
             if desk is not None:
@@ -127,8 +138,16 @@ class CexLiveEngine:
         for sym in self._symbols:
             try:
                 loup = self._loops[sym]
-                candles = self._venue.fetch_candles(sym, self._timeframe, 300)
+                self._ensure_feed()
+                self._publish_quote(sym)
+                read = self._plane.read(sym, self._timeframe, 300,
+                                        max_age_seconds=self._poll_seconds)
+                candles = read.candles
                 if not candles:
+                    log.warning(
+                        f"CexLiveEngine cycle({sym}): no market data "
+                        f"(source={read.source or 'none'}, "
+                        f"freshness={read.freshness})")
                     continue
                 latest[sym] = candles[-1]
                 if len(candles) > self._last_len.get(sym, 0):
@@ -136,10 +155,9 @@ class CexLiveEngine:
                     if self._htf_timeframe and \
                             time.time() - self._htf_last_fetch.get(sym, 0) \
                             >= self._htf_refresh_seconds:
-                        htf_candles = self._venue.fetch_candles(
-                            sym, self._htf_timeframe, 300)
-                        if htf_candles:
-                            loup.on_htf_candles(list(htf_candles[-200:]))
+                        htf = self._plane.read(sym, self._htf_timeframe, 300)
+                        if htf.candles:
+                            loup.on_htf_candles(list(htf.candles[-200:]))
                         self._htf_last_fetch[sym] = time.time()
                     loup.on_new_candle(list(candles[-120:]))
             except Exception as exc:  # noqa: BLE001
@@ -151,6 +169,54 @@ class CexLiveEngine:
         if self._use_school_board and self._cycles % self._learn_every == 0:
             school_board.learn_from_ledger(ledger.all())
         return self._cycles
+
+    def _ensure_feed(self) -> None:
+        """(Re)bind the plane's feed to the venue actually in use.
+
+        A venue can be swapped or fail over after construction, so the binding
+        is refreshed per cycle rather than frozen at __init__ time — otherwise
+        the plane would silently keep pulling from the replaced venue. The
+        previous source is unregistered, because two same-rank CEX feeds would
+        leave the pull target up to dict ordering.
+        """
+        fetcher = self._venue.fetch_candles
+        source = f"cex:{getattr(self._venue, 'name', 'venue')}"
+        if self._registered_fetcher != fetcher or source != self._feed_source:
+            if self._registered_fetcher is not None and self._feed_source != source:
+                self._plane.unregister_feed(self._feed_source)
+            self._plane.register_feed(source, fetcher)
+            self._registered_fetcher = fetcher
+            self._feed_source = source
+
+    def _publish_quote(self, symbol: str) -> Optional[MarketState]:
+        """Publish the venue's real book ticker into the canonical plane.
+
+        Before the plane the CEX rail wrote *no* market state at all, so risk,
+        execution and the schools saw `None` for every crypto symbol. The
+        venue's public `bookTicker` is a real bid/ask pair, so the quote is
+        marked `derived=False`; a failed or empty ticker is skipped rather than
+        back-filled from a bar close.
+        """
+        sym = canonical_symbol(symbol)
+        try:
+            tick = self._venue.fetch_ticker(sym)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(f"CexLiveEngine ticker({sym}) failed: {exc}")
+            self._errors.append(f"ticker:{sym}:{exc}")
+            return None
+        if not isinstance(tick, dict) or not tick.get("ok"):
+            return None
+        bid = float(tick.get("bid") or 0.0)
+        ask = float(tick.get("ask") or 0.0)
+        if bid <= 0.0 and ask <= 0.0:
+            return None
+        mid = (bid + ask) / 2.0 if (bid > 0.0 and ask > 0.0) else max(bid, ask)
+        return self._plane.publish_quote(MarketState(
+            symbol=sym, bid=bid, ask=ask, spread=max(0.0, ask - bid),
+            last_price=mid,
+            # The public ticker carries no exchange timestamp; the honest claim
+            # is "observed by us now", not a borrowed bar time.
+            last_tick_time=time.time()), source=self._feed_source)
 
     def _cache_macro(self) -> None:
         try:
@@ -169,8 +235,16 @@ class CexLiveEngine:
         for sym in self._symbols:
             try:
                 loup = self._loops[sym]
-                candles = self._venue.fetch_candles(sym, self._timeframe, 300)
+                self._ensure_feed()
+                self._publish_quote(sym)
+                read = self._plane.read(sym, self._timeframe, 300,
+                                        max_age_seconds=self._poll_seconds)
+                candles = read.candles
                 if not candles:
+                    log.warning(
+                        f"CexLiveEngine paper cycle({sym}): no market data "
+                        f"(source={read.source or 'none'}, "
+                        f"freshness={read.freshness})")
                     continue
                 latest[sym] = candles[-1]
                 if len(candles) > self._last_len.get(sym, 0):
@@ -178,10 +252,9 @@ class CexLiveEngine:
                     if self._htf_timeframe and \
                             time.time() - self._htf_last_fetch.get(sym, 0) \
                             >= self._htf_refresh_seconds:
-                        htf_candles = self._venue.fetch_candles(
-                            sym, self._htf_timeframe, 300)
-                        if htf_candles:
-                            loup.on_htf_candles(list(htf_candles[-200:]))
+                        htf = self._plane.read(sym, self._htf_timeframe, 300)
+                        if htf.candles:
+                            loup.on_htf_candles(list(htf.candles[-200:]))
                         self._htf_last_fetch[sym] = time.time()
                     loup.on_new_candle(list(candles[-120:]))
                 self._paper_desks[sym].mark(candles[-1])

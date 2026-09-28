@@ -14,6 +14,11 @@ RESEARCH/CANDIDATE stage and then rides the existing *governed* promotion
 ladder (VALIDATED -> PAPER -> PRODUCTION) — there is no user shortcut into
 production. All mutations flow through the API endpoints wrapping this module
 (single authority); this module never touches runtime decision state.
+
+§28.6 completeness: a vet result also carries the canonical `required market
+data`, `required features`, `assumptions` and the detected ambiguous
+expressions, and a test result carries the real market provenance of the
+series it ran on (see :mod:`research.strategy_lab.market_spec`).
 """
 
 from __future__ import annotations
@@ -33,6 +38,14 @@ from .contracts import (
     StrategyFamily,
     TriggerModel,
 )
+from .market_spec import (
+    MIN_FEATURE_BARS,
+    MIN_SPLIT_BARS,
+    detect_ambiguity,
+    feature_specification,
+    market_provenance,
+    required_market_data,
+)
 from .registry import StrategyRegistry
 from .validation import ValidationLab
 
@@ -43,6 +56,18 @@ from .validation import ValidationLab
 ALLOWED_TIMEFRAMES = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
 DEFAULT_TFS = ("H1", "M15", "M1")  # htf, setup, trigger
 ALLOWED_SESSIONS = ("asia", "london", "newyork", "sydney")
+
+# Bar budget assumed when a user does not state one. Deliberately above
+# `market_spec.MIN_SPLIT_BARS` so a default proposal is actually testable.
+MIN_REQUESTED_BARS = 2000
+
+# A run below this many bars cannot resolve a single feature row, so it is
+# refused up front rather than reported as "0 trades".
+MIN_SERIES_BARS = MIN_FEATURE_BARS
+
+# Below this, features resolve but the out-of-sample split is thin. Not a
+# refusal: the run is allowed and the result says so explicitly.
+THIN_SERIES_BARS = MIN_SPLIT_BARS
 
 # Family DNA: trigger sets mirror the genome's per-family guidance.
 _TRIGGER_SET_FOR = {
@@ -151,6 +176,7 @@ class UserStrategySpec:
     min_rr: Optional[float] = None
     size_r: Optional[float] = None
     sessions: Tuple[str, ...] = ()
+    count: int = 0
 
     def as_dict(self) -> Dict:
         return {
@@ -165,12 +191,17 @@ class UserStrategySpec:
             "min_rr": self.min_rr,
             "size_r": self.size_r,
             "sessions": list(self.sessions),
+            "count": self.count,
         }
 
     @classmethod
     def from_payload(cls, payload: Dict) -> "UserStrategySpec":
         description = str(payload.get("description") or "").strip()
         sessions = payload.get("sessions") or []
+        try:
+            count = int(payload.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
         spec = cls(
             description=description,
             asset=str(payload.get("asset") or "XAUUSD").strip().upper(),
@@ -184,6 +215,7 @@ class UserStrategySpec:
             size_r=payload.get("size_r"),
             sessions=tuple(
                 str(s).strip().lower() for s in sessions if str(s).strip()),
+            count=max(0, count),
         )
         return spec
 
@@ -202,6 +234,11 @@ class VetResult:
     sessions: Tuple[str, ...] = ()
     reasons: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    # --- canonical specification blocks (28.6) -------------------------
+    market_data: Dict = field(default_factory=dict)
+    features: Dict = field(default_factory=dict)
+    assumptions: List[str] = field(default_factory=list)
+    ambiguities: List[Dict] = field(default_factory=list)
 
     def as_dict(self) -> Dict:
         return {
@@ -219,6 +256,10 @@ class VetResult:
             "sessions": list(self.sessions),
             "reasons": list(self.reasons),
             "warnings": list(self.warnings),
+            "required_market_data": dict(self.market_data),
+            "required_features": dict(self.features),
+            "assumptions": list(self.assumptions),
+            "ambiguities": [dict(a) for a in self.ambiguities],
         }
 
 
@@ -232,7 +273,57 @@ class VetEngine:
     def _attach_blocker(self, result: VetResult, reason: str) -> None:
         result.reasons.append(reason)
 
+    def _attach_specification(self, result: VetResult, spec: UserStrategySpec) -> None:
+        """Fill the canonical 28.6 blocks and record what was assumed.
+
+        Assumptions are explicit, not silent: every default the vet applied on
+        the user's behalf is named here, so a PASS never hides that the lab
+        chose a timeframe, a trigger model or a risk/reward bound.
+        """
+        text = str(spec.description or "").lower()
+
+        # §28.6 ambiguity detection: identify vague expressions and say what
+        # measurable definition the lab will use instead.
+        result.ambiguities = detect_ambiguity(text)
+        for amb in result.ambiguities:
+            result.assumptions.append(
+                f"'{amb['phrase']}' read as {amb['meaning']} ({amb['resolved_to']})"
+            )
+
+        if not spec.htf_tf:
+            result.assumptions.append(f"htf_tf defaulted to {result.htf_tf}")
+        if not spec.setup_tf:
+            result.assumptions.append(f"setup_tf defaulted to {result.setup_tf}")
+        if not spec.trigger_tf:
+            result.assumptions.append(f"trigger_tf defaulted to {result.trigger_tf}")
+        if not spec.trigger_model and result.trigger_model is not None:
+            result.assumptions.append(
+                f"trigger_model defaulted to {result.trigger_model.value}")
+        if not spec.exit_model and result.exit_model is not None:
+            result.assumptions.append(
+                f"exit_model defaulted to {result.exit_model.value}")
+        if spec.min_rr is None:
+            result.assumptions.append(
+                f"min_rr defaulted to {result.params.get('min_rr')}")
+        if not spec.sessions:
+            result.assumptions.append("no session filter (all sessions traded)")
+        result.assumptions.append("sl_atr fixed at 1.0 (lab default, not user-set)")
+        result.assumptions.append(
+            "no commission/swap model: cost is applied as a flat cost_r")
+
+        result.market_data = required_market_data(
+            result.asset, result.htf_tf, result.setup_tf, result.trigger_tf,
+            count=spec.count or MIN_REQUESTED_BARS, family=result.family,
+            sessions=result.sessions)
+        result.features = feature_specification(result.family)
+
     def vet(self, spec: UserStrategySpec) -> VetResult:
+        """Vet a description, then attach the canonical 28.6 specification."""
+        result = self._vet_checks(spec)
+        self._attach_specification(result, spec)
+        return _with_verdict(result)
+
+    def _vet_checks(self, spec: UserStrategySpec) -> VetResult:
         result = VetResult(asset=spec.asset or "XAUUSD")
 
         text = spec.description.lower()
@@ -512,6 +603,20 @@ def run_user_test(entry_id: str, asset: str, family: StrategyFamily,
     if not candles:
         raise StrategyIntakeError(
             f"{source} returned no candles for {asset.upper()}")
+    provenance = market_provenance(source, candles, asset=asset, timeframe="M1")
+    if provenance["bars"] < MIN_SERIES_BARS:
+        raise StrategyIntakeError(
+            f"{source} returned {provenance['bars']} bars for {asset.upper()}; "
+            f"at least {MIN_SERIES_BARS} are required to resolve any feature "
+            f"row")
+    if provenance["bars"] < THIN_SERIES_BARS:
+        # honest, not fatal: the out-of-sample split will be small, so say so
+        provenance["warning"] = (
+            f"only {provenance['bars']} bars: the 80/20 out-of-sample split "
+            f"leaves {int(provenance['bars'] * 0.2)} out-of-sample bars")
+        result_warnings = [provenance["warning"]]
+    else:
+        result_warnings = []
     rows = _extract(candles, asset.upper(), windows, minute_of_day)
     if not rows:
         raise StrategyIntakeError(
@@ -567,6 +672,12 @@ def run_user_test(entry_id: str, asset: str, family: StrategyFamily,
         "stage": registry.get(strategy_id).stage.value,
         "observations_file": obs_path.name,
         "cost_r": float(cost_r),
+        "market_provenance": provenance,
+        "warnings": list(result_warnings),
+        "required_market_data": required_market_data(
+            asset.upper(), htf_tf, setup_tf, trigger_tf, count, family=family,
+            sessions=tuple(sessions)),
+        "required_features": feature_specification(family),
     }
 
 

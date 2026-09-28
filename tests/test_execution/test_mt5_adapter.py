@@ -6,6 +6,7 @@ import pytest
 
 import execution.mt5_adapter as adapter_mod
 from core.contracts import TradeDirection
+from core.market_plane import MarketPlane, market_plane
 from core.state import CanonicalState, PositionState, state
 from decision.thesis import TradeCandidate
 from execution.mt5_adapter import MT5Adapter
@@ -45,11 +46,15 @@ def _make_fake_mt5():
     mt5.ORDER_FILLING_FOK = 0
     mt5.ORDER_FILLING_RETURN = 2
     mt5.ORDER_FILLING_BOC = 3
+    mt5.TIMEFRAME_M1 = 1
+    mt5.TIMEFRAME_M5 = 5
     mt5.TIMEFRAME_M15 = 15
+    mt5.TIMEFRAME_H1 = 16385
     mt5.TRADE_RETCODE_DONE = 10009
     mt5.last_error = lambda: (10011, "no error")
     mt5.initialize = lambda **kw: True
     mt5.shutdown = lambda: None
+    mt5.symbol_select = lambda sym, select: True
     mt5.terminal_info = lambda: SimpleNamespace(name="fake",
                                                 trade_allowed=True,
                                                 connected=True)
@@ -144,6 +149,70 @@ def test_fetch_candles_maps_real_rates(monkeypatch, adapter):
     assert candles[0].symbol == "XAUUSD"
     assert candles[0].timeframe == "M15"
     assert candles[-1].close == 2000.2
+
+
+def test_fetch_candles_normalizes_venue_timeframe_spelling(monkeypatch, adapter):
+    """A window can never mix MT5 constants with venue interval strings."""
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    seen = {}
+
+    def copy_rates(sym, tf, pos, count):
+        seen["tf"] = tf
+        return [{"time": 1000, "open": 1.0, "high": 2.0, "low": 0.5,
+                 "close": 1.5, "tick_volume": 1, "real_volume": 0}]
+
+    fake.copy_rates_from_pos = copy_rates
+    candles = adapter.fetch_candles("BTC-USDT", "1h")
+    assert candles[0].timeframe == "H1"
+    assert candles[0].symbol == "BTCUSDT"
+    assert seen["tf"] == fake.TIMEFRAME_H1
+
+
+def test_sync_market_publishes_the_quote_into_the_plane(monkeypatch, adapter):
+    """MT5 is the plane's quote producer; state and the plane share one object."""
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    fake.symbol_info_tick = lambda sym: SimpleNamespace(
+        bid=2000.0, ask=2000.5, last=2000.2, time=1700)
+    fake.symbol_info = lambda sym: SimpleNamespace(
+        trade_tick_size=0.01, trade_tick_value=1.0, trade_contract_size=100.0,
+        volume_min=0.01, volume_step=0.01, volume_max=10.0, trade_mode=4)
+    adapter._initialized = True
+
+    mk = adapter.sync_market("XAUUSD")
+    assert mk is not None
+    assert market_plane.quote("XAUUSD") is mk
+    assert state.get_market("XAUUSD") is mk
+    read = market_plane.quote_read("XAUUSD")
+    assert read.quote_source == "mt5"
+    assert read.derived_quote is False
+    assert read.freshness in ("fresh", "stale")
+    state.market.pop("XAUUSD", None)
+
+
+def test_register_market_feed_makes_the_terminal_pullable(monkeypatch, adapter):
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    fake.copy_rates_from_pos = lambda sym, tf, pos, count: [
+        {"time": 1700000000 + 900 * i, "open": 1.0, "high": 2.0, "low": 0.5,
+         "close": 1.5, "tick_volume": 1, "real_volume": 0} for i in range(3)]
+
+    plane = MarketPlane()
+    original = market_plane
+    try:
+        # point the adapter's publish/registration at the isolated plane
+        monkeypatch.setattr(adapter_mod, "market_plane", plane)
+        adapter.register_market_feed()
+        assert plane.feeds() == ["mt5"]
+        r = plane.read("XAUUSD", "M15", count=3)
+        assert r.source == "mt5" and len(r.candles) == 3
+    finally:
+        monkeypatch.setattr(adapter_mod, "market_plane", original)
+        plane.reset()
 
 
 def test_positions_sync_and_reconcile(monkeypatch, adapter):

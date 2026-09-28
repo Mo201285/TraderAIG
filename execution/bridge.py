@@ -24,9 +24,14 @@ class MT5Bridge:
     """File-based signal bridge to the MT5 terminal."""
 
     def __init__(self, filename: str = "TraderAIG_bridge.json",
-                 directory: Optional[str] = None) -> None:
+                 directory: Optional[str] = None,
+                 market_subdir: str = "market") -> None:
         self.filename = filename
         self.directory = directory or self._default_directory()
+        # Market frames live in their own directory and their own files: the
+        # signal file stays the single authority for approved orders, so a
+        # market publisher can never overwrite (or be overwritten by) a signal.
+        self.market_subdir = market_subdir
 
     def _default_directory(self) -> str:
         # Prefer a configured common-data path; otherwise use settings.root.
@@ -38,6 +43,10 @@ class MT5Bridge:
     @property
     def bridge_file(self) -> Path:
         return Path(self.directory) / self.filename
+
+    @property
+    def market_directory(self) -> Path:
+        return Path(self.directory) / self.market_subdir
 
     def send_signal(self, candidate: TradeCandidate,
                     fill_hint: Optional[float] = None) -> bool:
@@ -95,6 +104,51 @@ class MT5Bridge:
             return json.loads(self.bridge_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
+
+    # -- market transport (28.6) ----------------------------------------
+    def write_market_frame(self, payload: Dict) -> bool:
+        """Write one terminal market frame (tick and/or bar) for the plane.
+
+        One file per symbol, written atomically (temp + replace) so the backend
+        can never read a half-written frame. The caller is the EA/proxy; the
+        backend only ever *reads* these files, so a frame can never be invented
+        on this side of the wire.
+        """
+        symbol = str(payload.get("symbol") or "").strip().upper()
+        if not symbol:
+            log.warning("Bridge market frame rejected: no symbol")
+            return False
+        try:
+            self.market_directory.mkdir(parents=True, exist_ok=True)
+            target = self.market_directory / f"{symbol}.json"
+            tmp = target.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            os.replace(str(tmp), str(target))
+            return True
+        except OSError as exc:
+            log.error(f"Bridge market write failed for {symbol}: {exc}")
+            return False
+
+    def read_market_frames(self) -> Dict[str, Dict]:
+        """Read every terminal market frame on disk, keyed by symbol.
+
+        A malformed or unreadable file is skipped (never guessed at); the
+        plane's ingest is the only thing that turns these into market state.
+        """
+        frames: Dict[str, Dict] = {}
+        try:
+            files = sorted(self.market_directory.glob("*.json"))
+        except OSError:
+            return frames
+        for path in files:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                log.warning(f"Bridge market frame unreadable: {path.name} ({exc})")
+                continue
+            if isinstance(payload, dict) and payload.get("symbol"):
+                frames[str(payload["symbol"]).strip().upper()] = payload
+        return frames
 
 
 bridge = MT5Bridge()

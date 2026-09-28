@@ -9,10 +9,16 @@
 //|                                                                  |
 //|  Communication: file-based JSON bridge in the terminal's common  |
 //|  folder (visible to both the EA and the Python companion).       |
+//|                                                                  |
+//|  Market data (28.6): the EA also *publishes* its own tick and    |
+//|  forming-bar frame to <common>\bridge\market\<SYMBOL>.json.      |
+//|  Prices only flow terminal -> server; the server treats these    |
+//|  frames as the lowest-priority bridge source, so they can never  |
+//|  override a real MT5 window or quote owned by the Python core.   |
 //+------------------------------------------------------------------+
 #property copyright   "TraderAIG"
 #property link        ""
-#property version     "1.000"
+#property version     "1.100"
 #property description "TraderAIG execution agent - institutional layer."
 
 #include <Trade\Trade.mqh>
@@ -33,6 +39,12 @@ input group "=== Python Bridge ==="
 input string InpBridgeFileName   = "TraderAIG_bridge.json"; // shared file (Common folder)
 input int    InpBridgePollMS     = 1000;      // Bridge check engine (ms)
 
+input group "=== Market Publisher (28.6) ==="
+input bool   InpPublishMarket    = true;      // Publish tick/bar frames to the backend
+input string InpMarketSubDir     = "bridge\\market"; // market frame directory (Common folder)
+input int    InpMarketTimeframe  = PERIOD_M15; // Bar timeframe published with each tick
+input int    InpMarketIntervalMS = 1000;      // Market publish cadence (ms)
+
 //+------------------------------------------------------------------+
 //| Global state                                                      |
 //+------------------------------------------------------------------+
@@ -42,6 +54,7 @@ ulong    g_lastTicket        = 0;
 datetime g_lastBridgeCheck   = 0;
 bool     g_hardStopTriggered = false;
 double   g_sessionStartEquity = 0.0;
+datetime g_lastMarketWrite   = 0;
 
 //+------------------------------------------------------------------+
 //| Initialization                                                   |
@@ -83,6 +96,8 @@ void OnTick()
       HandleBridgeFile();
       g_lastBridgeCheck = TimeCurrent();
      }
+
+   PublishMarketFrame();
   }
 
 //+------------------------------------------------------------------+
@@ -286,6 +301,132 @@ bool SubmitOrder(string action, double volume, double sl, double tp, double pric
 
    g_lastTicket = trade.ResultOrder();
    return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Market publisher (28.6)                                          |
+//| Publishes the terminal's OWN real tick and forming bar so the    |
+//| Python core has a market source when no python-MT5 session is    |
+//| attached. Values come from SymbolInfo* only; nothing is derived,  |
+//| defaulted or guessed - a side the terminal does not report is     |
+//| simply not written.                                              |
+//+------------------------------------------------------------------+
+string MarketTimeframeName(const ENUM_TIMEFRAMES tf)
+  {
+   switch(tf)
+     {
+      case PERIOD_M1:  return("M1");
+      case PERIOD_M5:  return("M5");
+      case PERIOD_M15: return("M15");
+      case PERIOD_M30: return("M30");
+      case PERIOD_H1:  return("H1");
+      case PERIOD_H4:  return("H4");
+      case PERIOD_D1:  return("D1");
+      case PERIOD_W1:  return("W1");
+     }
+   return("M15");
+  }
+
+string MarketFrameJson()
+  {
+   MqlTick tick;
+   if(!SymbolInfoTick(g_symbol, tick))
+      return("");
+
+   string tfName = MarketTimeframeName((ENUM_TIMEFRAMES)InpMarketTimeframe);
+   int    barSeconds = PeriodSeconds((ENUM_TIMEFRAMES)InpMarketTimeframe);
+   if(barSeconds <= 0)
+      barSeconds = 900;
+
+   double last   = tick.last;
+   double bid    = tick.bid;
+   double ask    = tick.ask;
+   if(last <= 0.0 || bid <= 0.0 || ask <= 0.0)
+      return("");   // no real two-sided price: publish nothing rather than guess
+
+   datetime now      = TimeCurrent();
+   datetime barStart = (datetime)(((long)now / barSeconds) * barSeconds);
+
+   CJAVal root;
+   root["symbol"]   = g_symbol;
+   root["timeframe"] = tfName;
+   root["time"]     = (long)now;
+
+   CJAVal quote;
+   quote["bid"]        = bid;
+   quote["ask"]        = ask;
+   quote["last"]       = last;
+   quote["spread"]     = ask - bid;
+   quote["tick_time"]  = (long)tick.time;
+   root["quote"]       = quote;
+
+   // The forming bar: real o/h/l/c so far, updated on every publish. The
+   // server replaces the last bar on the same timestamp, so this is a
+   // stream, not a duplicate history.
+   double barOpen  = iOpen (g_symbol, InpMarketTimeframe, 0);
+   double barHigh  = iHigh (g_symbol, InpMarketTimeframe, 0);
+   double barLow   = iLow  (g_symbol, InpMarketTimeframe, 0);
+   double barClose = iClose(g_symbol, InpMarketTimeframe, 0);
+   long   barVol   = iVolume(g_symbol, InpMarketTimeframe, 0);
+   if(barOpen > 0.0 && barHigh > 0.0 && barLow > 0.0 && barClose > 0.0)
+     {
+      CJAVal bar;
+      bar["time"]        = (long)barStart;
+      bar["open"]        = barOpen;
+      bar["high"]        = barHigh;
+      bar["low"]         = barLow;
+      bar["close"]       = barClose;
+      bar["tick_volume"] = (long)barVol;
+
+      CJAVal bars[1];
+      bars[0] = bar;
+      root["bars"] = bars;
+     }
+   else
+     {
+      CJAVal bars[];
+      root["bars"] = bars;         // no real bar: send none, do not fake one
+     }
+
+   return(root.Serialize());
+  }
+
+void PublishMarketFrame()
+  {
+   if(!InpPublishMarket)
+      return;
+
+   datetime now = TimeCurrent();
+   long elapsedMs = (long)(now - g_lastMarketWrite) * 1000;
+   if(g_lastMarketWrite != 0 && elapsedMs < InpMarketIntervalMS)
+      return;
+
+   string json = MarketFrameJson();
+   if(StringLen(json) < 2)
+      return;
+
+   string commonPath = TerminalInfoString(TERMINAL_COMMONDATA_PATH);
+   string dir        = commonPath + "\\" + InpMarketSubDir;
+   string filePath   = dir + "\\" + g_symbol + ".json";
+
+   // FolderCreate returns false when the folder already exists, which is the
+   // normal case after the first tick; only a missing folder is a problem.
+   if(!FolderCreate(dir) && !FolderExists(dir))
+     {
+      PrintFormat("TraderAIG market: cannot create %s (err %d)", dir, GetLastError());
+      return;
+     }
+
+   int handle = FileOpen(filePath, FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if(handle == INVALID_HANDLE)
+     {
+      PrintFormat("TraderAIG market: cannot write %s", filePath);
+      return;
+     }
+
+   FileWriteString(handle, json);
+   FileClose(handle);
+   g_lastMarketWrite = now;
   }
 
 //+------------------------------------------------------------------+

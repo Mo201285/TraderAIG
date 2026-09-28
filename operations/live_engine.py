@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from core.config import settings
 from core.logging import get_logger
+from core.market_plane import MarketPlane, market_plane
 from core.pipeline import TradingLoop, recon_engine
 from core.state import state
 from execution.mt5_adapter import LiveMT5Executor, MT5Adapter, mt5_adapter
@@ -44,6 +45,8 @@ class LiveEngine:
                  learn_every: int = 5,
                  htf_timeframe: Optional[str] = None,
                  htf_refresh_seconds: float = 300.0,
+                 poll_seconds: float = 15.0,
+                 plane: Optional["MarketPlane"] = None,
                  paper: bool = False) -> None:
         self._adapter = adapter or mt5_adapter
         self._symbols = list(symbols) if symbols else self._default_symbols()
@@ -52,11 +55,19 @@ class LiveEngine:
         self._learn_every = learn_every
         self._htf_timeframe = htf_timeframe
         self._htf_refresh_seconds = htf_refresh_seconds
+        self._poll_seconds = float(poll_seconds)
         self._paper = paper
         self._paper_seeded = False
         self._paper_desks: Dict[str, PaperExecutor] = {}
         self._executor = LiveMT5Executor(self._adapter)
         self._loops = {}
+        # The engine is the wiring point for the live feed: the plane never
+        # imports MetaTrader, it is *given* this terminal's candle fetcher, and
+        # every consumer (engine, API, schools, strategy lab) then shares one
+        # window instead of hitting the terminal on its own. An injectable plane
+        # keeps tests and simulations off the live singleton.
+        self._plane = plane if plane is not None else market_plane
+        self._plane.register_feed("mt5", self._adapter.fetch_candles)
         self._pos_manager = PositionManager(
             adapter=self._adapter, paper=paper,
             ledger_path=str(settings.logging.directory / "position_manager.json"))
@@ -107,8 +118,18 @@ class LiveEngine:
         for sym in self._symbols:
             try:
                 self._adapter.sync_market(sym)
-                candles = self._adapter.fetch_candles(sym, self._timeframe, 300)
+                # One canonical read per symbol per cycle: the plane owns the
+                # window, so the quote that `sync_market` just published and the
+                # bars the decision loop analyses are provably from the same
+                # source and version (28.6 provenance).
+                read = self._plane.read(sym, self._timeframe, 300,
+                                         max_age_seconds=self._poll_seconds)
+                candles = read.candles
                 if not candles:
+                    log.warning(
+                        f"LiveEngine cycle({sym}): no market data "
+                        f"(source={read.source or 'none'}, "
+                        f"freshness={read.freshness})")
                     continue
                 latest[sym] = candles[-1]
                 if len(candles) > self._last_len.get(sym, 0):
@@ -118,10 +139,9 @@ class LiveEngine:
                     if self._htf_timeframe and \
                             time.time() - self._htf_last_fetch.get(sym, 0) \
                             >= self._htf_refresh_seconds:
-                        htf_candles = self._adapter.fetch_candles(
-                            sym, self._htf_timeframe, 300)
-                        if htf_candles:
-                            loop.on_htf_candles(list(htf_candles[-200:]))
+                        htf = self._plane.read(sym, self._htf_timeframe, 300)
+                        if htf.candles:
+                            loop.on_htf_candles(list(htf.candles[-200:]))
                         self._htf_last_fetch[sym] = time.time()
                     loop.on_new_candle(list(candles[-120:]))
             except Exception as exc:  # noqa: BLE001
@@ -152,8 +172,14 @@ class LiveEngine:
         for sym in self._symbols:
             try:
                 self._adapter.sync_market(sym)
-                candles = self._adapter.fetch_candles(sym, self._timeframe, 300)
+                read = self._plane.read(sym, self._timeframe, 300,
+                                         max_age_seconds=self._poll_seconds)
+                candles = read.candles
                 if not candles:
+                    log.warning(
+                        f"LiveEngine paper cycle({sym}): no market data "
+                        f"(source={read.source or 'none'}, "
+                        f"freshness={read.freshness})")
                     continue
                 latest[sym] = candles[-1]
                 loop = self._loops[sym]
@@ -162,10 +188,9 @@ class LiveEngine:
                     if self._htf_timeframe and \
                             time.time() - self._htf_last_fetch.get(sym, 0) \
                             >= self._htf_refresh_seconds:
-                        htf_candles = self._adapter.fetch_candles(
-                            sym, self._htf_timeframe, 300)
-                        if htf_candles:
-                            loop.on_htf_candles(list(htf_candles[-200:]))
+                        htf = self._plane.read(sym, self._htf_timeframe, 300)
+                        if htf.candles:
+                            loop.on_htf_candles(list(htf.candles[-200:]))
                         self._htf_last_fetch[sym] = time.time()
                     loop.on_new_candle(list(candles[-120:]))
                 self._paper_desks[sym].mark(candles[-1])

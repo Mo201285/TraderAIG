@@ -178,6 +178,17 @@ def main() -> None:
     if args.demo:
         run_demo()
 
+    # Terminal market bridge ingest (28.6): the EA writes market frames into
+    # <bridge>/market/*.json and the plane ingests them as the lowest priority
+    # source. Off unless TRADERAIG_MARKET_BRIDGE=1. The poller is started by the
+    # app startup (operations/api.py) so every way of booting the API behaves
+    # the same; this call is a harmless no-op that just makes the intent and the
+    # status line explicit at the CLI entrypoint.
+    from operations.market_bridge import MarketBridge, market_bridge
+    if MarketBridge.enabled_by_env():
+        market_bridge.start(float(os.getenv("MARKET_BRIDGE_INTERVAL", "2")))
+        log.info(f"Market bridge poller active: {market_bridge.status()}")
+
     log.info(f"Starting TraderAIG API on {settings.api.host}:{settings.api.port}")
     uvicorn.run("operations.api:app",
                 host=settings.api.host,

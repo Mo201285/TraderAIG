@@ -16,10 +16,17 @@ Wire contract (JSON frames, ``msg`` discriminator):
                    ping    {}
                    ack     {payload: {candidate_id, accepted, ...}}
                    status  {payload: {..terminal snapshot..}}
+                   market  {payload: {symbol, timeframe, quote, bars}}
                    error   {payload: {error, ...}}
 
 Single-authority rule: the server is the only producer of ``signal`` frames;
 a client-sent ``signal`` is reported as an error, never relayed.
+
+Market authority rule: a client MAY publish ``market`` frames (that is the
+point of the channel), but they are ingested as ``bridge:<session>`` — below
+``mt5`` and ``cex`` in the plane's source precedence — so a terminal proxy can
+never overwrite a live terminal/venue window. Frames are rate-limited per
+session and validated field-by-field; nothing is defaulted.
 """
 from __future__ import annotations
 
@@ -39,8 +46,14 @@ BRIDGE_TOKEN_ENV = "TRADERAIG_BRIDGE_TOKEN"
 
 QUEUE_CAPACITY = 256
 
-CLIENT_MSGS = frozenset({"hello", "ping", "ack", "status", "error"})
+# ``market`` is a client→server frame (terminal publishes its own prices).
+CLIENT_MSGS = frozenset({"hello", "ping", "ack", "status", "market", "error"})
 SIGNAL_TOPIC = "signals"
+
+# Per-session flood guard: a tick publisher needs a few frames a second, not
+# thousands. A token holder must not be able to spin the ingest path.
+MARKET_RATE_FRAMES = 120
+MARKET_RATE_WINDOW_SECONDS = 10.0
 
 
 def _now() -> float:
@@ -74,6 +87,23 @@ class BridgeSession:
         self.last_status: Optional[Dict[str, Any]] = None
         self.last_ack: Optional[Dict[str, Any]] = None
         self.closed = False
+        self.market_frames = 0
+        self.market_rejected = 0
+        self._market_stamps: list[float] = []
+
+    def allow_market_frame(self) -> bool:
+        """Flood guard for the market channel (event-loop thread only).
+
+        A terminal publishes a tick every few hundred ms; anything faster than
+        this cap is a runaway loop, not market data.
+        """
+        now = _now()
+        cutoff = now - MARKET_RATE_WINDOW_SECONDS
+        self._market_stamps = [t for t in self._market_stamps if t > cutoff]
+        if len(self._market_stamps) >= MARKET_RATE_FRAMES:
+            return False
+        self._market_stamps.append(now)
+        return True
 
     def enqueue(self, frame: Dict[str, Any]) -> bool:
         """Push a server→client frame. Safe to call from any thread."""
@@ -158,6 +188,8 @@ class BridgeHub:
                     "last_seen": s.last_seen,
                     "last_ack": s.last_ack,
                     "last_status": s.last_status,
+                    "market_frames": s.market_frames,
+                    "market_rejected": s.market_rejected,
                 }
                 for s in self._sessions.values()
             ]
@@ -165,6 +197,10 @@ class BridgeHub:
             "open": bool(self._sessions),
             "sessions": sessions,
             "token_required": bool(os.getenv(BRIDGE_TOKEN_ENV, "")),
+            "market_rate_limit": {
+                "frames": MARKET_RATE_FRAMES,
+                "window_seconds": MARKET_RATE_WINDOW_SECONDS,
+            },
         }
 
     def clear(self) -> None:

@@ -11,10 +11,18 @@ frames and mirrors the EA's own file acks. Requires `websockets`
 (declared in requirements.txt). The canonical ``tradraig`` console stays
 stdlib-only and does not depend on this script.
 
+Market direction (28.6, the opposite one): with ``--market`` the proxy also
+polls the terminal's own market frames (``<bridge>/market/<SYMBOL>.json``,
+written by the EA) and forwards them upstream as ``market`` frames. Prices
+only ever flow terminal → server; the proxy has no code path that writes a
+price, and the server treats the frames as the low-priority `bridge:*` tier
+so they can never displace an MT5-owned window or quote.
+
 Example:
     python scripts/mt5_bridge_proxy.py --url ws://127.0.0.1:8000/bridge/ws
         --token <TRADERAIG_BRIDGE_TOKEN> --bridge-dir <MT5_COMMON_DATA>
         --once   # send one signal, ack it, exit
+    python scripts/mt5_bridge_proxy.py --market   # upstream market only
 """
 from __future__ import annotations
 
@@ -55,8 +63,32 @@ def build_status(bridge: MT5Bridge) -> Dict[str, Any]:
     return {
         "bridge": bridge.read_status(),
         "file": bridge.bridge_file.name,
+        "market_directory": str(bridge.market_directory),
+        "market_symbols": sorted(bridge.read_market_frames()),
         "polled_at": time.time(),
     }
+
+
+def read_market_frames(bridge: MT5Bridge, seen: Dict[str, tuple]) -> List[Dict[str, Any]]:
+    """Return only the market frames that changed since the last poll.
+
+    The EA rewrites `<SYMBOL>.json` in place, so a change is detected by
+    modification time *and* size (mtime alone can miss a same-second rewrite).
+    The proxy forwards frames; it never builds, fills in or repairs one.
+    """
+    out: List[Dict[str, Any]] = []
+    for symbol, payload in bridge.read_market_frames().items():
+        try:
+            stat = (bridge.market_directory / f"{symbol}.json").stat()
+            stamp = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            stamp = (0, 0)
+        if seen.get(symbol) == stamp:
+            continue
+        seen[symbol] = stamp
+        if isinstance(payload, dict) and payload:
+            out.append({"msg": "market", "payload": payload})
+    return out
 
 
 def handle_signal(payload: Dict[str, Any], bridge: MT5Bridge) -> Dict[str, Any]:
@@ -95,7 +127,7 @@ def handle_server_frame(frame: Dict[str, Any], bridge: MT5Bridge,
 
 
 async def run_proxy(url: str, token: str, bridge: MT5Bridge, poll: float,
-                    once: bool) -> int:
+                     once: bool, market: bool = False) -> int:
     uri = url
     if token:
         sep = "&" if "?" in uri else "?"
@@ -109,13 +141,16 @@ async def run_proxy(url: str, token: str, bridge: MT5Bridge, poll: float,
     backoff = 1.0
     accepted_once: List[bool] = [False]
     last_poll = 0.0
-    print(f"mt5-bridge-proxy: connecting {uri}")
+    market_seen: Dict[str, tuple] = {}
+    print(f"mt5-bridge-proxy: connecting {uri}"
+          f"{' [market upstream on]' if market else ''}")
     while True:
         try:
             async with websockets.connect(uri, max_size=65536) as ws:
                 backoff = 1.0
                 print("mt5-bridge-proxy: connected")
                 last_poll = 0.0
+                market_seen.clear()
                 while True:
                     now = time.time()
                     if now - last_poll >= poll:
@@ -123,6 +158,9 @@ async def run_proxy(url: str, token: str, bridge: MT5Bridge, poll: float,
                         await ws.send(json.dumps(
                             {"msg": "status",
                              "payload": build_status(bridge)}))
+                        if market:
+                            for frame in read_market_frames(bridge, market_seen):
+                                await ws.send(json.dumps(frame))
                         last_poll = now
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
@@ -164,6 +202,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--poll", type=float, default=5.0)
     parser.add_argument("--once", action="store_true",
                         help="stop after one signal is accepted")
+    parser.add_argument("--market", action="store_true",
+                        help="forward the terminal's market frames upstream "
+                             "(28.6); they land in the plane as the "
+                             "lowest-priority bridge source")
     return parser.parse_args(argv)
 
 
@@ -171,7 +213,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     bridge = MT5Bridge(filename=args.filename, directory=args.bridge_dir)
     return asyncio.run(run_proxy(args.url, args.token, bridge, args.poll,
-                                 args.once))
+                                 args.once, market=args.market))
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ from core.contracts import (
 )
 from core.events import Event, EventType, bus
 from core.logging import get_logger
+from core.market_plane import canonical_symbol, canonical_timeframe, market_plane
 from core.state import (
     AccountState,
     MarketState,
@@ -231,7 +232,10 @@ class MT5Adapter:
             volume_step=float(getattr(si, "volume_step", 0.0) or 0.0),
             volume_max=float(getattr(si, "volume_max", 0.0) or 0.0),
         )
-        state.upsert_market(mk)
+        # The plane is the single writer for market data: publishing mirrors the
+        # SAME object into canonical state, so risk/execution/schools keep
+        # reading one instance while the plane keeps bars+quote+provenance.
+        market_plane.publish_quote(mk, source="mt5")
         if si.trade_mode == 0 or si.volume_max <= 0:
             log.debug(f"{symbol} is not tradeable in this terminal")
         self._sync_stats["market_syncs"] = self._sync_stats.get("market_syncs", 0) + 1
@@ -239,6 +243,29 @@ class MT5Adapter:
 
     def sync_market_all(self, symbols: List[str]) -> List[MarketState]:
         return [m for sym in symbols if (m := self.sync_market(sym)) is not None]
+
+    def register_market_feed(self) -> None:
+        """Publish this terminal as the plane's highest-priority candle feed.
+
+        Registered, not imported, by the plane (dependency inversion): the
+        plane never knows about MetaTrader, and it still works with no terminal
+        at all (bridge/CEX/backtest feeds only). `LiveEngine` registers the same
+        source in its constructor; this is the path for standalone adapter users
+        (scripts, probes, the chart API).
+        """
+        market_plane.register_feed("mt5", self.fetch_candles)
+
+    def sync_candles(self, symbol: str, timeframe: str = "M15",
+                     count: int = 300) -> List[Candle]:
+        """Fetch a real window and publish it to the plane (proactive warm).
+
+        A pull-on-read plane does not need this, but warming the cache at
+        startup means the first decision cycle reads history that is already
+        there instead of paying a terminal round-trip inside the cycle.
+        """
+        candles = self.fetch_candles(symbol, timeframe, count)
+        market_plane.publish_candles(symbol, timeframe, candles, source="mt5")
+        return candles
 
     # ------------------------------------------------------------------
     # Positions & orders
@@ -744,16 +771,23 @@ class MT5Adapter:
     # ------------------------------------------------------------------
     def fetch_candles(self, symbol: str, timeframe: str = "M15",
                       count: int = 300) -> List[Candle]:
-        """Pull real candles from the terminal into canonical Candle objects."""
+        """Pull real candles from the terminal into canonical Candle objects.
+
+        Accepts any timeframe spelling (`15m`, `TIMEFRAME_M15`) and returns the
+        canonical vocabulary, so a window can never mix MT5 constants with venue
+        interval strings.
+        """
+        tf_name = canonical_timeframe(timeframe)
         mt5 = _mt5()
-        tf = getattr(mt5, f"TIMEFRAME_{timeframe}", mt5.TIMEFRAME_M15)
+        tf = getattr(mt5, f"TIMEFRAME_{tf_name}", mt5.TIMEFRAME_M15)
         rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
         if rates is None or len(rates) == 0:
             self._last_error = str(mt5.last_error())
             log.warning(f"copy_rates failed for {symbol}: {self._last_error}")
             return []
         candles = [
-            Candle(symbol=symbol, timeframe=timeframe, time=int(r["time"]),
+            Candle(symbol=canonical_symbol(symbol), timeframe=tf_name,
+                   time=int(r["time"]),
                    open=float(r["open"]), high=float(r["high"]),
                    low=float(r["low"]), close=float(r["close"]),
                    volume=float(r["real_volume"] or 0), tick_volume=float(r["tick_volume"]))

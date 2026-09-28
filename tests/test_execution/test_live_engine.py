@@ -305,13 +305,18 @@ def _paper_trend_series():
 
 def test_live_engine_paper_watch_fills_desk_without_orders():
     from operations.live_engine import LiveEngine
+    from core.market_plane import MarketPlane
     from learning.experience import ledger
 
     state.__dict__.clear()
     state.__dict__.update(CanonicalState().__dict__)
     adapter = PaperFeedAdapter(_paper_trend_series())
+    # The plane caches on a real clock, so a 180-cycle simulation gets its own
+    # plane with the pull floor removed: each cycle is a fresh terminal read.
+    plane = MarketPlane(min_pull_interval=0.0)
     engine = LiveEngine(symbols=["XAUUSD"], timeframe="M15", adapter=adapter,
-                        learn_every=2, paper=True, htf_timeframe=None)
+                        learn_every=2, paper=True, htf_timeframe=None,
+                        poll_seconds=0.0, plane=plane)
 
     for _ in range(180):
         engine.cycle()
@@ -341,3 +346,55 @@ def test_live_engine_live_mode_is_not_paper():
     engine = LiveEngine(symbols=["XAUUSD"], adapter=adapter)
     assert engine.status()["paper"] is False
     assert "paper_stats" not in engine.status()
+
+
+def test_live_engine_cycle_reads_market_through_the_canonical_plane():
+    """One cycle = one shared plane read per symbol, with provenance.
+
+    Before the plane, the engine called `fetch_candles` directly while the
+    quote came from a separate `sync_market`, so nothing tied the two to one
+    source or version.
+    """
+    from core.market_plane import MarketPlane, current_bar_start
+    from operations.live_engine import LiveEngine
+
+    adapter = FakeAdapter(FakePos())
+    adapter.fetch_candles = MagicMock(
+        return_value=[contracts.Candle(
+            symbol="XAUUSD", timeframe="M15",
+            time=current_bar_start("M15") - 900.0 * i, open=4300.0 + i,
+            high=4301.0 + i, low=4299.0 + i, close=4300.5 + i,
+            volume=100.0, tick_volume=10) for i in range(80)])
+    plane = MarketPlane(min_pull_interval=0.0)
+    engine = LiveEngine(symbols=["XAUUSD"], adapter=adapter, htf_timeframe=None,
+                        use_school_board=False, plane=plane, poll_seconds=0.0)
+
+    assert plane.feeds() == ["mt5"], "the engine wires the terminal into the plane"
+    assert engine.cycle() == 1
+    assert adapter.fetch_candles.call_count == 1, "one shared read, not one per consumer"
+
+    win = plane.window("XAUUSD", "M15")
+    assert win is not None and win.source == "mt5" and len(win.bars) == 80
+    read = plane.read("XAUUSD", "M15", count=10, allow_pull=False)
+    assert read.provenance["source"] == "mt5"
+    assert read.provenance["version"] == win.version
+    assert len(read.candles) == 10
+
+
+def test_live_engine_cycle_does_not_pull_when_there_is_no_terminal():
+    """A dead terminal must degrade to an honest gap, not an exception."""
+    from core.market_plane import MarketPlane
+    from operations.live_engine import LiveEngine
+
+    adapter = FakeAdapter(FakePos())
+    adapter.fetch_candles = MagicMock(side_effect=RuntimeError("no terminal"))
+    plane = MarketPlane(min_pull_interval=0.0)
+    engine = LiveEngine(symbols=["XAUUSD"], adapter=adapter, htf_timeframe=None,
+                        use_school_board=False, plane=plane, poll_seconds=0.0)
+
+    assert engine.cycle() == 1          # the cycle completed
+    win = plane.window("XAUUSD", "M15")
+    assert win is not None and not win.bars
+    assert "no terminal" in win.errors[-1]
+    snap = plane.snapshot()
+    assert snap["summary"]["live"] is False

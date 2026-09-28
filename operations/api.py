@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from research.strategy_lab.registry import StrategyRegistry
@@ -32,10 +34,35 @@ from operations.alerts import alerts
 
 log = get_logger("operations.api")
 
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """App lifespan: start the opt-in terminal market-file ingest.
+
+    The poller is the ingest side of `GET /bridge/market`, so the app owns it —
+    otherwise the documented way of booting the API (`uvicorn
+    operations.api:app`, which is also what the live smoke test does) reports
+    `enabled_by_env: true` while never polling anything. `start()` is
+    idempotent, and it is opt-in: without `TRADERAIG_MARKET_BRIDGE=1` nothing
+    is started. Never raises — a market poller must not block the boot, and the
+    poller is a daemon thread so it never delays shutdown either.
+    """
+    try:
+        from operations.market_bridge import MarketBridge, market_bridge
+
+        if MarketBridge.enabled_by_env():
+            market_bridge.start(float(os.getenv("MARKET_BRIDGE_INTERVAL", "2")))
+            log.info(f"market bridge poller started: {market_bridge.status()}")
+    except Exception:  # noqa: BLE001
+        log.exception("market bridge poller failed to start")
+    yield
+
+
 app = FastAPI(
     title="TraderAIG Institutional Operating Core",
     version="1.0.0",
     description="Governance, Research, Decision, Risk/Execution, Learning.",
+    lifespan=_lifespan,
 )
 
 
@@ -133,16 +160,37 @@ def system_health() -> Dict:
     _comp("database", pers, "SQLite persistence active" if pers
           else "memory-only (persistence layer off)")
 
-    corpus_total = 0
+    # Market data reports the *real* feed state read from the canonical plane:
+    # which sources are registered, which windows/quotes are fresh, and how old
+    # they are. It used to report "N observations in the strategy-labs corpus",
+    # which was a research artifact presented as a live feed.
     try:
-        from ai.dspy.datasets.strategy_lab import corpus_summary
-        for _info in corpus_summary().values():
-            if isinstance(_info, dict):
-                corpus_total += int(_info.get("observations", 0) or 0)
-    except Exception:
-        corpus_total = 0
-    _comp("market_data", corpus_total > 0,
-          f"{corpus_total} observations in strategy-labs corpus")
+        from core.market_plane import market_plane
+        _snap = market_plane.snapshot()
+        _summary = _snap["summary"]
+        # `_snap["sources"]` = the sources that actually published these
+        # values. `_snap["feeds"]` is the pull registry and can contain an
+        # engine that never published, so naming it here would attribute a
+        # price to a source it did not come from.
+        _published = ", ".join(_snap["sources"]) or "an unattributed publisher"
+        if _summary["live"]:
+            _md_ok, _md_status = True, "Healthy"
+            _md_detail = (f"{_summary['quotes_fresh']} fresh quote(s), "
+                          f"{_summary['windows_fresh']} fresh window(s) "
+                          f"from {_published}")
+        elif _summary["quotes_total"] or _summary["windows_total"]:
+            _md_ok, _md_status = False, "Degraded"
+            _md_detail = ("feeds registered but nothing fresh: "
+                          f"{_summary['quotes_total']} quote(s), "
+                          f"{_summary['windows_total']} window(s), "
+                          f"published_by={_published}")
+        else:
+            _md_ok, _md_status = False, "Disconnected"
+            _md_detail = "no market feed has published to the canonical plane"
+    except Exception as _exc:  # noqa: BLE001
+        _md_ok, _md_status = False, "Error"
+        _md_detail = f"market plane unreadable: {_exc}"
+    _comp("market_data", _md_ok, _md_detail, _md_status)
 
     try:
         from ai.dspy.runtime import status as _dspy_status
@@ -2115,26 +2163,71 @@ CHART_TIMEFRAMES = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
 CHART_SYMBOLS = ("XAUUSD", "BTCUSD")
 
 
-def _mt5_candles_bounded(symbol: str, timeframe: str, bars: int,
-                         timeout: float = 10.0) -> List:
-    """Fetch live candles without ever blocking Flask for the full
-    connect()/copy_rates handshake (the terminal may be down or slow)."""
+def _mt5_ensure_connected_bounded(timeout: float = 10.0) -> bool:
+    """Bounded attach to the terminal; never block the API thread on a
+    full connect() handshake (the terminal may be down or slow)."""
     if mt5_adapter.connected:
-        return mt5_adapter.fetch_candles(symbol, timeframe, bars)
-    if not mt5_adapter._terminal_running():
-        mt5_adapter._last_error = "MT5_LOCKED: terminal64.exe not running"
-        return []
-    result: Dict[str, List] = {}
+        return True
+    running = getattr(mt5_adapter, "_terminal_running", None)
+    if not (callable(running) and running()):
+        try:
+            mt5_adapter._last_error = "MT5_LOCKED: terminal64.exe not running"
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+    done = {"ok": False}
 
     def _run() -> None:
-        if not mt5_adapter.connected:
-            mt5_adapter.connect()
-        result["candles"] = mt5_adapter.fetch_candles(symbol, timeframe, bars)
+        try:
+            done["ok"] = bool(mt5_adapter.connect())
+        except Exception:  # noqa: BLE001
+            done["ok"] = False
 
     t = _threading.Thread(target=_run, daemon=True)
     t.start()
     t.join(timeout)
-    return result.get("candles", [])
+    return bool(done["ok"])
+
+
+def _ensure_mt5_feed() -> None:
+    """Register the terminal as the plane's `mt5` feed, if one is available.
+
+    The engine does this too, but the API must also serve a read on a cold
+    process (the dashboard asks before any engine is started).
+    """
+    from core.market_plane import market_plane
+
+    fetcher = getattr(mt5_adapter, "fetch_candles", None)
+    if callable(fetcher):
+        market_plane.register_feed("mt5", fetcher)
+
+
+def _plane_candles_bounded(symbol: str, timeframe: str, bars: int,
+                            timeout: float = 10.0) -> Tuple[List, Dict]:
+    """Chart candles from the canonical plane, never blocking the API thread.
+
+    The plane is the one read path (28.6), so the chart shows exactly the bars
+    the decision pipeline saw, tagged with their real source. A first read may
+    need one terminal round-trip, so it runs on a worker with a hard timeout and
+    falls back to whatever the plane already holds.
+    """
+    from core.market_plane import market_plane
+
+    _mt5_ensure_connected_bounded(timeout)
+    _ensure_mt5_feed()
+    read = market_plane.read(symbol, timeframe, bars, allow_pull=False)
+    if not read.candles:
+        result: Dict[str, Any] = {}
+
+        def _run() -> None:
+            result["read"] = market_plane.read(symbol, timeframe, bars)
+
+        t = _threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout)
+        read = result.get("read") or market_plane.read(
+            symbol, timeframe, bars, allow_pull=False)
+    return read.candles, read.provenance
 
 
 @app.get("/chart/timeframes")
@@ -2146,19 +2239,21 @@ def chart_timeframes() -> Dict:
 def chart_context(symbol: str = "XAUUSD", timeframe: str = "M5",
                   bars: int = 300) -> Dict:
     """Live candles + the system's market read for the Chart page."""
-    symbol = symbol.upper()
+    from datetime import datetime as _dt
+    from core.market_plane import canonical_symbol
+    from intelligence.market_reader import build_market_context
+
+    symbol = canonical_symbol(symbol)
     if symbol not in CHART_SYMBOLS:
         raise HTTPException(status_code=400, detail="unsupported symbol")
     timeframe = timeframe if timeframe in CHART_TIMEFRAMES else "M5"
     bars = max(50, min(int(bars), 5000))
-    from datetime import datetime as _dt
-    from intelligence.market_reader import build_market_context
 
-    candles = _mt5_candles_bounded(symbol, timeframe, bars)
+    candles, provenance = _plane_candles_bounded(symbol, timeframe, bars)
     if not candles:
         return {"ok": False, "error": "no_candles",
                 "mt5_status": mt5_adapter.status(), "candles": [],
-                "context": None,
+                "context": None, "provenance": provenance,
                 "cex_status": _cex_status_compact()}
     ctx = build_market_context(list(candles), symbol, timeframe)
     return {
@@ -2175,10 +2270,64 @@ def chart_context(symbol: str = "XAUUSD", timeframe: str = "M5",
             for c in candles
         ],
         "context": ctx.as_dict(),
+        # Where these bars came from: the chart and the decision pipeline read
+        # the same plane, so this is the chart's own provenance (28.6).
+        "provenance": provenance,
         "mt5_status": {k: mt5_adapter.status().get(k)
                        for k in ("connected", "attach_mode", "last_error")},
         "cex_status": _cex_status_compact(),
     }
+
+
+@app.get("/market/data")
+def market_data(symbol: Optional[str] = None, timeframe: Optional[str] = None,
+                limit: int = 300, refresh: bool = False) -> Dict:
+    """Canonical market read: bars + quote + provenance for any feed.
+
+    The 28.6 read path. `refresh` forces a pull from the owning feed (an
+    explicit operator action, bypassing the shared-read throttle); without it
+    this is a pure cache read that never blocks on a terminal.
+    """
+    from core.market_plane import market_plane
+
+    limit = max(1, min(int(limit), 2000))
+    snap = market_plane.snapshot()
+    if not symbol:
+        return {"ok": True, "feeds": snap["feeds"], "symbols": snap["symbols"],
+                "summary": snap["summary"]}
+    _ensure_mt5_feed()
+    if refresh:
+        # An explicit operator action: force a pull from the owning feed now,
+        # bypassing the shared-read throttle.
+        market_plane.refresh(symbol, timeframe or "M15", limit)
+    read = market_plane.read(symbol, timeframe or "M15", limit)
+    return {"ok": True, **read.as_dict()}
+
+
+@app.get("/market/quote")
+def market_quote(symbol: str) -> Dict:
+    """Canonical quote read for one symbol, with real age and source."""
+    from core.market_plane import market_plane
+
+    read = market_plane.quote_read(symbol)
+    return {
+        "ok": read.quote is not None,
+        "symbol": read.symbol,
+        "quote": read.quote.as_dict() if read.quote else None,
+        "source": read.quote_source or None,
+        "age_seconds": (round(read.quote_age_seconds, 3)
+                        if read.quote_age_seconds is not None else None),
+        "freshness": read.freshness,
+        "derived": read.derived_quote,
+    }
+
+
+@app.get("/market/feeds")
+def market_feeds() -> Dict:
+    """Real feed/window/quote truth for the operator surface."""
+    from core.market_plane import market_plane
+
+    return {"ok": True, **market_plane.snapshot()}
 
 
 def _cex_status_compact() -> Dict:
@@ -2249,6 +2398,52 @@ def bridge_status() -> Dict:
     return hub.status()
 
 
+@app.get("/bridge/market")
+def bridge_market() -> Dict:
+    """What the terminal bridge has actually published to the market plane.
+
+    Read-only and honest: the frames the bridge has seen, what the plane
+    accepted, and every rejection with its reason.
+    """
+    from operations.market_bridge import market_bridge
+
+    return {"ok": True, **market_bridge.status()}
+
+
+async def _ingest_ws_market(websocket: WebSocket, session, frame: Dict) -> None:
+    """Validate + ingest one client ``market`` frame into the canonical plane.
+
+    The connection is already token-gated; the frame is additionally
+    rate-limited and ingested as `bridge:<session>`, which ranks below `mt5`
+    and `cex`, so a terminal proxy can never overwrite a live window. Nothing
+    in the payload is defaulted: a frame missing real values is reported back
+    as rejected.
+    """
+    from core.market_plane import market_plane
+
+    if not session.allow_market_frame():
+        session.market_rejected += 1
+        await websocket.send_json({
+            "msg": "error", "error": "market frame rate limit exceeded"})
+        return
+    hub.touch(session.id)
+    payload = frame.get("payload")
+    if not isinstance(payload, dict) or not payload:
+        session.market_rejected += 1
+        await websocket.send_json({
+            "msg": "error", "error": "market frame needs an object payload"})
+        return
+    result = market_plane.ingest_bridge_frame(
+        payload, source=f"bridge:{session.id}")
+    if result.get("rejected"):
+        session.market_rejected += 1
+        await websocket.send_json({
+            "msg": "error", "error": result["rejected"], "market": result})
+        return
+    session.market_frames += 1
+    await websocket.send_json({"msg": "market_ack", "market": result})
+
+
 @app.websocket("/bridge/ws")
 async def bridge_ws(websocket: WebSocket) -> None:
     """Terminal-proxy channel: real-time signals down, acks/status up."""
@@ -2288,6 +2483,8 @@ async def bridge_ws(websocket: WebSocket) -> None:
             elif msg == "hello":
                 hub.set_role(session.id, str(frame.get("role", "terminal")))
                 hub.touch(session.id)
+            elif msg == "market":
+                await _ingest_ws_market(websocket, session, frame)
             elif msg in CLIENT_MSGS and msg != "hello":
                 hub.touch(session.id)
                 hub.record(session.id, msg, frame)

@@ -10,6 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import pytest
+
 from research.strategy_lab.contracts import (
     ExitModel,
     PromotionStage,
@@ -134,3 +136,133 @@ def test_run_user_test_registers_lab_entry(tmp_path):
     entry = registry.get(result["strategy_id"])
     assert entry is not None
     assert entry.validation.samples == result["report"]["samples"]
+
+
+# -- canonical specification blocks (ENGINEERING MAST 28.6) ----------------
+
+def test_vet_result_carries_required_market_data_features_and_assumptions():
+    res = VetEngine().vet(UserStrategySpec(
+        description="buy pullback to the fair value gap on XAUUSD, "
+                    "trend continuation after displacement, london session only"))
+    d = res.as_dict()
+    market = d["required_market_data"]
+    assert market["symbol"] == "XAUUSD"
+    assert market["timeframes"]["setup"] == "M15"
+    assert market["sufficient"] is True
+    assert d["required_features"]["resolved"] is True
+    assert "fvg" in d["required_features"]["features"]
+    # a PASS must state what the lab decided on the user's behalf
+    assert d["assumptions"]
+    assert any("session filter" in a for a in d["assumptions"])
+
+
+def test_vet_identifies_ambiguous_user_language_with_its_definition():
+    res = VetEngine().vet(UserStrategySpec(
+        description="buy XAUUSD after a strong move near support"))
+    d = res.as_dict()
+    phrases = {a["phrase"] for a in d["ambiguities"]}
+    assert {"strong move", "near support"} <= phrases
+    assert any("strong move" in a for a in d["assumptions"])
+
+
+def test_vet_records_explicit_user_values_so_they_are_not_assumed():
+    res = VetEngine().vet(UserStrategySpec(
+        description="fvg continuation on gold", htf_tf="H4", setup_tf="M30",
+        trigger_tf="M5", min_rr=2.5))
+    d = res.as_dict()
+    assert not any("defaulted" in a and "tf" in a for a in d["assumptions"])
+    assert not any("min_rr defaulted" in a for a in d["assumptions"])
+    assert d["required_market_data"]["timeframes"] == {
+        "htf": "H4", "setup": "M30", "trigger": "M5"}
+
+
+def test_rejected_specification_blocks_are_still_reported_as_unresolved():
+    res = VetEngine().vet(UserStrategySpec(
+        description="buy random momentum candles and pray"))
+    d = res.as_dict()
+    assert d["verdict"] == "REJECT"
+    # no family resolved -> the feature block must say so, not invent one
+    assert d["required_features"]["resolved"] is False
+    assert d["required_features"]["confirmations_required"] == []
+
+
+def test_spec_survives_the_board_round_trip(tmp_path):
+    from research.strategy_lab.user_intake import IntakeBoard
+
+    board = IntakeBoard(str(tmp_path / "intake.json"))
+    vet = VetEngine().vet(UserStrategySpec(
+        description="ict liquidity sweep then displacement")).as_dict()
+    entry = board.propose(UserStrategySpec(
+        description="ict liquidity sweep then displacement"),
+        requested_by="operator", vet=vet)
+    assert entry["vet"]["required_features"]["resolved"] is True
+    assert entry["vet"]["required_market_data"]["required_bars"] > 0
+
+
+def test_run_user_test_reports_market_provenance_of_a_synthetic_series(tmp_path):
+    result = run_user_test(
+        entry_id="usr-pa11ce",
+        asset="XAUUSD",
+        family=StrategyFamily.ICT_LIQUIDITY_SWEEP_REVERSAL,
+        htf_tf="H1", setup_tf="M15", trigger_tf="M1",
+        trigger_model=TriggerModel.ZONE_TOUCH,
+        exit_model=ExitModel.LIQUIDITY_TARGET,
+        params={"min_rr": 1.5, "size_r": 1.0, "sl_atr": 1.0},
+        sessions=("london",),
+        source="synthetic", count=400, cost_r=0.0,
+        data_dir=tmp_path,
+    )
+    prov = result["market_provenance"]
+    assert prov["source"] == "synthetic"
+    assert prov["live"] is False
+    assert prov["attributed"] is False
+    assert prov["bars"] == result["count"] == 400
+    assert prov["freshness"] == "unattributed"
+    assert result["required_market_data"]["sufficient"] is True
+    assert result["required_features"]["resolved"] is True
+
+
+def test_run_user_test_warns_when_the_series_is_too_thin_to_trust(tmp_path):
+    result = run_user_test(
+        entry_id="usr-th1n00",
+        asset="XAUUSD",
+        family=StrategyFamily.ICT_LIQUIDITY_SWEEP_REVERSAL,
+        htf_tf="H1", setup_tf="M15", trigger_tf="M1",
+        trigger_model=TriggerModel.ZONE_TOUCH,
+        exit_model=ExitModel.LIQUIDITY_TARGET,
+        params={"min_rr": 1.5, "size_r": 1.0, "sl_atr": 1.0},
+        sessions=("london",),
+        source="synthetic", count=60, cost_r=0.0,
+        data_dir=tmp_path,
+    )
+    assert result["warnings"], "a 60-bar run must not look trustworthy"
+    assert "out-of-sample" in result["warnings"][0]
+    assert result["market_provenance"]["bars"] == 60
+
+
+def test_run_user_test_refuses_a_series_too_short_to_resolve_features(tmp_path):
+    from research.strategy_lab.user_intake import StrategyIntakeError
+
+    with pytest.raises(StrategyIntakeError) as exc:
+        run_user_test(
+            entry_id="usr-sh0rt",
+            asset="XAUUSD",
+            family=StrategyFamily.ICT_LIQUIDITY_SWEEP_REVERSAL,
+            htf_tf="H1", setup_tf="M15", trigger_tf="M1",
+            trigger_model=TriggerModel.ZONE_TOUCH,
+            exit_model=ExitModel.LIQUIDITY_TARGET,
+            params={"min_rr": 1.5, "size_r": 1.0, "sl_atr": 1.0},
+            sessions=("london",),
+            source="synthetic", count=10, cost_r=0.0,
+            data_dir=tmp_path,
+        )
+    assert "at least" in str(exc.value)
+
+
+def test_user_spec_carries_a_requested_bar_count():
+    spec = UserStrategySpec.from_payload({"description": "x", "count": 5000})
+    assert spec.count == 5000
+    assert spec.as_dict()["count"] == 5000
+    # a malformed count must not become a bogus bar budget
+    assert UserStrategySpec.from_payload(
+        {"description": "x", "count": "many"}).count == 0

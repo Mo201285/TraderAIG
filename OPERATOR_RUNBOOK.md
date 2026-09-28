@@ -227,6 +227,11 @@ python tools\tradraig.py opportunity reject --id OPP-XXXX --reason "جلسة م�
 
 | العرَض | التفسير | الإجراء |
 | --- | --- | --- |
+| `market_data` في `/system/health` يعرض `feeds: []` وبطاقات السوق فارغة | لا يوجد مصدر مسجَّل: المستهلكة (engine/live) لم تبدأ أو لم يتصل الطرفية | `GET /market/feeds` لرؤية المصادر المسجَّلة، ثم شغّل `python main.py --mt5` (أو `--cex`)؛ صفر بطاقات يعني بيانات غير موجودة، لا بيانات مخترعة |
+| `GET /market/quote` يعرض `freshness: stale` | التكة الأخيرة أقدم من `stale_quote_seconds` — السوق واقف أو الطرفية مقطوعة | راجع `age_seconds` في نفس الرد؛ إن كان الطرفية متصلًا فانظر `/bridge/status` (جلسات الجسر) و`GET /bridge/market` |
+| `GET /bridge/market` يعرض `rejected` غير صفر | إطار طرفية مرفوض بسببه (رمز مفقود/إطار غير معروف/قيمة مبتورة/عرض أحادي الجانب/بلا وقت تكة) | الحقل `reason` في آخر الرفضات يذكر السبب بالضبط — لا تُصلح بإدخال قيمة تقديرية، بل أصلح مُنتِج الإطار في الطرفية |
+| لا تصل إطارات السوق من الطرفية رغم أن التداول يعمل | قناة السوق مغلقة افتراضيًا، أو الرمز غائب | اضبط `TRADERAIG_BRIDGE_TOKEN` على الطرفين (وإلا فالقناة مفتوحة محليًا) وشغّل `python scripts\mt5_bridge_proxy.py --market`، وللاستطلاع المنفصل شغّل الخادم بـ `TRADERAIG_MARKET_BRIDGE=1` |
+| `shadowed` يظهر مصدرًا مثل `bridge:file` تحت نافذة `mt5` | هذا هو السلوك الصحيح: مصدر أدنى رتبة لا يزيح مالك النافذة | لا إجراء — الوصول إلى `GET /market/data` يعرض `single_source` و`source` الحقيقيين |
 | `start backend` لا يستجيب | فشل في الإقلاع | اقرأ `logs\backend.err.log` ثم `stop backend` + `start backend` |
 | شارة `MOCK PREVIEW` باللوحة | الواجهة متوقفة | `start backend` ثم حدّث الصفحة |
 | `/system/health` overall=Degraded فقط في `reconciliation` | لا سوق حي — متوقع | لا إجراء |

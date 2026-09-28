@@ -454,7 +454,9 @@ def test_unchanged_market_frames_are_not_re_ingested(tmp_path):
     assert second["ingested"] == 0 and second["unchanged"] == 1
     assert mb.status()["frames_ingested"] == 1
     assert mb.status()["frames_unchanged"] == 1
-    # a real change on disk is picked up again
+    # a real change on disk is picked up again. `2400.0` -> `2401.0` is the
+    # same number of characters, so an mtime+size stamp could miss it when the
+    # rewrite lands in the same filesystem timestamp tick (it did, in CI).
     br.write_market_frame(_market_frame(close=2401.0)["payload"])
     assert mb.ingest_once()["ingested"] == 1
     assert plane.read("XAUUSD", "M15", allow_pull=False).candles[-1].close == 2401.0

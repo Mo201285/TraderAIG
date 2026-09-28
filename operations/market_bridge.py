@@ -22,6 +22,8 @@ Boundaries that are deliberate:
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import threading
 from typing import Any, Dict, Optional
@@ -57,7 +59,7 @@ class MarketBridge:
         self._last_pass_at: float = 0.0
         self._last_error: str = ""
         self._rejections: list = []
-        self._stamps: Dict[str, tuple] = {}
+        self._stamps: Dict[str, str] = {}
 
     # -- one pass -------------------------------------------------------
     def ingest_once(self) -> Dict[str, Any]:
@@ -67,10 +69,15 @@ class MarketBridge:
         is recorded and skipped, because a market poller must not be able to
         take the process down.
 
-        A frame whose file stamp is unchanged since the last pass is counted as
+        A frame whose content is identical to the last pass is counted as
         `unchanged` and not re-ingested: the plane upserts by bar time, so
-        re-reading the same bytes is pure work, and re-counting it would make
+        re-reading the same values is pure work, and re-counting it would make
         "frames ingested" claim a terminal update that never happened.
+
+        The stamp is a hash of the frame content, not the file's mtime: a
+        terminal that rewrites a frame with a different price of the same
+        string length (`2400.0` -> `2401.0`) inside one filesystem timestamp
+        tick would otherwise look untouched and its update would be dropped.
         """
         result = {"seen": 0, "ingested": 0, "bars": 0, "quotes": 0,
                   "rejected": 0, "shadowed": 0, "unchanged": 0}
@@ -83,8 +90,8 @@ class MarketBridge:
         self._last_error = ""
         for symbol, payload in frames.items():
             result["seen"] += 1
-            stamp = self._stamp(symbol)
-            if stamp is not None and self._stamps.get(symbol) == stamp:
+            stamp = self._stamp(payload)
+            if self._stamps.get(symbol) == stamp:
                 result["unchanged"] += 1
                 self._frames_unchanged += 1
                 continue
@@ -100,11 +107,9 @@ class MarketBridge:
                 result["rejected"] += 1
                 # a rejected frame keeps its stamp: re-reading the same broken
                 # bytes every pass would only fill the rejection log
-                if stamp is not None:
-                    self._stamps[symbol] = stamp
-                continue
-            if stamp is not None:
                 self._stamps[symbol] = stamp
+                continue
+            self._stamps[symbol] = stamp
             result["ingested"] += 1
             result["bars"] += int(got.get("bars") or 0)
             if got.get("quote"):
@@ -121,13 +126,19 @@ class MarketBridge:
         self._last_pass_at = self._now()
         return result
 
-    def _stamp(self, symbol: str) -> Optional[tuple]:
-        """(mtime_ns, size) of a symbol's frame file, or None if unavailable."""
+    @staticmethod
+    def _stamp(payload: Dict[str, Any]) -> str:
+        """Content hash of a frame: the only change signal that cannot lie.
+
+        Not mtime/size: a rewrite with a same-length value inside one
+        filesystem timestamp tick is byte-identical in those two fields, and
+        the terminal's real price update would then be skipped as "unchanged".
+        """
         try:
-            st = (self._bridge.market_directory / f"{symbol}.json").stat()
-        except OSError:
-            return None
-        return (st.st_mtime_ns, st.st_size)
+            blob = json.dumps(payload, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            blob = repr(sorted(payload.items(), key=lambda kv: str(kv[0])))
+        return hashlib.sha1(blob.encode("utf-8", "replace")).hexdigest()
 
     @staticmethod
     def _now() -> float:

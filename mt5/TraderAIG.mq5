@@ -321,12 +321,49 @@ string MarketTimeframeName(const ENUM_TIMEFRAMES tf)
       case PERIOD_M30: return("M30");
       case PERIOD_H1:  return("H1");
       case PERIOD_H4:  return("H4");
-      case PERIOD_D1:  return("D1");
-      case PERIOD_W1:  return("W1");
-     }
-   return("M15");
+   case PERIOD_D1:  return("D1");
+   case PERIOD_W1:  return("W1");
+  }
+   // Unsupported: return nothing so the frame is not published under a name
+   // the server never asked for (it would reject it anyway) and this EA never
+   // claims to be sending a timeframe it is not sending.
+   return("");
   }
 
+//+------------------------------------------------------------------+
+//| JsonNumber                                                        |
+//| A JSON number, always with a decimal point so a consumer never   |
+//| has to guess between int and float. DoubleToString always uses  |
+//| '.', so no locale hazard.                                        |
+//+------------------------------------------------------------------+
+string JsonNumber(const double value)
+  {
+   if(value == 0.0)
+      return("0.0");
+   return(DoubleToString(value, 8));
+  }
+
+//+------------------------------------------------------------------+
+//| JsonInt                                                           |
+//| A JSON integer. This terminal build has no LongToString, and     |
+//| IntegerToString takes an int, which overflows on a real epoch    |
+//| second. DoubleToString with 0 decimals is exact for anything     |
+//| under 2^53, so epoch seconds and tick volumes print correctly.   |
+//+------------------------------------------------------------------+
+string JsonInt(const long value)
+  {
+   return(DoubleToString((double)value, 0));
+  }
+
+//+------------------------------------------------------------------+
+//| MarketFrameJson                                                   |
+//| The frame is built as text on purpose: the Json.mqh shipped with |
+//| this terminal only supports flat key/value pairs (no nested     |
+//| objects, no arrays), and this frame needs a quote object and a  |
+//| bars array. The exact shape is the server's:                   |
+//|   {symbol, timeframe, time, quote:{bid,ask,last,spread,         |
+//|    tick_time}, bars:[{time,open,high,low,close,tick_volume}]}   |
+//+------------------------------------------------------------------+
 string MarketFrameJson()
   {
    MqlTick tick;
@@ -334,61 +371,58 @@ string MarketFrameJson()
       return("");
 
    string tfName = MarketTimeframeName((ENUM_TIMEFRAMES)InpMarketTimeframe);
-   int    barSeconds = PeriodSeconds((ENUM_TIMEFRAMES)InpMarketTimeframe);
-   if(barSeconds <= 0)
-      barSeconds = 900;
+   if(StringLen(tfName) == 0)
+      return("");   // unsupported timeframe: publish nothing rather than name another
 
-   double last   = tick.last;
-   double bid    = tick.bid;
-   double ask    = tick.ask;
+   int barSeconds = PeriodSeconds((ENUM_TIMEFRAMES)InpMarketTimeframe);
+   if(barSeconds <= 0)
+      return("");   // no real bar length: no bar time can be derived honestly
+
+   double last = tick.last;
+   double bid  = tick.bid;
+   double ask  = tick.ask;
    if(last <= 0.0 || bid <= 0.0 || ask <= 0.0)
       return("");   // no real two-sided price: publish nothing rather than guess
 
    datetime now      = TimeCurrent();
    datetime barStart = (datetime)(((long)now / barSeconds) * barSeconds);
 
-   CJAVal root;
-   root["symbol"]   = g_symbol;
-   root["timeframe"] = tfName;
-   root["time"]     = (long)now;
+   string json = "{";
+   json += "\"symbol\":\"" + g_symbol + "\",";
+   json += "\"timeframe\":\"" + tfName + "\",";
+   json += "\"time\":" + JsonInt((long)now) + ",";
+   json += "\"quote\":{";
+   json += "\"bid\":"       + JsonNumber(bid) + ",";
+   json += "\"ask\":"       + JsonNumber(ask) + ",";
+   json += "\"last\":"      + JsonNumber(last) + ",";
+   json += "\"spread\":"    + JsonNumber(ask - bid) + ",";
+   json += "\"tick_time\":" + JsonInt((long)tick.time);
+   json += "}";
 
-   CJAVal quote;
-   quote["bid"]        = bid;
-   quote["ask"]        = ask;
-   quote["last"]       = last;
-   quote["spread"]     = ask - bid;
-   quote["tick_time"]  = (long)tick.time;
-   root["quote"]       = quote;
-
-   // The forming bar: real o/h/l/c so far, updated on every publish. The
-   // server replaces the last bar on the same timestamp, so this is a
-   // stream, not a duplicate history.
-   double barOpen  = iOpen (g_symbol, InpMarketTimeframe, 0);
-   double barHigh  = iHigh (g_symbol, InpMarketTimeframe, 0);
-   double barLow   = iLow  (g_symbol, InpMarketTimeframe, 0);
-   double barClose = iClose(g_symbol, InpMarketTimeframe, 0);
-   long   barVol   = iVolume(g_symbol, InpMarketTimeframe, 0);
+   // The forming bar: real o/h/l/c so far, re-sent on every publish. The
+   // server replaces the bar with the same timestamp, so this is a stream,
+   // not duplicate history.
+   double barOpen  = iOpen (g_symbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
+   double barHigh  = iHigh (g_symbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
+   double barLow   = iLow  (g_symbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
+   double barClose = iClose(g_symbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
+   long   barVol   = iVolume(g_symbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
    if(barOpen > 0.0 && barHigh > 0.0 && barLow > 0.0 && barClose > 0.0)
      {
-      CJAVal bar;
-      bar["time"]        = (long)barStart;
-      bar["open"]        = barOpen;
-      bar["high"]        = barHigh;
-      bar["low"]         = barLow;
-      bar["close"]       = barClose;
-      bar["tick_volume"] = (long)barVol;
-
-      CJAVal bars[1];
-      bars[0] = bar;
-      root["bars"] = bars;
+      json += ",\"bars\":[{";
+      json += "\"time\":"        + JsonInt((long)barStart) + ",";
+      json += "\"open\":"        + JsonNumber(barOpen) + ",";
+      json += "\"high\":"        + JsonNumber(barHigh) + ",";
+      json += "\"low\":"         + JsonNumber(barLow) + ",";
+      json += "\"close\":"       + JsonNumber(barClose) + ",";
+      json += "\"tick_volume\":" + JsonInt(barVol);
+      json += "}]";
      }
-   else
-     {
-      CJAVal bars[];
-      root["bars"] = bars;         // no real bar: send none, do not fake one
-     }
+   // else: no real bar, so no `bars` key at all. The server treats a frame
+   // without bars as a quote-only frame; it never invents a bar.
 
-   return(root.Serialize());
+   json += "}";
+   return(json);
   }
 
 void PublishMarketFrame()
@@ -410,12 +444,10 @@ void PublishMarketFrame()
    string filePath   = dir + "\\" + g_symbol + ".json";
 
    // FolderCreate returns false when the folder already exists, which is the
-   // normal case after the first tick; only a missing folder is a problem.
-   if(!FolderCreate(dir) && !FolderExists(dir))
-     {
-      PrintFormat("TraderAIG market: cannot create %s (err %d)", dir, GetLastError());
-      return;
-     }
+   // normal case after the first tick, so its return value alone proves
+   // nothing. The FileOpen below is the real test: if the directory is not
+   // there, that is where it shows up.
+   FolderCreate(dir);
 
    int handle = FileOpen(filePath, FILE_WRITE | FILE_TXT | FILE_ANSI);
    if(handle == INVALID_HANDLE)

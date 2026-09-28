@@ -80,8 +80,7 @@ def _guard(ent: Entitlement, owner_user_id: Optional[str] = None) -> Dict:
     with 403 when the acting identity lacks the required entitlement — the
     dashboard never substitutes for this authority.
     """
-    primary = identity.list_users()
-    actor = owner_user_id or (primary[0].user_id if primary else None)
+    actor = owner_user_id or identity.principal_user_id()
     if actor is None:
         return {"active": False, "actor": None, "entitlement": ent.value}
     user = identity.get_user(actor)
@@ -342,8 +341,7 @@ def entitlements_status() -> Dict:
     which acting identity? The gate is hard once a primary identity exists;
     before that the control plane is in bootstrap mode (dashboard shows
     "create your identity first")."""
-    primary = identity.list_users()
-    actor = primary[0].user_id if primary else None
+    actor = identity.principal_user_id()
     if actor is None:
         return {
             "enforcement_active": False,

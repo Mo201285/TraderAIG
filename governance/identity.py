@@ -5,6 +5,7 @@ and an append-only audit trail of all accountable actions.
 """
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -218,6 +219,29 @@ class IdentityService:
 
     def list_users(self) -> List[User]:
         return list(self._users.values())
+
+    def principal_user_id(self) -> Optional[str]:
+        """Resolve the single acting authority.
+
+        ``IDENTITY_PRIMARY_EMAIL`` names the principal explicitly so the
+        authority survives rehydration, which rebuilds the user map from
+        persistence in database order rather than creation order. Without it
+        the first-created user stays the principal, which is the previous
+        behaviour.
+        """
+        users = self.list_users()
+        if not users:
+            return None
+        wanted = os.environ.get("IDENTITY_PRIMARY_EMAIL", "").strip().lower()
+        if wanted:
+            for user in users:
+                if user.email.strip().lower() == wanted:
+                    return user.user_id
+            log.warning(
+                f"IDENTITY_PRIMARY_EMAIL={wanted!r} matches no known user; "
+                f"falling back to {users[0].email}"
+            )
+        return users[0].user_id
 
     def rehydrate(self) -> int:
         """Reload users/subscription mirrors from persistence into memory."""

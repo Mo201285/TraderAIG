@@ -43,7 +43,7 @@ LOG_DIR = os.path.join(ROOT, "logs")
 OLLAMA_EXE = r"E:\MLL\Ollama\ollama.exe"
 OLLAMA_MODELS_DIR = r"E:\MLL\models"
 
-API_PORT = 8000
+API_PORT = int(os.environ.get("API_PORT", "8000"))
 DASH_PORT = 8443
 OLLAMA_PORT = 11434
 

@@ -209,6 +209,14 @@ python scripts\mt5_live_session.py [--no-trade]   # جلسة MT5 حقيقية (�
   المصدر الحقيقي بدل حجم مخزون مختبر الاستراتيجيات).
 - **تشغيل**: poller الملفات معطّل افتراضيًا — فعّله بـ `TRADERAIG_MARKET_BRIDGE=1`.
   القناة اللحظية: `python scripts\mt5_bridge_proxy.py --market`.
+- **تشغيل مستمر 24/7**: طبقتان مراقبتان بلا تدخل. الأولى `scripts\mt5_host_watchdog.py`
+  تحكم على الطرفية بـ**حداثة الإطارات** لا بـ«العملية حيّة». الثانية
+  `scripts\ensure_backend.py` تُبقي `:8000` حيًّا (وتعيد تشغيل خادم ساقط) وتُعيد
+  تأكيد **السكك الأساسي `mt5` (رتبة 100)** بعد كل إقلاع — لأن مراقبه خيطٌ داخل عملية
+  الخادم، فبدون ذلك تسقط الـplane بصمت إلى `bridge:file` (رتبة 50) وهو سلوك سليم
+  المظهر. أربع مهمّات: `TAIG-MT5-Terminal-Start` و`TAIG-Backend-Start` (عند الدخول)،
+  `TAIG-MT5-Watchdog` و`TAIG-Backend-Watchdog` (كل 5 دقائق). التفاصيل:
+  `OPERATOR_RUNBOOK.md` §تشغيل مستمر.
 - **builder الاستراتيجيات (28.6)**: `research/strategy_lab/market_spec.py` يشتق
   `required market data` و`required features` من `FamilySpec` الذي تستخدمه أداة
   التقييم فعليًا، ويكشف العبارات الغامضة («strong move»، «near support»، …) مع

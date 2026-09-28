@@ -1,22 +1,48 @@
 # Live wiring smoke — boots the real FastAPI app with uvicorn and drives it
 # with the actual `tradraig` console (which talks HTTP, the same path a
-# browser dashboard uses). Proves: server boots on :8000, startup has no
-# surprises (no on_event startup hooks), routing serves the recent surface
-# (governance / ops feed / copy), and the console client parses every JSON
-# response. Non-destructive: persistence disabled, Redis mirror off.
+# browser dashboard uses). Proves: server boots, startup has no surprises (no
+# on_event startup hooks), routing serves the recent surface (governance / ops
+# feed / copy), and the console client parses every JSON response.
+# Non-destructive: persistence disabled, Redis mirror off.
+#
+# It prefers :8000 but does NOT require it: a 24/7 host keeps a live backend
+# there, and the supervisor will re-take the port mid-run, which used to abort
+# this gate and make VERIFY_ALL report a warning dressed as a pass. When :8000
+# is taken the smoke runs isolated on the next free port and says so.
 #
 # Usage:  powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1
 $ErrorActionPreference = "Stop"
 
 $ROOT = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $PY   = "python"
-$API_PORT = 8000
 
-$busy = Get-NetTCPConnection -LocalPort $API_PORT -State Listen -ErrorAction SilentlyContinue
-if ($busy) {
-    Write-Output "ABORT: port $API_PORT already listening (PID $($busy.OwningProcess -join ','))"
-    exit 2
+function Get-FreePort([int[]]$candidates) {
+    foreach ($candidate in $candidates) {
+        if (Get-NetTCPConnection -LocalPort $candidate -State Listen -ErrorAction SilentlyContinue) {
+            continue
+        }
+        $listener = $null
+        try {
+            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $candidate)
+            # .NET leaves ExclusiveAddressUse false by default, which lets the bind
+            # SUCCEED against a port another process is already serving. Without
+            # this the smoke silently attaches to the live 24/7 backend and runs
+            # its "non-destructive" steps against production data.
+            $listener.ExclusiveAddressUse = $true
+            $listener.Start()
+            return $candidate
+        } catch { }
+        finally { if ($listener) { try { $listener.Stop() } catch { } } }
+    }
+    return $null
 }
+
+$API_PORT = Get-FreePort @(8000, 8010, 8020, 8030, 8040)
+if ($null -eq $API_PORT) { Write-Output "ABORT: no free port for the smoke server"; exit 2 }
+if ($API_PORT -ne 8000) {
+    Write-Output "note: :8000 is owned by the live 24/7 backend; smoke runs isolated on :$API_PORT"
+}
+$env:API_PORT = "$API_PORT"
 
 $env:TRADERAIG_PERSIST = "0"
 $env:TRADERAIG_STATE_REDIS = "0"
@@ -90,4 +116,5 @@ finally {
     }
     Remove-Item Env:TRADERAIG_PERSIST -ErrorAction SilentlyContinue
     Remove-Item Env:TRADERAIG_STATE_REDIS -ErrorAction SilentlyContinue
+    Remove-Item Env:API_PORT -ErrorAction SilentlyContinue
 }

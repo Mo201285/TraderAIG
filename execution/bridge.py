@@ -20,6 +20,20 @@ from decision.candidate import TradeCandidate
 log = get_logger("execution.bridge")
 
 
+def terminal_common_files() -> Optional[Path]:
+    """The real terminal common-data `Files` dir on Windows, else None.
+
+    `%APPDATA%\\MetaQuotes\\Terminal\\Common\\Files` is where the EA's
+    `FILE_COMMON` writes land. It is the only directory a real host should
+    read market frames from, so it is worth detecting rather than assuming.
+    """
+    appdata = os.getenv("APPDATA")
+    if os.name != "nt" or not appdata:
+        return None
+    candidate = Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files"
+    return candidate if candidate.is_dir() else None
+
+
 class MT5Bridge:
     """File-based signal bridge to the MT5 terminal."""
 
@@ -27,6 +41,7 @@ class MT5Bridge:
                  directory: Optional[str] = None,
                  market_subdir: str = "market") -> None:
         self.filename = filename
+        self._explicit_directory = directory is not None
         self.directory = directory or self._default_directory()
         # Market frames live in their own directory and their own files: the
         # signal file stays the single authority for approved orders, so a
@@ -46,6 +61,19 @@ class MT5Bridge:
 
     @property
     def market_directory(self) -> Path:
+        """Where market frames are read from.
+
+        An explicitly passed directory always wins (tests, scratch proofs, a
+        second instance). Otherwise, with no `MT5_COMMON_DATA` set, a real
+        Windows terminal's `Common\\Files` beats the developer `bridge/` path:
+        otherwise the poller runs happily against an empty directory and ingests
+        nothing while the EA publishes perfectly - a silent 24/7 outage.
+        The signal file is deliberately NOT redirected; only market reads move.
+        """
+        if not self._explicit_directory and not os.getenv("MT5_COMMON_DATA"):
+            common = terminal_common_files()
+            if common is not None:
+                return common / self.market_subdir
         return Path(self.directory) / self.market_subdir
 
     def send_signal(self, candidate: TradeCandidate,

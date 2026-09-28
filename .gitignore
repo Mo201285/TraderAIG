@@ -34,3 +34,4 @@ decision/data/
 *.ex5
 *.ex4
 bridge/
+.mt5_host_watchdog_state.json

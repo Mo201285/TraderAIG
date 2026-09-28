@@ -148,3 +148,48 @@ def test_risk_policy_endpoint_scopes_to_owner(client):
     r = client.put(f"/users/{uid}/risk-policy",
                    json={"max_risk_per_trade": 0.02})
     assert r.status_code == 200
+
+
+def test_explicit_primary_email_selects_the_acting_identity(client, monkeypatch):
+    """The acting authority is named explicitly, not inferred from who was
+    created first (creation order is not stable across rehydration)."""
+    client.post("/users", json={"email": "first@x.co", "plan": "free"})
+    founder = client.post("/users", json={
+        "email": "founder@x.co", "plan": "institutional"}).json()["user_id"]
+    client.post(f"/users/{founder}/subscription/activate",
+                json={"plan": "institutional"})
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", "founder@x.co")
+
+    st = client.get("/entitlements/status").json()
+
+    assert st["actor"] == founder
+    assert st["bootstrap"] is False
+
+
+def test_gate_follows_the_principal_not_the_first_user(client, monkeypatch):
+    """First-created user is fully entitled, the named principal is not:
+    the gate must deny, which proves it reads the principal."""
+    privileged = client.post("/users", json={
+        "email": "privileged@x.co", "plan": "institutional"}).json()["user_id"]
+    client.post(f"/users/{privileged}/subscription/activate",
+                json={"plan": "institutional"})
+    principal = client.post("/users", json={
+        "email": "principal@x.co", "plan": "free"}).json()["user_id"]
+    client.post(f"/users/{principal}/subscription/activate", json={"plan": "free"})
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", "principal@x.co")
+
+    r = client.post("/portfolio/allocation",
+                    json={"strategy_id": "ent-principal:test", "cap": 0.10})
+
+    assert r.status_code == 403
+    assert "can_manage_risk" in r.json()["detail"]
+
+
+def test_without_explicit_principal_the_first_user_still_acts(client, monkeypatch):
+    monkeypatch.delenv("IDENTITY_PRIMARY_EMAIL", raising=False)
+    first = client.post("/users", json={"email": "first-acts@x.co", "plan": "free"}) \
+        .json()["user_id"]
+
+    st = client.get("/entitlements/status").json()
+
+    assert st["actor"] == first

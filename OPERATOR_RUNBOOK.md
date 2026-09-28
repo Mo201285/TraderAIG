@@ -151,6 +151,60 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1
 # SMOKE: 7 steps, 7 passed, 0 failed
 ```
 
+## تشغيل مستمر 24/7 على مضيف ويندوز (مراقب حيّية السوق)
+
+مضيف التداول هو الطرفية + EA، ووظيفته نشر الأسعار فقط. المراقب `scripts\mt5_host_watchdog.py`
+**لا يثق في أن العملية حيّة**: 종료 الوحيد المقبول هو **حداثة البيانات** (عمر أحدث إطار
+`market\*.json` ≤ `MT5_WATCHDOG_MAX_AGE`، افتراضيًا 90 ثانية). هذا درسٌ مدفوع ثلاث مرات
+في هذه البيئة: العملية كانت حيّة والنشر صامت في ثلاث حالات (رمز خاطئ، فشل كتابة `err 5002`،
+و`tick.last = 0.0`).
+
+```powershell
+python scripts\mt5_host_watchdog.py                       # فحص واحد، بلا أي إعادة تشغيل
+python scripts\mt5_host_watchdog.py --restart            # إعادة تشغيل الطرفية عند التقادم (مقيّدة: 3/ساعة + تهدئة 120s)
+python scripts\mt5_host_watchdog.py --ensure-terminal     # تشغيل الطرفية إن كانت down (مهمة الإقلاع)
+```
+
+الطبقة الثانية: `scripts\ensure_backend.py` — بقاء **الخادم** حيًّا وإبقاء **السكك الأساسي
+`mt5` (رتبة 100)** مزامنًا. لماذا سكربت لا مجرّد مهمة `python main.py`: حالتان تعيشان داخل
+العملية وتموتان معها — الـpoller يعيده إقلاع الـAPI، لكن **مراقب `mt5` خيطٌ يبدأه فقط
+`POST /mt5/watcher`**، فبعد كل إقلاع يبقى المصدر الأعلى صامتًا وتسقط الـplane بصمت إلى
+`bridge:file` (رتبة 50). وهذا الاحتياط سلوك **مصمَّم**، ولهذا هو الخطر: يبدو سليمًا تمامًا.
+
+```powershell
+python scripts\ensure_backend.py                             # تأكّد أن :8000 سليم فقط
+python scripts\ensure_backend.py --start-mt5-sync --interval 5   # + اربط السكك الأساسي وشغّل مراقبه
+```
+
+المهمّات الأربع المسجّلة على هذا الجهاز (تعملان بلا تدخل، ومجلد العمل `D:\One`):
+
+| المهمّة | التوقيت | ما تفعله |
+| --- | --- | --- |
+| `TAIG-MT5-Terminal-Start` | عند تسجيل الدخول | تشغّل الطرفية إن كانت down (idempotent، لا تشغيل مزدوج) |
+| `TAIG-Backend-Start` | عند تسجيل الدخول | تتأكّد أن :8000 سليم + تعيد تأكيد مراقب السكك الأساسي |
+| `TAIG-MT5-Watchdog` | كل 5 دقائق | تقرير حيّية السوق إلى `logs\watchdog.log` — **تقرير فقط**، لا تعيد التشغيل |
+| `TAIG-Backend-Watchdog` | كل 5 دقائق | **تعيد تشغيل خادم ساقط** وتعيد تأكيد السكك الأساسي (مُثبَت: قُتل الخادم فعاد في <60s) |
+
+```powershell
+Get-Content logs\watchdog.log -Tail 20          # آخر تقارير الطرفية
+Get-Content logs\backend_boot.log -Tail 10      # آخر تقارير الخادم/السكك
+Get-ScheduledTask -TaskName 'TAIG-*'            # حالة المهمّات
+Unregister-ScheduledTask -TaskName 'TAIG-MT5-Watchdog' -Confirm:$false   # إزالة
+```
+
+`TRADERAIG_MARKET_BRIDGE=1` و`MT5_WATCHDOG_MAX_AGE=90` مضبوطان في `.env` على هذا المضيف،
+وإلا فإن الطرفية تنشر في غرفة فارغة: الـpoller كان `active` بـ`passes: 17` و
+`frames_seen: 0` لأنه يقرأ `D:\One\bridge\market` بينما EA يكتب في
+`%APPDATA%\MetaQuotes\Terminal\Common\Files\market`. أُصلح ذلك في `execution/bridge.py`
+(`market_directory` يفضّل مجلد الطرفية الحقيقي، **مع الإبقاء على مسار ملف الأوامر كما هو**)،
+والمراقب يقرأ الآن المرجع نفسه بدل حساب مسار خاص به.
+
+إعدادات ثابتة (24/7 على لابتوب): `powercfg /change standby-timeout-ac 0`،
+`hibernate-timeout-ac 0`، `disk-timeout-ac 0`، `monitor-timeout-ac 10`،
+`powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0` (إغلاق الغطاء لا يُنم) —
+و`AutoReboot=1` مفعّل مسبقًا. **قبل أي حساب حقيقي**: UPS + ترحيل إلى VPS ويندوز؛ انقطاع
+الشبطة على جهاز مكتبي أثناء صفقة مفتوحة مخاطرة حقيقية.
+
 ## ذكاء المحفظة وتخصيص رأس المال (Phase A)
 
 بوابة `portfolio_allocation` في حاكم المخاطر **تمرّ افتراضيًا** (استراتيجية بلا سقف
@@ -171,13 +225,36 @@ python tools\tradraig.py portfolio clear --strategy s1             # حذف سق
 
 نقاط القرار (سياسة المخاطر، محرك/تنفيذ CEX وMT5، تخصيص رأس المال،
 `research promote/quarantine/revalidate`، `ops/review/apply`، طلبات التغيير،
-ترقية/اختبار استراتيجيات المستخدم) تقفل على اشتراك **الهوية الأساسية** (أول مستخدم) قبل
+ترقية/اختبار استراتيجيات المستخدم) تقفل على اشتراك **الهوية المُشغِّلة** قبل
 أي تغيير دائم؛ اللوحة تعكس فقط ولا تمنح. لا هوية بعد = وضع bootstrap: البوابة تُبلَّغ `inactive`
-وتمر بصدق (لا "مفتوحة مزيفة")؛ بمجرد وجود هوية تصبح صلبة:
+وتمر بصدق (لا "مفتوحة مزيفة")؛ بمجرد وجود هوية تصبح صلبة.
+
+**من هي المشغِّلة؟** تُحدَّد صريحًا بـ`IDENTITY_PRIMARY_EMAIL` (بريد المشغّل). بدونه
+تُ-used أول هوية أُنشئت — وهو افتراض هشّ، لأن `rehydrate()` يعيد بناء الخريطة من
+قاعدة البيانات بترتيب قاعدة البيانات لا بترتيب الإنشاء، فقد يتبدّل المشغّل بعد إعادة
+تشغيل الخادم. بريد لا يطابق أي هوية = يسجّل تحذيرًا ويرجع لأول هوية.
+
+```powershell
+# بدّل المشغّل (يلزم إعادة تشغيل الخادم لتطبيقه)
+$env:IDENTITY_PRIMARY_EMAIL = "founder@example.com"   # أو في .env
+python tools\tradraig.py api /entitlements/status --get   # actor = المشغّل الفعلي؟
+```
 
 ```powershell
 python tools\tradraig.py api /entitlements/status --get   # هل البوابة فعّالة؟ من هو المشغّل؟
 python tools\tradraig.py user list                        # من الهوية الحالية؟ ما خطتها وحالتها؟
+```
+
+`institutional` = **كل** الصلاحيات (`PLAN_ENTITLEMENTS[INSTITUTIONAL] = set(Entitlement)`):
+`read_only, api_access, can_trade, can_copy, multi_account, can_manage_risk` — أي plans
+أخرى جزئية. إنشاء هوية لا يعطي صلاحيات: الاشتراك يبقى `pending` حتى التفعيل، ومع
+`POST /users/{id}/subscription/activate` **يلزم `{"plan": "institutional"}` صريحًا**؛ جسم
+فارغ `{}` يرقّي الخطة إلى `free` ويسحب `can_trade`، فيرفض المشغّل السكك:
+
+```powershell
+python tools\tradraig.py user create --email founder@x.co --display "Founder" --plan institutional
+python tools\tradraig.py api /users/<id>/subscription/activate --post   # أرسل plan صريحًا
+```
 ```
 
 الحالة الفعلية: `active + institutional` يعطي `can_trade` + `can_manage_risk`؛
@@ -255,11 +332,20 @@ python tools\tradraig.py opportunity reject --id OPP-XXXX --reason "جلسة م�
 | موافقة تغيير ترجع 409 | المحرك قيد التشغيل (حارس السلامة) | الطلب يبقى معلّقًا — أعد المحاولة لاحقًا، لا نصف تطبيق |
 | «overrides» في `copy --json` | ترقية تلتها عزل داخل نافذة المرآة | أعد فحص الاستراتيجية يدويًا قبل أي إجراء |
 | `verify` يذكر mismatch | عبث أو تلف في النسخة | لا تستعد منها — ابحث عن نسخة سليمة |
+| `watchdog: STALE` في `logs\watchdog.log` والطرفية `terminal=up` | العملية حيّة لكن البيانات ميتة — هذا بالضبط ما لا تكشفه معاينة العملية | `python scripts\mt5_host_watchdog.py` لفحص يدوي، ثم راجع `Experts` log في الطرفية (رمز الـchart / مسار `FILE_COMMON`) — لا تُعِد التشغيل قبل معرفة السبب |
+| `watchdog: MISSING no frames yet` | لا إطار في `market\` إطلاقًا: EA غير مرفق، أو `MT5_COMMON_DATA` يشير إلى مجلد غير `%APPDATA%\...\Terminal\Common\Files` | تحقق من المسار الفعلي للإطار؛ المراقب يقرأ `MT5_COMMON_DATA` أولًا ثم المسار الحقيقي للطرفية، ولا يكتب ولا يفتح حسابًا |
+| `restart suppressed by rate limit` | الطرفية لا تبقى مسجَّلة الدخول، فأُوقف تجنّبًا لحلقة إعادة تشغيل | عالج تسجيل دخول الطرفية يدويًا؛ الحد 3 مرات/ساعة وتهدئة 120 ثانية **مقصودة** |
+| الطرفية لا تعمل بعد إقلاع الجهاز | `TAIG-MT5-Terminal-Start` تعمل **عند تسجيل الدخول** لا قبله | `Start-ScheduledTask -TaskName 'TAIG-MT5-Terminal-Start'` — وتحقّق من بدء تسجيل الدخول التلقائي إن أردت إقلاعًا بلا حضور |
+| `Log directory not writable` في سجلات الخادم عند تشغيل مهمة مجدولة | مجلد عمل المهمة `System32` فتعذّر logging | أعد تسجيل المهمة بـ `-WorkingDirectory 'D:\One'` |
+| `ensure_backend` يخرج 2 | الخادم لم يصبح سليمًا خلال `--wait` | `logs\backend.err.log`؛ لا تُعِد التشغيل يدويًا قبل قراءة الخطأ |
+| `ensure_backend` يخرج 3 ورسالة `entitlement 'can_trade' required` | البوابة تعمل كما يجب (§28.17): لا هوية تملك الاشتراك النشط | **لا تتجاوز البوابة** — فعّل الاشتراك مع خطة صريحة: `POST /users/{id}/subscription/activate` بجسم `{"plan":"institutional"}` |
+| `POST /users/{id}/subscription/activate` بخ_plan_ فارغ | الافتراضي `plan="free"` في **يخفض** خطة مؤسسية نشطة إلى free ويلغي `can_trade` | أرسل الخطة دائمًا: `{"plan":"institutional"}` — هذا ما ضاع بعد أول محاولة |
+| نافذة الشموع مملوكة لـ`bridge:file` بينما التكة مملوكة لـ`mt5` | التصميم صحيح للسوق (الأعلى رتبة يفوز) لكن الـplane سحب-عند-القراءة: النافذة المملوكة أصلًا لا تُجَرّب السكك الأعلى، فتبقى 2 شموع من الإطار المشكَّل بدل 300 شموع تاريخية | فضاء Canonical للنافذة M15 عند القراءة يظل `bridge:file` مع `pulls: 0` — قرار **مفتوح**: إما تسخين النوافذ من `mt5`، أو جعل النافذة المملوكة تُراجَع بالسحب عند القراءة |
 
 ## الاختبارات
 
 ```powershell
-python -m pytest -q                        # المجموعة الكاملة (710)
+python -m pytest -q                        # المجموعة الكاملة (924)
 python -m pytest tests/test_ai_dspy/       # طبقة DSPy فقط
 python tests\test_operations\test_operator_console.py   # عبر pytest
 python scripts\mt5_live_session.py --no-trade   # إثبات التغذية الحية قراءةً فقط (بدون أمر)

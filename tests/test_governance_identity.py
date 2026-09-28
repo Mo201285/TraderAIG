@@ -134,3 +134,58 @@ def test_rehydrate_restores_users_subscriptions_and_entitlements(monkeypatch):
     assert loaded.subscription_status == SubscriptionStatus.ACTIVE
     assert restored.can(user.user_id, Entitlement.CAN_TRADE) is True
     assert restored._subscriptions[user.user_id].expires_at == sub.expires_at
+
+
+def test_principal_defaults_to_first_created_user(monkeypatch):
+    monkeypatch.delenv("IDENTITY_PRIMARY_EMAIL", raising=False)
+    svc = IdentityService()
+    first = svc.create_user("first@example.com", "test", plan=SubscriptionPlan.FREE)
+    svc.create_user("second@example.com", "test", plan=SubscriptionPlan.INSTITUTIONAL)
+
+    assert svc.principal_user_id() == first.user_id
+
+
+def test_explicit_primary_email_wins_over_creation_order(monkeypatch):
+    svc = IdentityService()
+    svc.create_user("first@example.com", "test", plan=SubscriptionPlan.FREE)
+    founder = svc.create_user("founder@example.com", "test", plan=SubscriptionPlan.INSTITUTIONAL)
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", "founder@example.com")
+
+    assert svc.principal_user_id() == founder.user_id
+
+
+def test_principal_email_match_is_case_insensitive(monkeypatch):
+    svc = IdentityService()
+    svc.create_user("first@example.com", "test", plan=SubscriptionPlan.FREE)
+    founder = svc.create_user("Founder@Example.com", "test", plan=SubscriptionPlan.INSTITUTIONAL)
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", "  FOUNDER@example.com  ")
+
+    assert svc.principal_user_id() == founder.user_id
+
+
+def test_unknown_principal_email_falls_back_to_first_user(monkeypatch):
+    svc = IdentityService()
+    first = svc.create_user("first@example.com", "test", plan=SubscriptionPlan.FREE)
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", "nobody@example.com")
+
+    assert svc.principal_user_id() == first.user_id
+
+
+def test_principal_is_none_without_users(monkeypatch):
+    monkeypatch.delenv("IDENTITY_PRIMARY_EMAIL", raising=False)
+
+    assert IdentityService().principal_user_id() is None
+
+
+def test_principal_does_not_depend_on_map_order(monkeypatch):
+    """Rehydration rebuilds the user map from persistence in database order,
+    so an implicit first-user principal could change across a restart."""
+    svc = IdentityService()
+    first = svc.create_user("first@example.com", "test", plan=SubscriptionPlan.FREE)
+    founder = svc.create_user("founder@example.com", "test", plan=SubscriptionPlan.INSTITUTIONAL)
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", "founder@example.com")
+
+    svc._users = {u.user_id: u for u in reversed(svc.list_users())}
+
+    assert svc.principal_user_id() == founder.user_id
+    assert svc.principal_user_id() != first.user_id

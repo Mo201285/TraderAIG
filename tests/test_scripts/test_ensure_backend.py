@@ -17,9 +17,24 @@ from scripts import ensure_backend as eb  # noqa: E402
 
 
 def test_backend_healthy_needs_the_endpoint_not_just_a_listener(monkeypatch):
-    monkeypatch.setattr(eb, "http_get", lambda *_a, **_k: {"ok": True})
+    class _Resp:
+        def __init__(self, status=200):
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(eb.urllib.request, "urlopen",
+                        lambda *_a, **_k: _Resp(200))
     assert eb.backend_healthy() is True
-    monkeypatch.setattr(eb, "http_get", lambda *_a, **_k: None)
+
+    def _refused(*_a, **_k):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(eb.urllib.request, "urlopen", _refused)
     assert eb.backend_healthy() is False
 
 
@@ -117,3 +132,31 @@ def test_http_get_returns_none_on_transport_error(monkeypatch):
 
     monkeypatch.setattr(eb.urllib.request, "urlopen", boom)
     assert eb.http_get("http://127.0.0.1:8000/system/health") is None
+
+
+def test_backend_healthy_accepts_any_http_status(monkeypatch):
+    """A healthy backend can answer 503 under load. Treating that as dead
+    makes the 5-minute supervisor report a false alarm on a live server."""
+    class _Resp:
+        status = 503
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(eb.urllib.request, "urlopen", lambda *_a, **_k: _Resp())
+    assert eb.backend_healthy(port=8000) is True
+
+
+def test_backend_healthy_rejects_a_connection_error(monkeypatch):
+    def _boom(*_a, **_k):
+        raise eb.urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(eb.urllib.request, "urlopen", _boom)
+    assert eb.backend_healthy(port=8000) is False
+
+
+def test_backend_healthy_probe_allows_slow_answers():
+    assert eb.HEALTH_TIMEOUT >= 15.0

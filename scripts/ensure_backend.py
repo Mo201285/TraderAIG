@@ -81,9 +81,24 @@ def http_post(url: str, payload: Optional[Dict[str, Any]] = None,
         return 0, str(exc)
 
 
-def backend_healthy(port: int = 8000, timeout: float = 5.0) -> bool:
-    """A port with a listener is NOT health: ask the real health endpoint."""
-    return http_get(f"http://127.0.0.1:{port}/system/health", timeout=timeout) is not None
+HEALTH_TIMEOUT = 20.0
+
+
+def backend_healthy(port: int = 8000, timeout: float = HEALTH_TIMEOUT) -> bool:
+    """A port with a listener is NOT health: ask the real health endpoint.
+
+    Any HTTP answer counts. /system/health re-evaluates every component, so
+    under load a healthy backend can exceed a short probe timeout; a raised
+    timeout or a slow-but-alive server must not be reported as a dead one.
+    """
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/system/health", timeout=timeout) as response:
+            return 200 <= response.status < 600
+    except urllib.error.HTTPError as exc:
+        return 200 <= exc.code < 600
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def port_listening(port: int = 8000) -> bool:

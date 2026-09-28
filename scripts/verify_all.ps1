@@ -85,7 +85,9 @@ if ($selected -contains "smoke") {
 }
 
 Write-Output ""
-$fails = @($results | Where-Object { $_ -like "[!!]*" })
+# -like treats "[!!]" as a character class, so a failed gate never matches
+# and the summary reports every run as green. Compare the tag literally.
+$fails = @($results | Where-Object { $_.StartsWith("[!!]") })
 Write-Output ("VERIFY_ALL: {0} gates, {1} passed, {2} failed" -f $results.Count, ($results.Count - $fails.Count), $fails.Count)
 foreach ($r in $results) { Write-Output "  $r" }
 exit $(if ($fails.Count -eq 0) { 0 } else { 1 })

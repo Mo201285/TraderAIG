@@ -47,7 +47,8 @@ class LiveEngine:
                  htf_refresh_seconds: float = 300.0,
                  poll_seconds: float = 15.0,
                  plane: Optional["MarketPlane"] = None,
-                 paper: bool = False) -> None:
+                 paper: bool = False,
+                 ledger_name: str = "position_manager.json") -> None:
         self._adapter = adapter or mt5_adapter
         self._symbols = list(symbols) if symbols else self._default_symbols()
         self._timeframe = timeframe
@@ -70,7 +71,7 @@ class LiveEngine:
         self._plane.register_feed("mt5", self._adapter.fetch_candles)
         self._pos_manager = PositionManager(
             adapter=self._adapter, paper=paper,
-            ledger_path=str(settings.logging.directory / "position_manager.json"))
+            ledger_path=str(settings.logging.directory / ledger_name))
         for sym in self._symbols:
             desk = PaperExecutor() if paper else None
             if desk is not None:
@@ -295,3 +296,21 @@ class LiveEngine:
 
 
 live_engine = LiveEngine()
+
+# The paper watch is a SECOND ENGINE IN THIS PROCESS, never a second process.
+#
+# `scripts/paper_engine.py` proved a standalone runner can cycle the pipeline
+# against real MT5 candles, and was then deleted: a separate process means a
+# separate `MarketPlane` singleton, a separate `state` and a separate
+# opportunity board, so every paper fill it made was invisible to
+# /system/health, /opportunities, /performance and the dashboard. That is
+# exactly the "two canonical states" outcome 28.1 forbids, and it would have
+# been invisible rather than loud, which is the dangerous kind.
+#
+# In-process the paper desk therefore shares ONE market plane, ONE canonical
+# state and ONE audit trail with the API - and `paper=True` gives every
+# approved candidate a `PaperExecutor`, so the loop is real and the venue is
+# never touched. The boot path re-asserts it after every reboot exactly like
+# the mt5 rail (scripts/ensure_backend.py --start-paper-sync).
+paper_engine = LiveEngine(paper=True, htf_timeframe="H1",
+                          ledger_name="position_manager_paper.json")

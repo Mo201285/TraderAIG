@@ -1090,6 +1090,45 @@ def cex_engine_stop() -> Dict:
     return {"stopped": True, "status": cex_live_engine.status()}
 
 
+@app.get("/paper/engine")
+def paper_engine_status() -> Dict:
+    """Status of the in-process paper watch (no venue orders exist on this path).
+
+    Read-only, so it is not entitlement-gated: the operator must be able to
+    SEE that the paper desk is off without holding CAN_TRADE, and the payload
+    contains no position, credential or order data.
+    """
+    from operations.live_engine import paper_engine
+    return paper_engine.status()
+
+
+@app.post("/paper/engine/start")
+def paper_engine_start(payload: Dict) -> Dict:
+    """Start the paper decision loop in this process.
+
+    The same `LiveEngine(paper=True)` the `--paper` flag used to build in a
+    second uvicorn, now sharing the API's one market plane and canonical state.
+    `paper=True` is not a label: each symbol gets a `PaperExecutor` desk, so an
+    approved candidate is filled on paper and no order path to the venue is
+    ever constructed.
+    """
+    _guard(Entitlement.CAN_TRADE)
+    from operations.live_engine import paper_engine
+    interval = float(payload.get("interval", 30))
+    started = paper_engine.start(interval)
+    st = paper_engine.status()
+    return {"started": started, "interval": interval,
+            "symbols": st.get("symbols"), "status": st}
+
+
+@app.post("/paper/engine/stop")
+def paper_engine_stop() -> Dict:
+    _guard(Entitlement.CAN_TRADE)
+    from operations.live_engine import paper_engine
+    paper_engine.stop()
+    return {"stopped": True, "status": paper_engine.status()}
+
+
 # ---------------------------------------------------------------------------
 # Billing & Wallet (sandbox-first; live gated OFF by default)
 # ---------------------------------------------------------------------------

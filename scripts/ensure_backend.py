@@ -5,24 +5,28 @@ The 24/7 contract is two layers, and this script owns the second one:
 1. `scripts/mt5_host_watchdog.py` keeps the TERMINAL publishing (frames fresh).
 2. This script keeps the SERVER running and the PRIMARY `mt5` rail syncing.
 
-Why it must exist instead of a scheduled `python main.py`: two pieces of state
+Why it must exist instead of a scheduled `python main.py`: three pieces of state
 are in-process and die with the process. The file poller is restarted by the
 API lifespan, but the mt5 watcher is a thread started only by
 `POST /mt5/watcher` - so after every reboot the tier-100 `mt5` source silently
 stays off and the plane quietly falls back to `bridge:file` (tier 50). That
 fallback is designed behaviour, which is exactly why it is dangerous: it looks
-perfectly healthy. This script re-asserts both after every boot.
+perfectly healthy. The same is true of the paper decision loop, which only
+exists once `POST /paper/engine/start` has run. This script re-asserts all of
+them after every boot.
 
 It is idempotent (port check, never a second backend), it starts the backend
 detached through the operator console's own launcher so the logs stay in
-`logs/backend.*.log`, and it never places an order: the LiveEngine is not
-started here, so no order path exists.
+`logs/backend.*.log`, and it never places a venue order: the paper desk is a
+`PaperExecutor`, and the `LiveMT5Executor` engine is not started here, so no
+order path to the terminal exists.
 
 Exit codes:
-  0  backend already healthy (and the rail was already syncing, if asked)
-  1  backend started now / rail (re)started now
+  0  backend already healthy (and the rail/paper desk were already up, if asked)
+  1  backend started now / rail (re)started now / paper desk (re)started now
   2  backend did not become healthy within --wait seconds
   3  backend is up but the mt5 rail could not be started (e.g. 403 entitlement)
+  4  mt5 rail is up but the paper decision loop could not be started
 """
 from __future__ import annotations
 
@@ -38,7 +42,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 ROOT_CANDIDATES = ("", "D:\\One")
 import pathlib
 for _p in ROOT_CANDIDATES:
-    _root = pathlib.Path(_p)
+    # `.resolve()` matters: a scheduled task can run with any working
+    # directory, and a relative root makes every log path depend on that CWD
+    # instead of on the script's own location.
+    _root = (pathlib.Path(__file__).resolve().parents[1] if not _p
+             else pathlib.Path(_p).resolve())
     if (_root / "core" / "config.py").exists():
         break
 else:  # pragma: no cover - defensive
@@ -156,6 +164,23 @@ def start_mt5_rail(port: int = 8000, interval: float = DEFAULT_INTERVAL,
     return started, "watcher running" if started else f"watcher not started: {body}"
 
 
+def start_paper_watch(port: int = 8000, interval: float = DEFAULT_INTERVAL
+                      ) -> Tuple[bool, str]:
+    """Start the in-process paper decision loop through the API.
+
+    Same discipline as the rail: the API is the only thing that may start an
+    engine, so a scheduled task can never end up owning a second process with
+    its own market plane and canonical state. A 403 here is the entitlement
+    gate working, not a bug.
+    """
+    base = f"http://127.0.0.1:{port}"
+    status, body = http_post(f"{base}/paper/engine/start", {"interval": interval})
+    if status not in (200, 201):
+        return False, f"paper watch rejected ({status}): {body}"
+    started = bool(isinstance(body, dict) and body.get("started"))
+    return started, "paper desk running" if started else f"paper desk not started: {body}"
+
+
 def _log(message: str, log_path: Optional[Path]) -> None:
     line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}"
     print(line)
@@ -176,9 +201,13 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="seconds to wait for real health after starting")
     parser.add_argument("--start-mt5-sync", action="store_true",
                         help="also (re)start the primary mt5 rail watcher")
+    parser.add_argument("--start-paper-sync", action="store_true",
+                        help="also (re)start the in-process paper decision loop")
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
     parser.add_argument("--symbols", default=None,
                         help="comma separated symbols for the rail (default: .env list)")
+    parser.add_argument("--paper-interval", type=float, default=30.0,
+                        help="paper loop interval in seconds (default 30)")
     parser.add_argument("--log", default=str(DEFAULT_LOG))
     return parser.parse_args(argv)
 
@@ -211,6 +240,12 @@ def main(argv: Optional[List[str]] = None) -> int:
              log_path)
         if not ok:
             return 3
+    if args.start_paper_sync:
+        ok, detail = start_paper_watch(port=args.port, interval=args.paper_interval)
+        _log(f"ensure_backend: paper watch -> {'OK ' + detail if ok else 'FAILED ' + detail}",
+             log_path)
+        if not ok:
+            return 4
     return 1 if started_now else 0
 
 

@@ -35,7 +35,11 @@ from typing import Any, Dict, List, Optional
 ROOT_CANDIDATES = ("", "D:\\One")
 import pathlib
 for _p in ROOT_CANDIDATES:
-    _root = pathlib.Path(_p)
+    # `.resolve()` matters: a scheduled task can run with any working
+    # directory, and a relative root would make the market directory and the
+    # state file depend on that CWD instead of on the script's own location.
+    _root = (pathlib.Path(__file__).resolve().parents[1] if not _p
+             else pathlib.Path(_p).resolve())
     if (_root / "core" / "config.py").exists():
         break
 else:  # pragma: no cover - defensive

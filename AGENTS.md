@@ -28,7 +28,7 @@ If any two conflict: STOP, surface the conflict, never silently pick one.
 
 - One command: `powershell -ExecutionPolicy Bypass -File scripts\verify_all.ps1` (gates: ruff lint → py_compile → full pytest → `tsc`+`vite build` → live smoke; use `-SkipSmoke` for everything except the live boot)
 - Lint: `python -m ruff check .` in `D:\One` (must be zero; config in `pyproject.toml`)
-- Backend: `python -m pytest -q` in `D:\One` (baseline **710 passing** — report the new count when it moves)
+- Backend: `python -m pytest -q` in `D:\One` (baseline **957 passing** — report the new count when it moves)
 - Dashboard: in `TAIG Dash` run `node .\node_modules\typescript\bin\tsc --noEmit` then `node .\node_modules\vite\bin\vite.js build` (no page is done without both)
 - Live wire: `powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1` (7/7 steps on a real uvicorn boot)
 
@@ -41,6 +41,8 @@ If any two conflict: STOP, surface the conflict, never silently pick one.
 - **User strategy lifecycle**: a natural-language description is captured verbatim → canonical Strategy Specification → ambiguity detection → user confirmation → vetting → research → validation → paper → governance → production; failure yields explicit REJECTED/QUARANTINED/NEEDS_REVISION, never silent deletion (§27.3–27.4, §28.5–28.8).
 - **Docs discipline**: completing any milestone/orphan flips `[ ]`→`[x]` in PROJECT_MAP, adds a dated DECISION_LOG row (Accepted/Rationale/Rejected), and keeps README/RUNBOOK/UPDATE-annex in sync.
 - **Dashboard honesty**: no fabricated numbers; absent sources render `EmptyState`/`—` with the live/mock banner; mocks in `lib/mocks.ts`, API→UI adapters in `lib/adapters.ts`.
+- **One process, one canonical state**: an engine runs *inside* the API process (`/mt5/watcher`, `/paper/engine/start`, `/cex/engine/start`), never as its own scheduled process. A second process owns a second `MarketPlane`, a second `core.state` and a second opportunity board, and the failure is silent rather than loud. `scripts/paper_engine.py` was deleted for exactly this reason — do not bring it back.
+- **Documented ≠ implemented**: `New Expind dev.md` and the [TECH_STACK] table describe RabbitMQ; there is no `pika`/`amqp` dependency or code path, and the runtime database is SQLite unless `POSTGRES_HOST` is set. Verify a claim against the running system before repeating it (§28.4).
 
 ## Environment notes
 
@@ -48,6 +50,7 @@ If any two conflict: STOP, surface the conflict, never silently pick one.
 - Stdlib-first: never add a dependency when the stdlib solves it.
 - pytest tests prepend root via `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))`.
 - Optional externals must degrade to zero-infra defaults: Redis `TRADERAIG_STATE_REDIS=0`, persistence `TRADERAIG_PERSIST=0`, Postgres (`POSTGRES_HOST` empty → SQLite), DSPy gate `TRADERAIG_DSPY_ENABLED`.
+- 24/7 services on this host: `scripts/mt5_host_watchdog.py` (terminal, report-only), `scripts/ensure_backend.py` (backend + tier-100 rail + paper desk), `scripts/ensure_dashboard.py` (verified `dist/` on :8443 via `vite preview`). Each resolves its root from `__file__` and `.resolve()` — a relative root makes every log path depend on the scheduled task's working directory. Scheduled tasks: `TAIG-Backend-Start`, `TAIG-Backend-Watchdog`, `TAIG-MT5-Terminal-Start`, `TAIG-MT5-Watchdog`, `TAIG-Dashboard-Watchdog`.
 
 ## Blocked (external services only — do not fake/implement around)
 

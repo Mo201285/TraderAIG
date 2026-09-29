@@ -583,7 +583,14 @@ def cmd_start(args: argparse.Namespace) -> int:
         pid = _start_detached([sys.executable, "main.py"], ROOT, "backend", env_extra)
         pids.append(("backend", pid))
     if "all" in targets or "dash" in targets:
-        pid = _start_detached(["npm.cmd", "run", "dev"], DASH_DIR, "dash")
+        # `preview` serves the verified `dist/` build, not the vite dev server:
+        # the dev server keeps HMR and the figma/Storybook middlewares loaded,
+        # which is the wrong thing to leave running unattended for 24/7. The
+        # tsc + vite build half belongs to the verification gate, not here.
+        pid = _start_detached(["node", "node_modules/vite/bin/vite.js", "preview",
+                               "--port", str(DASH_PORT), "--strictPort",
+                               "--host", "0.0.0.0"],
+                              DASH_DIR, "dash", {"PORT": str(DASH_PORT)})
         pids.append(("dashboard", pid))
     if "all" in targets or "ollama" in targets:
         extra = {"OLLAMA_MODELS": OLLAMA_MODELS_DIR} if os.path.isdir(OLLAMA_MODELS_DIR) else {}

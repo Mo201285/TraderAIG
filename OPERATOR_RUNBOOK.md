@@ -165,29 +165,62 @@ python scripts\mt5_host_watchdog.py --restart            # إعادة تشغيل
 python scripts\mt5_host_watchdog.py --ensure-terminal     # تشغيل الطرفية إن كانت down (مهمة الإقلاع)
 ```
 
-الطبقة الثانية: `scripts\ensure_backend.py` — بقاء **الخادم** حيًّا وإبقاء **السكك الأساسي
-`mt5` (رتبة 100)** مزامنًا. لماذا سكربت لا مجرّد مهمة `python main.py`: حالتان تعيشان داخل
-العملية وتموتان معها — الـpoller يعيده إقلاع الـAPI، لكن **مراقب `mt5` خيطٌ يبدأه فقط
-`POST /mt5/watcher`**، فبعد كل إقلاع يبقى المصدر الأعلى صامتًا وتسقط الـplane بصمت إلى
-`bridge:file` (رتبة 50). وهذا الاحتياط سلوك **مصمَّم**، ولهذا هو الخطر: يبدو سليمًا تمامًا.
+الطبقة الثانية: `scripts\ensure_backend.py` — بقاء **الخادم** حيًّا، وإبقاء **السكك الأساسي
+`mt5` (رتبة 100)** مزامنًا، وإبقاء **مكتب paper** حيًّا. لماذا سكربت لا مجرّد مهمة
+`python main.py`: ثلاث حالات تعيش داخل العملية وتموتان معها — الـpoller يعيده إقلاع الـAPI،
+لكن **مراقب `mt5` خيطٌ يبدأه فقط `POST /mt5/watcher`**، و**مكتب paper يبدأه فقط
+`POST /paper/engine/start`**. فبعد كل إقلاع يبقى المصدر الأعلى صامتًا وتسقط الـplane بصمت إلى
+`bridge:file` (رتبة 50) — أو يبقى مكتب paper مطفأً. والاثنان سلوك **مصمَّم**، ولهذا هو الخطر:
+يبدوان سليمَين تمامًا.
 
 ```powershell
 python scripts\ensure_backend.py                             # تأكّد أن :8000 سليم فقط
 python scripts\ensure_backend.py --start-mt5-sync --interval 5   # + اربط السكك الأساسي وشغّل مراقبه
+python scripts\ensure_backend.py --start-mt5-sync --start-paper-sync   # + شغّل مكتب paper
 ```
 
-المهمّات الأربع المسجّلة على هذا الجهاز (تعملان بلا تدخل، ومجلد العمل `D:\One`):
+**مكتب paper داخل عملية الخادم، لا عملية مستقلة.** جرّب أوّلًا سكربت مستقل
+(`scripts/paper_engine.py`) فاشتغل فعلًا ودوّر خط القرار على شموع MT5 حقيقية، ثم **حُذف**:
+عملية ثانية = `MarketPlane` ثانية + `core.state` ثانية + opportunity board ثانية. سجلّها كان
+يقول `Account state updated: balance=95974.73` بينما `/system/health` على `:8000` لا يعرف
+شيئًا. حالتان قانونيتان متعارضتان تخللان 28.1، والفشل هنا **هادئ** لا صاخب. داخل العملية
+صار كل تعبئة paper مرئية في `/opportunities` و`/learning/stats` و`/system/health`، والسلامة
+بنيوية لا تصريحية: كل رمز يملك `PaperExecutor` (ويتحقّق الاختبار أنه ليس `LiveMT5Executor`
+قطيعًا)، والمكتب يكتب في `position_manager_paper.json` منفصل فلا يطمس سجلّ التنفيذ الحيّ.
+
+```powershell
+curl.exe -s http://127.0.0.1:8000/paper/engine                                   # الحالة (مفتوح للقراءة)
+curl.exe -s -X POST http://127.0.0.1:8000/paper/engine/start -H "Content-Type: application/json" -d "{\"interval\":30}"
+curl.exe -s -X POST http://127.0.0.1:8000/paper/engine/stop
+```
+
+**اللوحة (`:8443`) خدمة مُشرَف عليها، لا خادم تطوير.** `scripts\ensure_dashboard.py` يقدّم
+نسخة `dist/` **المُتحقَّق منها** عبر `vite preview` — لا `npm run dev`، لأن خادم التطوير
+يُبقي HMR وmiddlewares الخاصة بـfigma/Storybook تعمل بلا مراقب، وهو سطح فشل جديد لا نريده
+لـ24/7. الأمران (الكونسول والسكربت) يستخدمان **نفس متجه الوسائط ونفس اسم السجل**
+(`logs\dash.*.log`) — ويؤكد اختبار أنهما لا يشغّلان خادمين مختلفين. الفحص يطلب المستند
+الحقيقي لا مجرد منفذ مفتوح، و**يرفض الإقلاع فوق بناء مفقود** (رمز الخروج 3) بدل تقديم
+صفحة بيضاء.
+
+```powershell
+python scripts\ensure_dashboard.py                          # تأكّد أن :8443 يقدّم فعلًا
+Get-Content logs\dash.err.log -Tail 20                      # سجلّ vite preview
+```
+
+المهمّات المسجّلة على هذا الجهاز (تعملان بلا تدخل، ومجلد العمل `D:\One`):
 
 | المهمّة | التوقيت | ما تفعله |
 | --- | --- | --- |
 | `TAIG-MT5-Terminal-Start` | عند تسجيل الدخول | تشغّل الطرفية إن كانت down (idempotent، لا تشغيل مزدوج) |
-| `TAIG-Backend-Start` | عند تسجيل الدخول | تتأكّد أن :8000 سليم + تعيد تأكيد مراقب السكك الأساسي |
+| `TAIG-Backend-Start` | عند تسجيل الدخول | تتأكّد أن :8000 سليم + تعيد تأكيد مراقب السكك الأساسي **ومكتب paper** |
 | `TAIG-MT5-Watchdog` | كل 5 دقائق | تقرير حيّية السوق إلى `logs\watchdog.log` — **تقرير فقط**، لا تعيد التشغيل |
-| `TAIG-Backend-Watchdog` | كل 5 دقائق | **تعيد تشغيل خادم ساقط** وتعيد تأكيد السكك الأساسي (مُثبَت: قُتل الخادم فعاد في <60s) |
+| `TAIG-Backend-Watchdog` | كل 5 دقائق | **تعيد تشغيل خادم ساقط** وتعيد تأكيد السكك الأساسي ومكتب paper (مُثبَت: قُتل الخادم فعاد في <60s) |
+| `TAIG-Dashboard-Watchdog` | كل 5 دقائق | تعيد تقديم `:8443` فقط إذا توقّف عن الإجابة (idempotent؛ لا تلمس خادمًا حيًّا) |
 
 ```powershell
 Get-Content logs\watchdog.log -Tail 20          # آخر تقارير الطرفية
-Get-Content logs\backend_boot.log -Tail 10      # آخر تقارير الخادم/السكك
+Get-Content logs\backend_boot.log -Tail 10      # آخر تقارير الخادم/السكك/paper
+Get-Content logs\dashboard_boot.log -Tail 10    # آخر تقارير اللوحة
 Get-ScheduledTask -TaskName 'TAIG-*'            # حالة المهمّات
 Unregister-ScheduledTask -TaskName 'TAIG-MT5-Watchdog' -Confirm:$false   # إزالة
 ```
@@ -335,6 +368,14 @@ python tools\tradraig.py opportunity reject --id OPP-XXXX --reason "جلسة م�
 | `watchdog: STALE` في `logs\watchdog.log` والطرفية `terminal=up` | العملية حيّة لكن البيانات ميتة — هذا بالضبط ما لا تكشفه معاينة العملية | `python scripts\mt5_host_watchdog.py` لفحص يدوي، ثم راجع `Experts` log في الطرفية (رمز الـchart / مسار `FILE_COMMON`) — لا تُعِد التشغيل قبل معرفة السبب |
 | `watchdog: MISSING no frames yet` | لا إطار في `market\` إطلاقًا: EA غير مرفق، أو `MT5_COMMON_DATA` يشير إلى مجلد غير `%APPDATA%\...\Terminal\Common\Files` | تحقق من المسار الفعلي للإطار؛ المراقب يقرأ `MT5_COMMON_DATA` أولًا ثم المسار الحقيقي للطرفية، ولا يكتب ولا يفتح حسابًا |
 | `restart suppressed by rate limit` | الطرفية لا تبقى مسجَّلة الدخول، فأُوقف تجنّبًا لحلقة إعادة تشغيل | عالج تسجيل دخول الطرفية يدويًا؛ الحد 3 مرات/ساعة وتهدئة 120 ثانية **مقصودة** |
+| `GET /paper/engine` يعرض `running: false` | مكتب paper داخل العملية؛ لا يبدأ إلا بـ`POST /paper/engine/start`، ويموت مع الخادم | `python scripts\ensure_backend.py --start-mt5-sync --start-paper-sync` — أو شغّل `TAIG-Backend-Watchdog` (كل 5 دقائق يعيد التأكيد) |
+| `/paper/engine/start` رجع 403 | يبدأه `CAN_TRADE` فقط | `python tools\tradraig.py user list` ثم فعّل الاشتراك من الهوية الأساسية؛ الرفض موثّق في `/audit` |
+| تعبئات paper لا تظهر في `/opportunities` | هذا بالضبط ما يستبعده التصميم: مكتب paper **عملية ثانية** تعطي حالة قانونية ثانية صامتة | لا تُشغّل `scripts\paper_engine.py` — حُذف لسببه؛ كل دورة paper يجب أن تمرّ عبر `/paper/engine/start` داخل العملية |
+| `:8443` لا يستجيب | اللوحة خدمة مُشرَف عليها | `python scripts\ensure_dashboard.py`، ثم اقرأ `logs\dash.err.log` |
+| `ensure_dashboard` يخرج 3 | لا بناء `dist\index.html` — يرفض تقديم صفحة بيضاء عمدًا | شغّل بوابة `tsc` + `vite build` (أو `scripts\verify_all.ps1`) ثم أعد التشغيل |
+| `TAIG-Dashboard-Watchdog` يعرض `already serving` | السلوك الصحيح: خادم حيّ لا يُلمس | لا إجراء |
+| `/system/health` يعرض `database: SQLite persistence active` | هذا هو الافتراضي المقصود على هذا المضيف؛ PostgreSQL مُثبَت على خادم حقيقي لكنه غير مفعّل هنا | `POSTGRES_HOST` فارغ = SQLite؛ لا تُبلّغ عن PostgreSQL كأنه يعمل على هذا المضيف |
+| أي تقرير يذكر RabbitMQ كطبقة عاملة | **غير منفَّذ**: لا تبعية `pika`/`amqp` ولا مسار كود؛ ناقل الأحداث هو الحلقة داخل العملية + مرآة Redis | لا إجراء — التصحيح موثَّق في `PROJECT_MAP.md` [TECH_STACK]؛ إضافة RabbitMQ قرار بنية مستقبل، لا وصف قائم |
 | الطرفية لا تعمل بعد إقلاع الجهاز | `TAIG-MT5-Terminal-Start` تعمل **عند تسجيل الدخول** لا قبله | `Start-ScheduledTask -TaskName 'TAIG-MT5-Terminal-Start'` — وتحقّق من بدء تسجيل الدخول التلقائي إن أردت إقلاعًا بلا حضور |
 | `Log directory not writable` في سجلات الخادم عند تشغيل مهمة مجدولة | مجلد عمل المهمة `System32` فتعذّر logging | أعد تسجيل المهمة بـ `-WorkingDirectory 'D:\One'` |
 | `ensure_backend` يخرج 2 | الخادم لم يصبح سليمًا خلال `--wait` | `logs\backend.err.log`؛ لا تُعِد التشغيل يدويًا قبل قراءة الخطأ |

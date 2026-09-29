@@ -35,6 +35,7 @@ in `/system/health` for that reason.
 from __future__ import annotations
 
 import base64
+import contextvars
 import hashlib
 import hmac
 import json
@@ -325,3 +326,43 @@ def vault_will_persist() -> bool:
 
 
 auth = AuthService()
+
+# ---------------------------------------------------------------------------
+# The authenticated caller for the request currently being handled
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS. `identity.principal_user_id()` names WHO THE SERVER PICKS, and
+# for most of this system's life that was the only notion of "who is acting" --
+# so every ownership check compared a caller-supplied id against the server's
+# own choice, and a session, once added, authenticated a caller without ever
+# changing what that caller was allowed to do. A second user with a password
+# could therefore act with the operator's authority, and could read or mutate the
+# operator's own record through routes that `_own` was written to protect. That
+# is not a subtle escalation; it is authentication that changes nothing, which is
+# the same failure as the fabricated login screen one layer down.
+#
+# A contextvar rather than a parameter threaded through every route: the actor
+# would otherwise have to be added to `_own`, `_guard` and every guarded call
+# site. With no session presented it resolves to `None` and every existing code
+# path behaves EXACTLY as before -- the 24/7 deployment runs with enforcement
+# off and must not change behaviour because a guard was added.
+_current_caller: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "traderaig_current_caller", default=None)
+
+
+def set_current_caller(user_id: Optional[str]) -> contextvars.Token:
+    """Bind the authenticated user for this request. Returns a reset token."""
+    return _current_caller.set(user_id)
+
+
+def reset_current_caller(token: contextvars.Token) -> None:
+    """Undo `set_current_caller`, so a recycled context cannot inherit a caller."""
+    try:
+        _current_caller.reset(token)
+    except ValueError:
+        _current_caller.set(None)
+
+
+def current_caller() -> Optional[str]:
+    """The authenticated user for this request, or None if none was presented."""
+    return _current_caller.get()

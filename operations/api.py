@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 if TYPE_CHECKING:
     from research.strategy_lab.registry import StrategyRegistry
 
+import contextlib
 from fastapi import Body, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -22,7 +23,8 @@ from core.state import state
 from decision.candidate import candidate_board
 from decision.opportunity import OpportunityStatus
 from execution.mt5_adapter import mt5_adapter
-from governance.auth import AuthError, auth
+from governance.auth import (AuthError, auth, current_caller,
+                              reset_current_caller, set_current_caller)
 from governance.identity import (
     Entitlement,
     RiskPolicy,
@@ -83,7 +85,7 @@ def _guard(ent: Entitlement, owner_user_id: Optional[str] = None) -> Dict:
     with 403 when the acting identity lacks the required entitlement — the
     dashboard never substitutes for this authority.
     """
-    actor = owner_user_id or identity.principal_user_id()
+    actor = owner_user_id or _acting_actor()
     if actor is None:
         return {"active": False, "actor": None, "entitlement": ent.value}
     user = identity.get_user(actor)
@@ -133,7 +135,7 @@ def _own(user_id: str, *, action: str = "access") -> str:
     that a single-operator deployment stops pretending the boundary is enforced
     when it was previously an unchecked path parameter.
     """
-    actor = identity.principal_user_id()
+    actor = _acting_actor()
     if actor is None:
         return user_id
     if user_id == actor:
@@ -188,9 +190,63 @@ async def _enforce_session(request: Request, call_next):
         denial = _reject_without_session(request)
         if denial is not None:
             return denial
-        return await call_next(request)
+        with _caller_bound(request):
+            return await call_next(request)
     _identify_caller(request)
-    return await call_next(request)
+    with _caller_bound(request):
+        return await call_next(request)
+
+
+@contextlib.contextmanager
+def _caller_bound(request: Request):
+    """Bind the authenticated caller for exactly the duration of one request.
+
+    A `with` block rather than a bare assignment: the endpoint below reads the
+    actor synchronously, and without an explicit reset a recycled worker context
+    could carry one caller's identity into the next request -- a session
+    attributed to the wrong user, which for a security control is worse than no
+    control because it looks correct.
+    """
+    token = set_current_caller(
+        getattr(request.state, "session", None) and request.state.session.user_id)
+    try:
+        yield
+    finally:
+        reset_current_caller(token)
+
+
+def _acting_actor() -> Optional[str]:
+    """Who is acting for this request.
+
+    The authenticated session wins. Before this existed every guard here compared
+    against `identity.principal_user_id()` -- the identity the SERVER names --
+    which meant a valid session proved only that the caller knew a password,
+    while every authority check still ran against the operator. Anyone holding
+    any credential could then act as the operator, including on the operator's
+    own record through the very `_own` guard added to stop exactly that.
+
+    Falling back to the server principal when no session was presented keeps the
+    24/7 deployment identical: with enforcement off nothing changes, and the
+    machine service token deliberately still acts as the operator, because the
+    watchdog maintaining the operator's own rails is not a privilege escalation.
+    """
+    return current_caller() or identity.principal_user_id()
+
+
+def _verify_presented_session(supplied: Optional[str]):
+    """Verify a session token AND confirm the account still exists.
+
+    Deleting a user has to actually revoke them. A token is only 12h of HMAC and
+    a user id, so without this check `DELETE /users/{id}` would remove the record
+    and leave a working credential pointing at nothing -- and the route would
+    read as revocation while being only deletion. The session is refused rather
+    than degraded, because "your account no longer exists" must not be
+    recoverable by retrying.
+    """
+    session = auth.verify(supplied)
+    if identity.get_user(session.user_id) is None:
+        raise AuthError("this account no longer exists", status_code=401)
+    return session
 
 
 def _presented_token(request: Request) -> Optional[str]:
@@ -216,7 +272,7 @@ def _identify_caller(request: Request) -> None:
         request.state.auth_kind = "service"
         return
     try:
-        request.state.session = auth.verify(supplied)
+        request.state.session = _verify_presented_session(supplied)
         request.state.auth_kind = "session"
     except AuthError:
         # Not fatal here: the caller is simply unidentified. If the route needs
@@ -236,7 +292,7 @@ def _reject_without_session(request: Request):
         if supplied and auth.check_service_token(supplied):
             request.state.auth_kind = "service"
         else:
-            request.state.session = auth.verify(supplied)
+            request.state.session = _verify_presented_session(supplied)
             request.state.auth_kind = "session"
     except AuthError as exc:
         identity.record_audit(

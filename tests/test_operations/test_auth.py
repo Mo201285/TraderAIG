@@ -235,6 +235,168 @@ def test_no_configured_token_sends_no_header_rather_than_a_blank_one():
 
 
 
+def test_a_session_acts_as_ITSELF_and_not_as_the_server_principal(client, monkeypatch):
+    """The defect this milestone nearly shipped.
+
+    `_own` and the entitlement gate both compared a caller-supplied id against
+    `identity.principal_user_id()` -- the identity the SERVER names. So a valid
+    session proved only that the caller knew *a* password, while every authority
+    check still ran against the operator: a second user with a credential could
+    read and mutate the operator's own record through the very guard added to
+    stop that. Authentication that changes nothing is the same failure as the
+    fabricated login screen, one layer down.
+    """
+    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    op, _op_email, op_password = _operator(client, monkeypatch, plan="institutional")
+
+    # an ordinary second user, with their own password
+    other = client.post("/users", json={"email": f"other{time.time_ns()}@x.co"}
+                        ).json()["user_id"]
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", _email_of(client, other))
+    client.post("/auth/password", json={"password": "other-password-123"})
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", _op_email_of(client, op))
+
+    monkeypatch.setenv("TRADERAIG_AUTH", "1")
+    token = client.post("/auth/login", json={
+        "email": _email_of(client, other),
+        "password": "other-password-123"}).json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    assert client.get(f"/users/{other}", headers=headers).status_code == 200
+    assert client.get(f"/users/{op}", headers=headers).status_code == 403
+    assert client.get(f"/users/{op}/can/can_trade", headers=headers).status_code == 403
+
+    # ...and the operator's own session is unaffected
+    op_token = client.post("/auth/login", json={
+        "email": _op_email_of(client, op),
+        "password": op_password}).json()["token"]
+    assert client.get(f"/users/{op}",
+                      headers={"Authorization": f"Bearer {op_token}"}).status_code == 200
+
+
+def test_a_deleted_users_session_stops_working(client, monkeypatch):
+    """Otherwise deleting an account leaves a live credential behind, and
+    'DELETE /users/{id}' would read as revocation without being it."""
+    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    _uid, email, password = _operator(client, monkeypatch)
+    monkeypatch.setenv("TRADERAIG_AUTH", "1")
+    token = client.post("/auth/login", json={"email": email,
+                                             "password": password}).json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.get("/auth/session", headers=headers).json()["authenticated"] is True
+
+    # the operator deletes themselves out of band, as an incident response would
+    from governance.identity import identity
+    victim = client.get("/auth/session", headers=headers).json()["user_id"]
+    identity.delete_user(victim)
+
+    assert client.get("/auth/session", headers=headers).json()["authenticated"] is False
+    res = client.post("/users", json={"email": f"zombie{time.time_ns()}@x.co"},
+                      headers=headers)
+    assert res.status_code == 401
+
+
+def test_the_service_token_still_acts_as_the_operator(client, monkeypatch):
+    """Deliberate, and the reason the fallback exists: the watchdog maintains the
+    operator's own rails, so treating the machine credential as a lesser caller
+    would lock the 24/7 host out of the system it maintains."""
+    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    op, _e, _p = _operator(client, monkeypatch, plan="institutional")
+    monkeypatch.setenv("TRADERAIG_AUTH", "1")
+    monkeypatch.setenv("AUTH_SERVICE_TOKEN", "machine-token-value")
+
+    res = client.get(f"/users/{op}", headers={"X-Service-Token": "machine-token-value"})
+    assert res.status_code == 200
+
+
+def test_no_session_presented_keeps_the_server_principal_behaviour(client, monkeypatch):
+    """The 24/7 host runs with enforcement off. Adding a caller concept must not
+    quietly change who acts when nobody authenticated -- that is the regression
+    that would take the platform down at the worst moment."""
+    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    op, _e, _p = _operator(client, monkeypatch, plan="institutional")
+    assert client.get(f"/users/{op}").status_code == 200
+
+
+def test_one_callers_session_does_not_affect_the_next_request(client, monkeypatch):
+    """A non-principal request must not colour the request that follows it.
+
+    Honest scope: this checks the *observable* effect -- request 2 is judged as
+    the server principal, not as request 1's user. It does NOT prove the
+    contextvar is reset, and it cannot: Starlette runs each request in its own
+    task with a copied context, so sabotaging the reset left this suite fully
+    green. That is why the reset is unit-tested directly below rather than
+    claimed here.
+    """
+    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    op, op_email, op_password = _operator(client, monkeypatch, plan="institutional")
+    other = client.post("/users", json={"email": f"leak{time.time_ns()}@x.co"}
+                        ).json()["user_id"]
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", _email_of(client, other))
+    client.post("/auth/password", json={"password": "other-password-123"})
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", op_email)
+
+    monkeypatch.setenv("TRADERAIG_AUTH", "1")
+    other_token = client.post("/auth/login", json={
+        "email": _email_of(client, other),
+        "password": "other-password-123"}).json()["token"]
+
+    # request 1: a non-principal reads the operator's record -> refused
+    assert client.get(f"/users/{op}",
+                      headers={"Authorization": f"Bearer {other_token}"}).status_code == 403
+
+    # request 2: no credential at all must be the server principal
+    assert client.get(f"/users/{op}").status_code == 200
+
+    # request 3: the operator's own session still works afterwards
+    op_token = client.post("/auth/login", json={
+        "email": op_email, "password": op_password}).json()["token"]
+    assert client.get(f"/users/{op}",
+                      headers={"Authorization": f"Bearer {op_token}"}).status_code == 200
+
+
+def test_the_caller_binding_is_scoped_and_reversible():
+    """Unit-level, because the HTTP-level test above provably cannot see it.
+
+    The `finally: reset_current_caller(token)` is defensive: today Starlette
+    isolates each request in its own task context, so the reset is redundant
+    rather than load-bearing. It is kept because that is a property of the
+    framework's internals, not a guarantee of this code -- and a security
+    control should not depend on a dependency's undocumented behaviour to stay
+    correct. This test is the one that actually fails if the reset is removed.
+    """
+    from governance.auth import (current_caller, reset_current_caller,
+                                 set_current_caller)
+
+    assert current_caller() is None
+    token = set_current_caller("user-a")
+    assert current_caller() == "user-a"
+    reset_current_caller(token)
+    assert current_caller() is None
+
+    # a reset from the wrong context must degrade to "no caller", never raise
+    # inside a finally block and mask the response
+    reset_current_caller(set_current_caller("user-b"))
+    assert current_caller() is None
+
+
+def _email_of(_client, user_id):
+    """Read the email from the identity store, not through the API.
+
+    `GET /users/{id}` is ownership-guarded, so using it to look up a fixture's
+    email returns 403 for exactly the callers these tests are about -- the helper
+    would be testing the guard instead of the thing it needs.
+    """
+    from governance.identity import identity
+    user = identity.get_user(user_id)
+    assert user is not None, f"no such user {user_id}"
+    return user.email
+
+
+def _op_email_of(client, user_id):
+    return _email_of(client, user_id)
+
+
 def test_a_failed_login_is_audited_without_the_credential(client, monkeypatch):
     from governance.identity import identity
 

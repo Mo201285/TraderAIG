@@ -59,6 +59,21 @@ class UserRepository:
             return None
         return self._row_to_user(row)
 
+    def delete(self, user_id: str) -> bool:
+        """Remove the user row. Returns True if a row was actually removed.
+
+        Added because this method was missing, not because deletes are new: a
+        delete that only touched memory left the row in SQLite, so the user was
+        rehydrated on the next boot and the operator had no reason to doubt
+        that the deletion had worked.
+        """
+        row = self._session.get(UserRecord, user_id)
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._session.commit()
+        return True
+
     def get_by_email(self, email: str) -> Optional[User]:
         row = self._session.execute(
             select(UserRecord).where(UserRecord.email == email)

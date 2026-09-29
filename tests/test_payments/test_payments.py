@@ -18,15 +18,34 @@ def client():
 
 @pytest.fixture(autouse=True)
 def _no_leaked_principal(monkeypatch):
-    """Stop the acting principal leaking between tests.
+    """Make this module hermetic: no acting principal and no user may leak out.
 
     `_user_id` points `IDENTITY_PRIMARY_EMAIL` at the user it creates, which is
-    how these tests bill themselves. Without this reset the value would survive
-    into any test that does not create a user, and a billing test would pass or
-    fail depending on the order pytest happened to collect them in — the kind
-    of green that means nothing.
+    how these tests bill themselves, so without a reset that value survives into
+    any later test that does not create a user.
+
+    Deleting the env var alone was NOT enough, and the gap it left is worth
+    recording: with no primary email set, `principal_user_id()` falls back to the
+    first-created user, so these throwaway payment users became the acting
+    principal for whatever ran next — one of them left on a `starter` plan, and
+    the next 28 gated tests failed on `can_manage_risk`. It was invisible in a
+    full-suite run only because alphabetical collection happens to run
+    `test_operations` BEFORE `test_payments`; collected the other way round the
+    suite was red. A green suite that is really a coin-flip on collection order
+    is not a green suite, so the user maps are snapshotted and restored too.
     """
+    from governance.identity import identity
+
     monkeypatch.delenv("IDENTITY_PRIMARY_EMAIL", raising=False)
+    users = dict(identity._users)
+    subs = dict(identity._subscriptions)
+    try:
+        yield
+    finally:
+        identity._users.clear()
+        identity._users.update(users)
+        identity._subscriptions.clear()
+        identity._subscriptions.update(subs)
 
 
 def _user_id(client, plan="free") -> str:

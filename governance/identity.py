@@ -39,6 +39,26 @@ def _persist_user(user: "User", subscription: Optional["Subscription"] = None) -
         log.debug(f"User persistence skipped for {getattr(user, 'user_id', '?')}")
 
 
+def _persist_user_delete(user_id: str) -> None:
+    """Best-effort durable delete. Same posture as `_persist_user`: never blocks,
+    never masks. A delete that is only in-memory would be worse than no delete,
+    because the user would quietly come back on the next boot from the database
+    and the operator would have no reason to doubt it."""
+    try:
+        from persistence.db import make_live_session, persistence_enabled
+        from persistence.repositories import UserRepository
+
+        if not persistence_enabled():
+            return
+        session = make_live_session()
+        try:
+            UserRepository(session).delete(user_id)
+        finally:
+            session.close()
+    except Exception:  # noqa: BLE001
+        log.debug(f"User delete persistence skipped for {user_id}")
+
+
 class SubscriptionPlan(str, Enum):
     FREE = "free"
     STARTER = "starter"
@@ -309,6 +329,78 @@ class IdentityService:
         log.info(f"Subscription activated for {user_id}: {plan.value}")
         _persist_user(user, sub)
         return sub
+
+    def effective_entitlements(self, user_id: str) -> set[Entitlement]:
+        """What this user can actually do right now.
+
+        `user.entitlements` is a stored set, but it only counts while the
+        subscription is ACTIVE — that is what `User.has_entitlement` checks, so
+        a stale set on an expired or revoked subscription grants nothing. Any
+        guard that reasons about "what would this change take away" has to ask
+        the same question, or it will block harmless repairs on a subscription
+        that was never live.
+        """
+        user = self._get_or_raise(user_id)
+        if user.subscription_status != SubscriptionStatus.ACTIVE:
+            return set()
+        return set(user.entitlements)
+
+    def entitlements_lost_by_plan(self, user_id: str,
+                                  plan: SubscriptionPlan) -> set[Entitlement]:
+        """Entitlements a switch to `plan` would take away from this user now.
+
+        Empty when the user holds nothing effective, which is the point: this is
+        the safe basis for a downgrade guard, because it only fires when there is
+        real authority to lose.
+        """
+        return self.effective_entitlements(user_id) - set(
+            PLAN_ENTITLEMENTS.get(plan, set()))
+
+    def revoke_subscription(self, user_id: str,
+                            reason: Optional[str] = None) -> Subscription:
+        """Deliberately, auditable removal of a user's entitlements.
+
+        This is the sanctioned way to take authority away. It exists because
+        the only way to do it before was to abuse
+        `activate_subscription(plan="free")`, i.e. the "upgrade" endpoint was
+        also the downgrade endpoint — which is how a single unlabelled request
+        could strip `can_trade` from the operating principal and leave the
+        watchdog's own boot call 403ing. Revoking is a different, named,
+        separately audited act, and it records WHAT was taken.
+        """
+        user = self._get_or_raise(user_id)
+        sub = self._subscriptions[user_id]
+        lost = self.effective_entitlements(user_id)
+        sub.plan = SubscriptionPlan.FREE
+        sub.status = SubscriptionStatus.CANCELLED
+        user.plan = SubscriptionPlan.FREE
+        user.subscription_status = SubscriptionStatus.CANCELLED
+        user.entitlements = set()
+        user.updated_at = time.time()
+        self._log("user", "subscription.revoke", "Subscription", sub.subscription_id,
+                  {"reason": reason or "unspecified",
+                   "revoked_entitlements": sorted(e.value for e in lost)})
+        log.warning(f"Subscription revoked for {user_id}: "
+                    f"{sorted(e.value for e in lost) or ['nothing effective']}")
+        _persist_user(user, sub)
+        return sub
+
+    def delete_user(self, user_id: str) -> None:
+        """Remove a user and its subscription. Audited, and durable.
+
+        There was no way to remove a user at all, so revoking access meant either
+        editing the database by hand or leaning on the silent-downgrade path.
+        The audit entry is written BEFORE the mutation: if persistence then
+        fails, the record of the attempt still exists.
+        """
+        user = self._get_or_raise(user_id)
+        self._log("user", "user.delete", "User", user_id,
+                  {"email": user.email, "plan": user.plan.value,
+                   "subscription_status": user.subscription_status.value})
+        self._users.pop(user_id, None)
+        self._subscriptions.pop(user_id, None)
+        _persist_user_delete(user_id)
+        log.warning(f"User deleted: {user_id} ({user.email})")
 
     def expire_subscription(self, user_id: str) -> None:
         user = self._get_or_raise(user_id)

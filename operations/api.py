@@ -25,6 +25,7 @@ from governance.identity import (
     Entitlement,
     RiskPolicy,
     SubscriptionPlan,
+    SubscriptionStatus,
     identity,
 )
 from learning.experience import ledger
@@ -409,14 +410,147 @@ def get_user(user_id: str) -> Dict:
 
 @app.post("/users/{user_id}/subscription/activate")
 def activate_subscription(user_id: str, payload: Dict) -> Dict:
+    """Set a subscription plan. NO LONGER DEFAULTS TO `free`, and never
+    downgrades silently.
+
+    Two defects lived in this one route, and both were reachable by a body
+    carrying no intent at all:
+
+    * `payload.get("plan", "free")` made `{}` mean "downgrade to free". Since
+      `grant_plan_entitlements()` replaces the whole entitlement set, one
+      unlabelled POST stripped `can_trade` from the operating principal — and
+      because `/mt5/connect` and every gated decision call are guarded by that
+      entitlement, the platform's own `TAIG-Backend-Watchdog` starts getting
+      403s on its very next tick. The system takes itself offline in response
+      to a malformed request. That is the same silent-downgrade shape as the
+      "pay a smaller amount" incident, arriving through a different door, and
+      it is the reason `plan` is now required instead of defaulted.
+    * even an explicit lower plan was accepted as an ordinary "activation", so
+      taking authority away and granting it were the same unlabelled operation.
+
+    Downgrading is still possible, deliberately: `confirm_downgrade: true` says
+    it, and the response names exactly which entitlements are being given up so
+    the caller cannot do it by accident. `POST /users/{id}/subscription/revoke`
+    is the better verb for actually revoking, because it records the removal
+    under its own audit action.
+    """
     _own(user_id, action="activate a subscription for")
+    raw_plan = payload.get("plan")
+    if not isinstance(raw_plan, str) or not raw_plan.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="plan is required and must be named explicitly; this "
+                   "endpoint used to default a missing plan to 'free', which "
+                   "silently removed the caller's entitlements")
     try:
-        plan = SubscriptionPlan(payload.get("plan", "free"))
-        duration = payload.get("duration_seconds", 30 * 24 * 3600)
-        sub = identity.activate_subscription(user_id, plan, duration)
-        return sub.as_dict()
+        plan = SubscriptionPlan(raw_plan.strip())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown plan {raw_plan!r}; expected one of "
+                   f"{[p.value for p in SubscriptionPlan]}")
+
+    lost = identity.entitlements_lost_by_plan(user_id, plan)
+    if lost and not payload.get("confirm_downgrade"):
+        identity.record_audit(
+            "api", "subscription.downgrade.refused", "User", user_id,
+            {"requested_plan": plan.value,
+             "would_lose": sorted(e.value for e in lost)})
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "this change would remove entitlements",
+                    "requested_plan": plan.value,
+                    "would_lose": sorted(e.value for e in lost),
+                    "hint": "resend with confirm_downgrade=true to accept the "
+                            "loss, or POST /users/{id}/subscription/revoke to "
+                            "record a deliberate revocation"})
+
+    duration = payload.get("duration_seconds", 30 * 24 * 3600)
+    sub = identity.activate_subscription(user_id, plan, duration)
+    return sub.as_dict()
+
+
+@app.post("/users/{user_id}/subscription/revoke")
+def revoke_subscription(user_id: str, payload: Dict) -> Dict:
+    """Take a user's entitlements away on purpose, with the removal named in
+    the audit trail.
+
+    This is the endpoint that should have existed all along. Revocation used to
+    be possible only as a side effect of "activating" a lower plan, which is why
+    it was unreviewable, unlabelled, and one typo away from an outage.
+
+    `confirm_lockout` is required when the target is the acting principal. That
+    is not a fake safety check: on a single-tenant deployment the principal IS
+    the operator, so revoking yourself removes the entitlement the trading
+    rails are gated on, and the platform will refuse its own guarded calls on
+    the next watchdog tick. Sometimes that is exactly what an operator wants
+    (stop the system trading), so this refuses to block it and makes the
+    operator say so instead.
+    """
+    _own(user_id, action="revoke the subscription of")
+    try:
+        identity.get_user(user_id)  # existence only; the state we need is below
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+    lost = identity.effective_entitlements(user_id)
+    if lost and user_id == identity.principal_user_id() \
+            and not payload.get("confirm_lockout"):
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "you are revoking your own authority",
+                    "would_lose": sorted(e.value for e in lost),
+                    "consequence": "guarded calls (/mt5/connect, every gated "
+                                   "decision route) will start returning 403, "
+                                   "including the boot calls made by "
+                                   "TAIG-Backend-Watchdog",
+                    "hint": "resend with confirm_lockout=true if that is what "
+                            "you want, or re-activate a plan afterwards"})
+
+    sub = identity.revoke_subscription(user_id, reason=payload.get("reason"))
+    return {"revoked": True, "revoked_entitlements": sorted(e.value for e in lost),
+            "subscription": sub.as_dict()}
+
+
+@app.delete("/users/{user_id}")
+def delete_user(user_id: str, confirm: bool = False) -> Dict:
+    """Remove a user record. Audited and durable.
+
+    Ordering is enforced rather than left to the operator: a user with a live
+    subscription must be revoked first, because deleting a record that still
+    carries authority is the same silent-removal shape as the downgrade this
+    milestone closed, only with the audit trail describing it less clearly.
+
+    Deleting the acting principal is refused without `confirm=true`, because it
+    does not merely remove a user — it changes who (or whether anyone) is the
+    principal, and the gate's answer would change with it.
+    """
+    _own(user_id, action="delete")
+    try:
+        user = identity.get_user(user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    if user.subscription_status == SubscriptionStatus.ACTIVE:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "this user still has an active subscription",
+                    "hint": "POST /users/{id}/subscription/revoke first, then "
+                            "delete; deleting an authorised user outright is "
+                            "exactly the silent removal this guards against"})
+
+    if user_id == identity.principal_user_id() and not confirm:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "you are deleting the acting principal",
+                    "consequence": "the entitlement gate will fall back to "
+                                   "bootstrap (no principal) until another "
+                                   "identity exists, which reopens every route "
+                                   "that bootstrap lets through",
+                    "hint": "resend with ?confirm=true if that is intended"})
+
+    identity.delete_user(user_id)
+    return {"deleted": True, "user_id": user_id}
 
 
 @app.get("/users/{user_id}/can/{entitlement}")

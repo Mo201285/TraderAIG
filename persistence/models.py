@@ -35,6 +35,11 @@ class UserRecord(Base):
     risk_policy_json: Mapped[str] = mapped_column(Text, default="{}")
     account_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     expires_at: Mapped[float] = mapped_column(Float, default=0.0)
+    # Credentials. Nullable on purpose: identities predate authentication, and a
+    # migration that required a password would lock the operator out of the
+    # deployment they are trying to secure.
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    password_set_at: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
     updated_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
 

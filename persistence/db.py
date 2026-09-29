@@ -65,22 +65,37 @@ def _is_sqlite_engine() -> bool:
     return engine.url.get_backend_name() == "sqlite"
 
 
-def _required_schema() -> dict[str, set[str]]:
+def _required_schema() -> dict[str, dict[str, str]]:
+    """Columns this build needs that an older database may lack, and the DDL
+    type to add them as.
+
+    Was a `set[str]` with one hard-coded `ALTER` for `experiences`; it is now
+    column -> type so adding a column is one line instead of a special case.
+    `experiences.metadata_json` keeps its original default, because a data
+    migration and a schema migration are different jobs.
+    """
     return {
-        "experiences": {"metadata_json"},
+        "experiences": {"metadata_json": "TEXT DEFAULT '{}'"},
+        "users": {"password_hash": "TEXT", "password_set_at": "FLOAT"},
     }
 
 
 def _patch_sqlite_schema() -> None:
+    """Additive, non-destructive: SQLite cannot ADD COLUMN with a NOT NULL
+    constraint or a default that backfills a non-constant, and every column
+    added here is nullable, so no data is rewritten and no row is lost."""
     inspector = inspect(engine)
     with engine.begin() as conn:
         for table_name, required_columns in _required_schema().items():
             if not inspector.has_table(table_name):
                 continue
             existing = {col["name"] for col in inspector.get_columns(table_name)}
-            missing = required_columns - existing
-            if table_name == "experiences" and "metadata_json" in missing:
-                conn.execute(text("ALTER TABLE experiences ADD COLUMN metadata_json TEXT DEFAULT '{}'"))
+            for column, ddl_type in required_columns.items():
+                if column in existing:
+                    continue
+                conn.execute(text(
+                    f"ALTER TABLE {table_name} ADD COLUMN {column} {ddl_type}"))
+                print(f"schema: added {table_name}.{column}")
 
 
 def _assert_non_sqlite_schema_compatible() -> None:
@@ -90,7 +105,7 @@ def _assert_non_sqlite_schema_compatible() -> None:
         if not inspector.has_table(table_name):
             continue
         existing = {col["name"] for col in inspector.get_columns(table_name)}
-        missing = sorted(required_columns - existing)
+        missing = sorted(set(required_columns) - existing)
         if missing:
             missing_by_table[table_name] = missing
     if missing_by_table:

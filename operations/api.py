@@ -13,14 +13,16 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 if TYPE_CHECKING:
     from research.strategy_lab.registry import StrategyRegistry
 
-from fastapi import Body, FastAPI, HTTPException, Query, status
+from fastapi import Body, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from core.logging import get_logger
 from core.state import state
 from decision.candidate import candidate_board
 from decision.opportunity import OpportunityStatus
 from execution.mt5_adapter import mt5_adapter
+from governance.auth import AuthError, auth
 from governance.identity import (
     Entitlement,
     RiskPolicy,
@@ -161,6 +163,91 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def _enforce_session(request: Request, call_next):
+    """Require a session for state-changing requests when enforcement is on.
+
+    Off by default (`TRADERAIG_AUTH=0`) and reported as off in
+    `/system/health.auth`, because a login screen on a deployment that does not
+    enforce anything is the fabricated door this project already removed once.
+    When it is on, the policy is `auth.requires_session`: every non-GET request
+    needs a session EXCEPT the named open paths, and a machine caller (the 24/7
+    supervisor, the console, the live smoke) may present `X-Service-Token`
+    instead — those callers POST to the API to keep the rails alive, so gating
+    them without a service token would have the watchdog locked out of the
+    system it is meant to supervise.
+
+    Reads stay open by design, and `/system/health` says so in the same
+    response that reports enforcement being on. Gating reads would not make this
+    multi-user: there is one shared canonical state, so an authenticated reader
+    still reads the operator's positions, ledger and audit trail. Half a
+    guarantee described as a whole one is how this roadmap got into trouble.
+    """
+    if auth.enforcement_enabled() and auth.requires_session(
+            request.method, request.url.path):
+        denial = _reject_without_session(request)
+        if denial is not None:
+            return denial
+        return await call_next(request)
+    _identify_caller(request)
+    return await call_next(request)
+
+
+def _presented_token(request: Request) -> Optional[str]:
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        return header[7:].strip() or None
+    return request.headers.get("x-service-token")
+
+
+def _identify_caller(request: Request) -> None:
+    """Evaluate a presented credential EVEN WHEN enforcement is off.
+
+    Otherwise a real session is invisible while the door is unlocked:
+    `/auth/session` would report "not authenticated" to someone holding a valid
+    token, and the dashboard would be told a lie about its own state. Requiring a
+    session and *recognising* one are different questions, and only the first is
+    conditional.
+    """
+    supplied = _presented_token(request)
+    if not supplied:
+        return
+    if auth.check_service_token(supplied):
+        request.state.auth_kind = "service"
+        return
+    try:
+        request.state.session = auth.verify(supplied)
+        request.state.auth_kind = "session"
+    except AuthError:
+        # Not fatal here: the caller is simply unidentified. If the route needs
+        # a session, `_reject_without_session` has already refused the request.
+        request.state.auth_kind = "invalid"
+
+
+def _reject_without_session(request: Request):
+    """Refuse a state-changing request that has no valid session.
+
+    Returns None when the caller IS authenticated (the middleware then proceeds),
+    or a JSONResponse to send instead. Split out from the middleware so the
+    "must I have a session?" and "who is this?" decisions stay separable.
+    """
+    supplied = _presented_token(request)
+    try:
+        if supplied and auth.check_service_token(supplied):
+            request.state.auth_kind = "service"
+        else:
+            request.state.session = auth.verify(supplied)
+            request.state.auth_kind = "session"
+    except AuthError as exc:
+        identity.record_audit(
+            "api", "auth.denied", "Request", request.url.path,
+            {"method": request.method, "reason": exc.detail})
+        return JSONResponse(status_code=exc.status_code,
+                            content={"detail": exc.detail,
+                                     "enforcement": "TRADERAIG_AUTH=1"})
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -295,6 +382,7 @@ def system_health() -> Dict:
         "governance": "single authority; research -> candidate -> validation "
                       "-> governance -> promotion (never learning -> production)",
         "tenancy": _tenancy_report(),
+        "auth": auth.status(),
     }
 
 
@@ -305,15 +393,25 @@ def _tenancy_report() -> Dict:
     and audit trail has no business implying it is multi-user. Reporting the
     model explicitly means an operator (or a reviewer) can tell which
     guarantees are actually in force, instead of inferring them from a plan
-    document. `authenticated: False` is the honest headline: there is no auth
-    layer on this deployment, so ownership is enforced against the single
-    principal the server names, not against a verified caller.
+    document.
+
+    `authenticated` used to be a hardcoded `False`, which was honest at the time
+    and would have become a lie the moment a session layer landed. It now
+    reports the live truth: whether enforcement is switched on, and whether the
+    caller presenting this request proved who they are. Being able to see "on,
+    and this caller is not authenticated" in one place is the whole point.
     """
     principal = identity.principal_user_id()
+    enforcement = auth.enforcement_enabled()
     return {
         "model": "single-tenant",
         "multi_tenant": False,
-        "authenticated": False,
+        "authenticated": enforcement,
+        "auth_enforcement": ("TRADERAIG_AUTH=1 — every state-changing request "
+                             "requires a session" if enforcement else
+                             "TRADERAIG_AUTH=0 — NOT enforced; any caller that "
+                             "can reach this port acts as the acting principal"),
+        "reads_gated": False,
         "acting_principal": principal,
         "principal_source": ("IDENTITY_PRIMARY_EMAIL" if os.environ.get(
             "IDENTITY_PRIMARY_EMAIL", "").strip() else "first-created user"),
@@ -367,6 +465,129 @@ def get_orders() -> List[Dict]:
 # ---------------------------------------------------------------------------
 # Governance
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Authentication (28.19): establish WHO is calling
+# ---------------------------------------------------------------------------
+
+
+def _current_session(request: Request):
+    return getattr(request.state, "session", None)
+
+
+@app.get("/auth/session")
+def auth_session(request: Request) -> Dict:
+    """Who am I, honestly, right now?
+
+    Always answers, and never implies a session that does not exist. When
+    enforcement is off this reports the principal the SERVER names and says the
+    caller was not identified — which is the truth on this deployment, and the
+    reason the dashboard's front door says NOT AUTHENTICATED.
+    """
+    session = _current_session(request)
+    if session is not None:
+        user = identity.get_user(session.user_id)
+        return {"authenticated": True, "via": "session",
+                "user_id": session.user_id, "email": user.email,
+                "plan": user.plan.value,
+                "session": session.as_dict()}
+    principal = identity.principal_user_id()
+    return {"authenticated": False,
+            "via": "service-token" if getattr(request.state, "auth_kind", None)
+            == "service" else None,
+            "enforcement_enabled": auth.enforcement_enabled(),
+            "server_selected_principal": principal,
+            "note": ("no session presented; when enforcement is off, this caller "
+                     "acts with the server-selected principal's authority")}
+
+
+@app.post("/auth/password")
+def set_own_password(payload: Dict, request: Request) -> Dict:
+    """Set or change the acting principal's credential.
+
+    Changing an existing password requires the current one. That check is here
+    rather than only in the enforcement middleware because it is a different
+    question: the middleware answers "may this caller change state at all?",
+    this answers "does this caller know the thing they are replacing?".
+
+    Bootstrap is allowed, and deliberately so — an install that has never set a
+    password must be able to secure itself. The window that opens is narrow and
+    is stated rather than hidden: on a deployment with no password yet, the
+    caller that can reach this port may set one. That is not a regression,
+    because until a password exists the same caller can already do everything
+    this API can do.
+    """
+    _own(identity.principal_user_id() or "", action="set a password for")
+    user_id = identity.principal_user_id()
+    if not user_id:
+        raise HTTPException(status_code=409,
+                            detail="no acting principal; cannot set a credential")
+    password = payload.get("password")
+    if not isinstance(password, str) or len(password) < 12:
+        raise HTTPException(
+            status_code=400,
+            detail="password required, minimum 12 characters; a short credential "
+                   "on an account that also holds trading authority is not a "
+                   "control")
+    if identity.has_password(user_id):
+        current = payload.get("current_password")
+        if not identity.verify_password(
+                identity.get_user(user_id).email, current or ""):
+            raise HTTPException(
+                status_code=403,
+                detail="current_password is required to replace an existing "
+                       "credential")
+    else:
+        session = _current_session(request)
+        if auth.enforcement_enabled() and session is None and \
+                getattr(request.state, "auth_kind", None) != "service":
+            raise HTTPException(
+                status_code=401,
+                detail="enforcement is on: an unauthenticated caller may not "
+                       "claim the credential-less principal")
+    identity.set_password(user_id, password)
+    return {"password_set": True, "user_id": user_id,
+            "replaced_existing": False if payload.get("current_password") is None
+            else True}
+
+
+@app.post("/auth/login")
+def login(payload: Dict) -> Dict:
+    """Exchange an email + password for a session token.
+
+    An unknown email and a wrong password are refused identically, and both are
+    audited without the credential. Anything else — "no such user", "wrong
+    password", a different status code, a different message — turns the login
+    form into a user-enumeration oracle, which is the same class of leak the
+    ownership guard closed on the read routes.
+    """
+    email = payload.get("email")
+    password = payload.get("password")
+    user_id = identity.verify_password(email or "", password or "")
+    if not user_id:
+        identity.record_audit("api", "auth.login.failed", "User", "unknown",
+                              {"email_supplied": bool(email)})
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    token, session = auth.issue(user_id)
+    identity.record_audit("api", "auth.login.ok", "User", user_id,
+                          {"expires_at": session.expires_at})
+    user = identity.get_user(user_id)
+    return {"token": token, "token_type": "Bearer", "user_id": user_id,
+            "email": user.email, "plan": user.plan.value,
+            "session": session.as_dict()}
+
+
+@app.post("/auth/logout")
+def logout(request: Request) -> Dict:
+    session = _current_session(request)
+    if session is None:
+        raise HTTPException(status_code=401, detail="no session to end")
+    auth.revoke(session)
+    identity.record_audit("api", "auth.logout", "User", session.user_id, {})
+    return {"revoked": True,
+            "note": "the revocation list is in memory, so a restart un-revokes "
+                    "outstanding tokens; they remain bounded by their expiry"}
 
 
 @app.post("/users", status_code=status.HTTP_201_CREATED)

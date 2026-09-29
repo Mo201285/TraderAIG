@@ -48,6 +48,9 @@ class UserRepository:
         row.entitlements_json = dumps(sorted(e.value for e in user.entitlements))
         row.risk_policy_json = dumps(user.risk_policy.as_dict())
         row.account_ids_json = dumps(user.account_ids)
+        row.password_hash = user.password_hash
+        if user.password_set_at is not None:
+            row.password_set_at = user.password_set_at
         if subscription is not None:
             row.expires_at = subscription.expires_at
         row.updated_at = datetime.now(timezone.utc).isoformat()
@@ -116,6 +119,12 @@ class UserRepository:
             entitlements=entitlements,
             risk_policy=RiskPolicy(**loads(row.risk_policy_json)),
             account_ids=loads(row.account_ids_json),
+            # A database written before authentication existed has no digest;
+            # `getattr` rather than `row.` because the attribute only exists once
+            # the column is there, and a user with no credential must rehydrate
+            # as a user who cannot log in, not as a crash on boot.
+            password_hash=getattr(row, "password_hash", None),
+            password_set_at=getattr(row, "password_set_at", None),
         )
 
 

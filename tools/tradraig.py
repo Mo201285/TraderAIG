@@ -207,14 +207,34 @@ def http_json(url: str, timeout: float = 2.5) -> Tuple[bool, Any]:
         return False, str(exc)
 
 
+def service_headers() -> Dict[str, str]:
+    """Auth header for a non-interactive console caller, when one is configured.
+
+    The console is a machine caller: it has no password prompt, so it cannot
+    hold a session. With `TRADERAIG_AUTH=1` a mutating command would otherwise
+    401. Sending nothing (and letting the API explain why) is better than
+    sending a token that might be wrong.
+    """
+    token = os.environ.get("AUTH_SERVICE_TOKEN", "").strip()
+    if not token:
+        try:
+            from core.secrets_vault import vault
+            token = (vault.read("auth.service_token") or "").strip()
+        except Exception:
+            token = ""
+    return {"X-Service-Token": token} if token else {}
+
+
 def http_post_json(url: str, payload: Dict[str, Any],
                    timeout: float = 5.0, method: str = "POST"
                    ) -> Tuple[Optional[int], Any]:
     import urllib.error
     import urllib.request
+    headers = {"Content-Type": "application/json"}
+    headers.update(service_headers())
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"}, method=method)
+        headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))

@@ -46,6 +46,15 @@ VAULT_SLOTS: Dict[str, str] = {
     "payments.stripe.webhook_secret": "PAYMENTS_STRIPE_WEBHOOK_SECRET",
     "payments.pi.api_key": "PAYMENTS_PI_API_KEY",
     "payments.pi.wallet_key": "PAYMENTS_PI_WALLET_KEY",
+    # Signs session tokens. Left unset, AuthService generates one and persists
+    # it here (DPAPI-encrypted) rather than defaulting to a fixed value that
+    # every deployment would share.
+    "auth.token_secret": "AUTH_TOKEN_SECRET",
+    # Shared secret for NON-INTERACTIVE callers (TAIG-Backend-Watchdog, the
+    # console, the live smoke). Needed before TRADERAIG_AUTH=1, because those
+    # callers POST to the API and would otherwise be locked out of the rails
+    # they are supposed to be supervising.
+    "auth.service_token": "AUTH_SERVICE_TOKEN",
 }
 
 

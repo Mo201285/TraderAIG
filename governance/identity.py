@@ -126,6 +126,12 @@ class User:
     account_ids: List[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    # Credentials are OPTIONAL: a user with no password digest cannot log in,
+    # but is not a broken record, because governance identities existed before
+    # authentication did and a migration must not lock the operator out of their
+    # own deployment.
+    password_hash: Optional[str] = None
+    password_set_at: Optional[float] = None
 
     def grant_plan_entitlements(self) -> None:
         self.entitlements = set(PLAN_ENTITLEMENTS.get(self.plan, set()))
@@ -344,6 +350,48 @@ class IdentityService:
         if user.subscription_status != SubscriptionStatus.ACTIVE:
             return set()
         return set(user.entitlements)
+
+    # -- credentials --------------------------------------------------------
+    def has_password(self, user_id: str) -> bool:
+        from governance.auth import password_is_set
+        return password_is_set(self._get_or_raise(user_id).password_hash)
+
+    def set_password(self, user_id: str, password: str) -> None:
+        """Set or change a credential. Never logs, never returns the digest.
+
+        Requires the CURRENT password when one is already set. That check lives
+        here rather than in the route so that a future caller cannot skip it by
+        accident — and it is checked against the stored digest, not against a
+        session, because on this deployment a session is the thing being
+        established.
+        """
+        from governance.auth import hash_password
+        user = self._get_or_raise(user_id)
+        had_password = bool(user.password_hash)
+        user.password_hash = hash_password(password)
+        user.password_set_at = time.time()
+        user.updated_at = time.time()
+        self._log("user", "auth.password.set", "User", user_id,
+                  {"replaced_existing": had_password})
+        _persist_user(user, self._subscriptions.get(user_id))
+        log.info(f"Password set for {user_id}")
+
+    def verify_password(self, email: str, password: str) -> Optional[str]:
+        """Return the user_id for a correct email+password, else None.
+
+        Takes an EMAIL, not a user_id, because that is what a human has. An
+        unknown email and a wrong password return the same None on purpose: a
+        login that says "no such user" tells an attacker which identities exist,
+        which is the enumeration oracle this milestone already removed from the
+        ownership routes.
+        """
+        from governance.auth import verify_password as _verify
+        user = self._users.get(str(email or "").strip().lower())
+        if user is None:
+            user = self.get_user_by_email(str(email or "").strip())
+        if user is None or not _verify(password, user.password_hash):
+            return None
+        return user.user_id
 
     def entitlements_lost_by_plan(self, user_id: str,
                                   plan: SubscriptionPlan) -> set[Entitlement]:

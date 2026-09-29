@@ -406,6 +406,75 @@ python tools\tradraig.py secrets delete --slot cex.okx.demo_api_secret          
 (bootstrap). على غير-Windows، الخزنة ترفض الحفظ بلا تشفير (لا ملفات نصابة) —
 المفاتيح تبقى env.
 
+## المصادقة (Authentication، 28.19)
+
+**الحالة الافتراضية: `TRADERAIG_AUTH=0` — المصادقة غير مفعّلة.** ليس هذا اختصارًا:
+النظام يعلن ذلك صراحةً في `/system/health` بدل أن يرتدي بابًا لا يحترمه. فعّل
+enforcement فقط بعد إتمام الخطوات أدناه **كلّها**، لا جزئيًا.
+
+### ما الذي يتغيّر عند `TRADERAIG_AUTH=1`
+
+| | enforcement مُطفأ (افتراضي) | enforcement مُفعّل |
+|---|---|---|
+| طلبات القراءة `GET` | مفتوحة | **مفتوحة عمدًا** |
+| `POST/PUT/PATCH/DELETE` | مفتوحة | تحتاج جلسة أو `X-Service-Token` |
+| `GET /auth/session` | يعرض "لا جلسة" | يعرض الجلسة إن قُدِّمت |
+| `POST /auth/logout` | يعمل فقط بتوكن صالح | يتطلب جلسة (مستثنى من القائمة المفتوحة عمدًا) |
+
+**القراءات تبقى مفتوحة لسبب بنيوي:** _state is one shared `CanonicalState`_. قفل
+القراءات على مشغّل واحد لا يُخفي أي بيانات (المستخدم يقرأ state المشغّل نفسه
+بأي حال) — بل يُنتج واجهة توهم عزلًا غير موجود. من يريد عزلًا حقيقيًا هو بند
+**العزل لكل مستخدم** في `PROJECT_MAP`، وهو ليس هذا الإصلاح.
+
+### خطوات التفعيل (بالترتيب — الترتيب جزء من الإصلاح)
+
+```powershell
+# 1) أنشئ المستخدم إن لم يكن موجودًا، وفعّل اشتراكه (enforcement مُطفأ الآن)
+python tools\tradraig.py users create --email "you@yourdomain.com"
+python tools\tradraig.py secrets status
+
+# 2) اضبط كلمة مرور المشغّل (12 حرفًا على الأقل، لا تُطبع ولا تُصدَّر)
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/auth/password `
+  -Body (@{password="<a-long-one>"} | ConvertTo-Json) -ContentType "application/json"
+
+# 3) اضبط رمز الآلة للمراقب والكونسول — قبل التشغيل بلاه تُقفل خطوطهما
+$env:AUTH_SERVICE_TOKEN = "<generated>"   # أو: secrets set --slot auth.service_token
+# vault slot `auth.service_token` يُقرأ تلقائيًا عند غياب المتغير
+# عند غياب الرمز تُرجع service_headers() قيمة فارغة (لا header مزيّف)،
+# فيعرف الـAPI سبب الرفض بدل أن يبدو محاولة اختراق.
+# scripts/smoke_live.ps1 لا يحتاج رمزًا: يقرأ /health فقط وهي قراءة مفتوحة عمدًا.
+
+# 4) تحقق أن الباب حقيقي قبل أن تعتمد عليه
+Invoke-RestMethod http://127.0.0.1:8000/system/health | Select-Object -ExpandProperty auth
+```
+
+`/system/health.auth` يعرض `enforcement_enabled`, `reads_gated` (يجب أن يبقى
+`false`), `service_token_configured`, `token_ttl_seconds`. قبل رفع `TRADERAIG_AUTH=1`
+تأكّد أن `service_token_configured: true` — وإلا فقدت المراقب حيّة السوق عند أول
+POST.
+
+### مسار الاستعادة (مهم)
+
+**تفعيل enforcement قبل ضبط كلمة المرور باب أحادي الاتجاه:** لا أحد يستطيع
+الدخول، فلا أحد يستطيع ضبط كلمة مرور. الاستعادة المتعمّدة:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/auth/password `
+  -Headers @{"X-Service-Token"="<machine-token>"} `
+  -Body (@{password="<a-long-one>"} | ConvertTo-Json) -ContentType "application/json"
+```
+
+### قيود صريحة
+
+- `hash` بـscrypt (stdlib، بلا تبعية جديدة)، والتوكن HMAC بسر من
+  `auth.token_secret` في الخزنة (يتنازل إلى `AUTH_TOKEN_SECRET` env).
+- مدة الجلسة 12 ساعة. `logout` يُبطل التوكن في الذاكرة فقط — **إعادة تشغيل
+  Backend تُحيي كل الجلسات**؛ هذا موثّق كحدّ، لامرحلة JWT موقّعة خارجيًا لاحقًا.
+- بريد خاطئ وكلمة مرور خاطئة يعطيان **نفس** 401 ونفس الرسالة (لا فحص تعداد
+  مستخدمين)، والفشل يُسجَّل في `/audit` بدون كلمة المرور.
+- المصادقة **ليست** multi-tenancy ولا تجعل `user_id` في URL سلطة — انظر
+  «حدود العزل» أعلاه.
+
 ## محرك الفرص (Opportunity Engine، 27.10/28.11)
 
 الفرصة ليست صفقة: كل إعداد يمرّ الفحص المؤسسي ويُسجَّل بدليله الكامل قبل أي تنفيذ.

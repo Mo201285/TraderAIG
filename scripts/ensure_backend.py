@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -64,6 +65,27 @@ DEFAULT_LOG = _root / "logs" / "backend_boot.log"
 DEFAULT_INTERVAL = 5.0
 
 
+def service_headers() -> Dict[str, str]:
+    """Headers for a non-interactive caller, if a machine token is configured.
+
+    This watchdog POSTs to the API. With `TRADERAIG_AUTH=1` every mutating route
+    needs a session or a service token, so without this the supervisor would get
+    401 on its own rails and take the 24/7 platform offline the first night
+    enforcement was switched on. Absent a configured token we send nothing and
+    the API says why — better than sending a wrong header that looks like an
+    attempt to break in.
+    """
+    token = os.environ.get("AUTH_SERVICE_TOKEN", "").strip()
+    if not token:
+        try:
+            sys.path.insert(0, str(_root))
+            from core.secrets_vault import vault
+            token = (vault.read("auth.service_token") or "").strip()
+        except Exception:  # noqa: BLE001 - never let a header break the watchdog
+            token = ""
+    return {"X-Service-Token": token} if token else {}
+
+
 def http_get(url: str, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
     """GET returning parsed JSON, or None for any transport/protocol failure."""
     try:
@@ -79,8 +101,9 @@ def http_post(url: str, payload: Optional[Dict[str, Any]] = None,
               timeout: float = 30.0) -> Tuple[int, Any]:
     """POST returning (status, body). Status 0 means the request never landed."""
     data = json.dumps(payload or {}).encode("utf-8")
-    request = urllib.request.Request(url, data=data, method="POST",
-                                     headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    headers.update(service_headers())
+    request = urllib.request.Request(url, data=data, method="POST", headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, json.loads(response.read().decode("utf-8", "replace"))

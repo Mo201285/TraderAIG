@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+import os
 import time
 
 import pytest
@@ -15,12 +16,37 @@ def client():
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _no_leaked_principal(monkeypatch):
+    """Stop the acting principal leaking between tests.
+
+    `_user_id` points `IDENTITY_PRIMARY_EMAIL` at the user it creates, which is
+    how these tests bill themselves. Without this reset the value would survive
+    into any test that does not create a user, and a billing test would pass or
+    fail depending on the order pytest happened to collect them in — the kind
+    of green that means nothing.
+    """
+    monkeypatch.delenv("IDENTITY_PRIMARY_EMAIL", raising=False)
+
+
 def _user_id(client, plan="free") -> str:
+    """Create a user AND make it the acting principal.
+
+    The billing routes enforce ownership, so a test that creates a user and
+    then bills it is only meaningful if that user is the one acting. These tests
+    used to pass precisely because nothing checked: an anonymous caller could
+    bill and activate any `user_id`, which is the hole the ownership guard now
+    closes. Pointing the principal at the test user makes the suite exercise the
+    production shape — self-service billing by the operator — instead of
+    depending on the vulnerability.
+    """
     resp = client.post("/users", json={"email": f"{time.time_ns()}@x.co",
                                        "display_name": "pay-test",
                                        "plan": plan})
     assert resp.status_code == 201
-    return resp.json()["user_id"]
+    user_id = resp.json()["user_id"]
+    os.environ["IDENTITY_PRIMARY_EMAIL"] = resp.json().get("email", "")
+    return user_id
 
 
 # -- API surface ---------------------------------------------------------
@@ -64,10 +90,41 @@ def test_charge_sandbox_activates_subscription(client):
     assert "can_trade" in user["entitlements"]
 
 
-def test_charge_unknown_user_404(client):
+def test_charge_for_an_unknown_user_is_refused_when_a_principal_acts(client):
+    """A `user_id` that is not the principal's is refused, unknown or not.
+
+    Note this is no longer a 404. Once a principal exists (here, explicitly, so
+    the assertion does not depend on which user some earlier test left in the
+    process-wide identity store) a `user_id` that is not the principal's fails
+    the ownership check, and that is the better answer: answering 404 for "no
+    such user" and 403 for "not yours" would let a caller enumerate which users
+    exist. The genuine bootstrap case — an empty identity store, where a 404 is
+    still correct and a fresh install can tell a typo from a valid id — is
+    covered in `test_ownership_isolation.py`, which isolates the store.
+    """
+    _user_id(client)
     resp = client.post("/payments/charge", json={
         "user_id": "nope", "amount_usd": 5})
-    assert resp.status_code == 404
+    assert resp.status_code == 403
+    assert "ownership denied" in resp.json()["detail"]
+
+
+def test_charge_for_another_user_is_refused_even_when_the_user_exists(client):
+    """A real, different user must be refused the same way a bogus id is."""
+    mine = _user_id(client)
+    other = client.post("/users", json={"email": f"{time.time_ns()}@y.co"})
+    assert other.status_code == 201
+    other_id = other.json()["user_id"]
+
+    bogus = client.post("/payments/charge", json={
+        "user_id": "nope", "amount_usd": 5})
+    someone_elses = client.post("/payments/charge", json={
+        "user_id": other_id, "amount_usd": 5})
+    assert bogus.status_code == 403
+    assert someone_elses.status_code == 403
+    assert bogus.json() == someone_elses.json()
+    assert client.post("/payments/charge", json={
+        "user_id": mine, "amount_usd": 5}).status_code == 200
 
 
 def test_charge_bad_amount_400(client):
@@ -84,9 +141,31 @@ def test_charge_unknown_plan_400(client):
     assert resp.status_code == 400
 
 
-def test_wallet_unknown_user_404(client):
-    resp = client.get("/payments/wallet/nope")
-    assert resp.status_code == 404
+def test_wallet_of_another_user_is_refused_without_enumeration(client):
+    """A wallet that is not yours is refused, and the refusal reveals nothing.
+
+    This used to assert `404` for a wallet id that does not exist. That is the
+    wrong assertion now, and the old status was the better answer for a
+    different reason: distinguishing "no such user" (404) from "not yours"
+    (403) is an enumeration oracle. A bogus id and a real, different user's id
+    must get the same answer, so the route cannot be used to discover who
+    exists.
+    """
+    mine = _user_id(client)
+    other = client.post("/users", json={"email": f"{time.time_ns()}@y.co"})
+    assert other.status_code == 201
+    other_id = other.json()["user_id"]
+
+    bogus = client.get("/payments/wallet/nope")
+    someone_elses = client.get(f"/payments/wallet/{other_id}")
+
+    assert bogus.status_code == 403
+    assert someone_elses.status_code == 403
+    assert bogus.json() == someone_elses.json(), (
+        "the refusal must be identical for a bogus id and a real other user, "
+        "otherwise the route enumerates which users exist")
+    # The operator can still read their own wallet.
+    assert client.get(f"/payments/wallet/{mine}").status_code == 200
 
 
 def test_refund_lifecycle_via_api(client):

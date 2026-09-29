@@ -471,6 +471,18 @@ class PaymentService:
             message="submitted; awaiting verified webhook confirmation",
             wallet_balance=self.wallet(user_id)["balance_usd"])
 
+    def charge_owner(self, charge_id: str) -> str:
+        """The user a charge belongs to, or "" when the id is unknown.
+
+        Exists so an API route can apply an ownership check to a refund before
+        money moves. Refunding takes a `charge_id` and no user, so without this
+        lookup the owner of a charge cannot be checked at all — the route would
+        be trusting a caller-supplied identifier by construction.
+        """
+        entry = next((e for e in reversed(self._ledger)
+                      if e.charge_id == charge_id), None)
+        return entry.user_id if entry is not None else ""
+
     def refund(self, charge_id: str,
                provider: Optional[PaymentProvider] = None) -> ChargeResult:
         entry = next((e for e in reversed(self._ledger)

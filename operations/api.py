@@ -103,6 +103,50 @@ def _guard(ent: Entitlement, owner_user_id: Optional[str] = None) -> Dict:
                     f"plan={user.plan.value}"))
     return {"active": True, "actor": actor, "entitlement": ent.value}
 
+
+def _own(user_id: str, *, action: str = "access") -> str:
+    """Enforce OWNERSHIP of a caller-supplied `user_id` (28.17/28.18).
+
+    This system is single-tenant, and that is stated rather than faked: there is
+    one acting principal and one canonical trading state, so the honest rule is
+    that the principal may act on its OWN user record and nobody else's. What
+    this replaces is a real hole, not a theoretical one: six routes took a
+    caller-supplied `user_id` and returned or mutated that user without ever
+    asking who was asking, including `POST /users/{id}/subscription/activate`
+    (the entitlement self-service path left deliberately ungated so a new
+    principal could not be acquisition-deadlocked) and
+    `PUT /users/{id}/risk-policy`. With no authentication layer at all, any
+    caller that could reach the port could read another user's entitlements and
+    downgrade or upgrade their subscription. The gate was advisory exactly
+    where it mattered most.
+
+    Bootstrap passes: with no principal there is no owner to compare against and
+    nothing exists yet to protect. Once a principal exists this is HARD, and the
+    denial is audited like every other refused authority call.
+
+    This is deliberately NOT called multi-tenancy. Real tenancy needs per-user
+    canonical state, per-user ledgers, per-user engines and an authenticated
+    caller; the requirement is recorded as an open ORPHAN. What this buys is
+    that a single-operator deployment stops pretending the boundary is enforced
+    when it was previously an unchecked path parameter.
+    """
+    actor = identity.principal_user_id()
+    if actor is None:
+        return user_id
+    if user_id == actor:
+        return user_id
+    try:
+        identity.record_audit(
+            "api", "ownership.denied", "User", user_id,
+            {"action": action, "actor": actor})
+    except Exception:  # noqa: BLE001
+        pass
+    raise HTTPException(
+        status_code=403,
+        detail=(f"ownership denied: this deployment has a single acting "
+                f"principal and may only {action} its own user record "
+                f"(see /system/health.tenancy)"))
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -249,6 +293,53 @@ def system_health() -> Dict:
         "components": components,
         "governance": "single authority; research -> candidate -> validation "
                       "-> governance -> promotion (never learning -> production)",
+        "tenancy": _tenancy_report(),
+    }
+
+
+def _tenancy_report() -> Dict:
+    """State the deployment's tenancy boundary out loud (28.4 Dashboard Honesty).
+
+    A control plane that serves a single operator's account, positions, ledger
+    and audit trail has no business implying it is multi-user. Reporting the
+    model explicitly means an operator (or a reviewer) can tell which
+    guarantees are actually in force, instead of inferring them from a plan
+    document. `authenticated: False` is the honest headline: there is no auth
+    layer on this deployment, so ownership is enforced against the single
+    principal the server names, not against a verified caller.
+    """
+    principal = identity.principal_user_id()
+    return {
+        "model": "single-tenant",
+        "multi_tenant": False,
+        "authenticated": False,
+        "acting_principal": principal,
+        "principal_source": ("IDENTITY_PRIMARY_EMAIL" if os.environ.get(
+            "IDENTITY_PRIMARY_EMAIL", "").strip() else "first-created user"),
+        "canonical_state": "one process-wide CanonicalState (account, positions, "
+                           "orders, risk) shared by every engine",
+        "ownership_enforced_on": [
+            "GET /users/{user_id}",
+            "POST /users/{user_id}/subscription/activate",
+            "GET /users/{user_id}/can/{entitlement}",
+            "GET|PUT /users/{user_id}/risk-policy",
+            "GET /payments/wallet/{user_id}",
+            "POST /payments/charge (user_id in body)",
+            "POST /payments/refund (owner resolved from charge_id)",
+        ],
+        "still_open_by_design": [
+            "POST /payments/webhook — provider-signed; a public endpoint by "
+            "design, and the only one that must stay reachable without a session",
+        ],
+        "note": ("This deployment is safe only as a single-operator box. Do not "
+                 "expose :8000 beyond localhost. The entitlement gate is "
+                 "evaluated against the principal the SERVER names, so with no "
+                 "authentication every caller already acts with the operator's "
+                 "authority — ownership here stops a caller from redirecting "
+                 "that authority at another user's record, it does not "
+                 "establish who the caller is. Real multi-tenancy (per-user "
+                 "canonical state, ledgers, engines, and an authenticated "
+                 "caller) is an open ORPHAN, not a feature of this build."),
     }
 
 
@@ -309,6 +400,7 @@ def list_users(limit: int = 100) -> List[Dict]:
 
 @app.get("/users/{user_id}")
 def get_user(user_id: str) -> Dict:
+    _own(user_id, action="read")
     user = identity.get_user(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="user not found")
@@ -317,6 +409,7 @@ def get_user(user_id: str) -> Dict:
 
 @app.post("/users/{user_id}/subscription/activate")
 def activate_subscription(user_id: str, payload: Dict) -> Dict:
+    _own(user_id, action="activate a subscription for")
     try:
         plan = SubscriptionPlan(payload.get("plan", "free"))
         duration = payload.get("duration_seconds", 30 * 24 * 3600)
@@ -328,6 +421,7 @@ def activate_subscription(user_id: str, payload: Dict) -> Dict:
 
 @app.get("/users/{user_id}/can/{entitlement}")
 def can_do(user_id: str, entitlement: str) -> Dict:
+    _own(user_id, action="probe entitlements of")
     try:
         ent = Entitlement(entitlement)
     except ValueError:
@@ -350,9 +444,19 @@ def entitlements_status() -> Dict:
             "entitlements": {},
         }
     ent = {e.value: identity.can(actor, e) for e in Entitlement}
+    # The acting identity's own record, so a surface can display WHO is acting
+    # instead of inventing one. This endpoint previously returned the actor id
+    # and nothing else, which is why the dashboard had to hard-code a user
+    # (§28.4): it had no way to learn the real name behind the id.
+    principal = identity.get_user(actor)
     return {
         "enforcement_active": True,
         "actor": actor,
+        "actor_email": principal.email if principal else None,
+        "actor_display_name": principal.display_name if principal else None,
+        "plan": principal.plan.value if principal else None,
+        "subscription_status": (principal.subscription_status.value
+                                if principal else None),
         "bootstrap": False,
         "entitlements": ent,
     }
@@ -980,6 +1084,7 @@ def send_test_alert(payload: Dict) -> Dict:
 @app.put("/users/{user_id}/risk-policy")
 def set_user_risk_policy(user_id: str, payload: Dict) -> Dict:
     _guard(Entitlement.CAN_MANAGE_RISK, owner_user_id=user_id)
+    _own(user_id, action="write the risk policy of")
     allowed_fields = {
         "max_risk_per_trade", "max_daily_loss", "max_drawdown",
         "max_open_positions", "max_leverage", "require_stop_loss",
@@ -998,6 +1103,7 @@ def set_user_risk_policy(user_id: str, payload: Dict) -> Dict:
 
 @app.get("/users/{user_id}/risk-policy")
 def get_user_risk_policy(user_id: str) -> Dict:
+    _own(user_id, action="read the risk policy of")
     user = identity.get_user(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="user not found")
@@ -1148,6 +1254,7 @@ def payments_providers() -> Dict:
 
 @app.get("/payments/wallet/{user_id}")
 def payments_wallet(user_id: str) -> Dict:
+    _own(user_id, action="read the wallet of")
     from governance.payments import payments_service
     wallet = payments_service.wallet(user_id)
     if not wallet["entries"]:
@@ -1160,11 +1267,31 @@ def payments_wallet(user_id: str) -> Dict:
 def payments_charge(payload: Dict) -> Dict:
     """Charge a user's billing account; activates their subscription when a
     plan is supplied. Sandbox succeeds deterministically; live providers land
-    PENDING until a verified webhook confirms."""
+    PENDING until a verified webhook confirms.
+
+    The ownership check is load-bearing and was added after this route was
+    found granting entitlements to any caller. It takes `user_id` in the BODY,
+    so the earlier path-parameter sweep missed it, and it activates a real
+    subscription: an unauthenticated POST could mint an `institutional`
+    subscription for an arbitrary user id (verified live against the running
+    backend — `activated=True`), and could equally aim a `plan: "free"` charge
+    at the operator's own id, which is exactly the silent-downgrade footgun
+    this project has already been bitten by, and it drops `can_trade` so the
+    next `TAIG-Backend-Watchdog` tick gets a 403 on `/mt5/connect`.
+
+    Leaving billing wide open was a deliberate over-correction: the reason
+    recorded earlier was that gating activation would deadlock a new principal
+    into never acquiring entitlements. Ownership resolves that properly —
+    bootstrap still passes, so the first identity can enrol itself, and after
+    that a caller may only ever bill itself. Enrolling *somebody else* is a
+    governance action that needs a real admin authority, which this deployment
+    does not have yet.
+    """
     from governance.payments import PaymentProviderKind, PaymentLockedError
     from governance.payments import payments_service as svc
 
     user_id = payload.get("user_id", "")
+    _own(user_id, action="charge a subscription for")
     amount = float(payload.get("amount_usd", 0.0))
     plan = str(payload.get("plan", "") or "")
     provider_name = str(payload.get("provider", "") or "")
@@ -1196,9 +1323,15 @@ def payments_charge(payload: Dict) -> Dict:
 
 @app.post("/payments/refund")
 def payments_refund(payload: Dict) -> Dict:
+    """Refund a charge. The owner is resolved from the charge id, not supplied
+    by the caller — a refund route that trusted a `user_id` would be checking
+    ownership of something other than what it is about to move money on."""
     from governance.payments import PaymentLockedError
     from governance.payments import payments_service as svc
     charge_id = payload.get("charge_id", "")
+    owner = svc.charge_owner(charge_id)
+    if owner:
+        _own(owner, action="refund a charge of")
     try:
         result = svc.refund(charge_id)
     except PaymentLockedError as exc:

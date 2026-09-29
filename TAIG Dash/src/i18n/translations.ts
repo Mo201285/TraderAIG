@@ -24,15 +24,14 @@ export const translations = {
       { label: "Risk Center", desc: "Constraints enforced automatically" },
       { label: "Learning Engine", desc: "Every trade becomes a lesson" },
     ],
-    statsBanner: [
-      { value: "12,400+", label: "Validated strategies" },
-      { value: "98.3%", label: "Audit trail coverage" },
-      { value: "4.2x", label: "Avg. learning improvement" },
-    ],
-    planBadge: "Institutional",
-    paperMode: "Paper Mode Active",
-    errorInvalid: "Invalid credentials. Please try again.",
-    demoHint: "Demo: use any email + password",
+    // `statsBanner`, `planBadge`, `paperMode`, `errorInvalid` and `demoHint`
+    // were removed with the fake credential screen. They were hard-coded
+    // ("12,400+ validated strategies", "98.3% audit trail coverage", "4.2x
+    // avg learning improvement", an Institutional badge and a pulsing "Paper
+    // Mode Active" dot) and rendered as if sourced from the system on the first
+    // screen of the control plane. Nothing in the UI may display a number it
+    // cannot source (28.4); the login screen now reads the real plan, paper
+    // state and identity from the API instead.
   },
   ar: {
     dir: "rtl" as "ltr" | "rtl",
@@ -59,15 +58,8 @@ export const translations = {
       { label: "مركز المخاطر", desc: "قيود مطبّقة تلقائياً" },
       { label: "محرك التعلم", desc: "كل صفقة تصبح درساً" },
     ],
-    statsBanner: [
-      { value: "+12,400", label: "استراتيجية موثّقة" },
-      { value: "98.3%", label: "تغطية مسار التدقيق" },
-      { value: "4.2×", label: "متوسط تحسّن التعلم" },
-    ],
-    planBadge: "مؤسسي",
-    paperMode: "وضع الورق نشط",
-    errorInvalid: "بيانات اعتماد غير صالحة. يرجى المحاولة مرة أخرى.",
-    demoHint: "تجريبي: استخدم أي بريد + كلمة مرور",
+    // Same removal as the English block above: the three figures, the plan
+    // badge and the paper-mode dot were hard-coded, not read from the system.
   },
 };
 

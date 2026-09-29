@@ -10,8 +10,10 @@ is a door that looks like a door. A test that only proved "login returns a
 token" would have passed against the fabricated operator identity that the
 previous milestone deleted.
 """
+import json
 import os
 import sys
+import tempfile
 import time
 
 import pytest
@@ -37,9 +39,18 @@ def _isolated(monkeypatch):
 
     monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
     monkeypatch.delenv("AUTH_SERVICE_TOKEN", raising=False)
+    # Durable revocation writes a file. Point it at a temp path so the suite
+    # cannot append test logouts into the LIVE .data directory -- a test that
+    # writes to production state is the same class of bug as a test that only
+    # passes by accident.
+    import tempfile
+    monkeypatch.setenv("TRADERAIG_REVOCATION_FILE",
+                       os.path.join(tempfile.mkdtemp(prefix="revocations-"),
+                                    "session_revocations.json"))
     users = dict(identity._users)
     subs = dict(identity._subscriptions)
     revoked = set(auth_svc._revoked)
+    revoked_expiry = dict(auth_svc._revoked_expiry)
     secret, persistent = auth_svc._secret, auth_svc._secret_persistent
     try:
         yield
@@ -50,6 +61,8 @@ def _isolated(monkeypatch):
         identity._subscriptions.update(subs)
         auth_svc._revoked.clear()
         auth_svc._revoked.update(revoked)
+        auth_svc._revoked_expiry.clear()
+        auth_svc._revoked_expiry.update(revoked_expiry)
         auth_svc._secret, auth_svc._secret_persistent = secret, persistent
 
 
@@ -395,6 +408,231 @@ def _email_of(_client, user_id):
 
 def _op_email_of(client, user_id):
     return _email_of(client, user_id)
+
+
+def test_a_logout_survives_a_restart(client, monkeypatch):
+    """The gap the in-memory denylist left open.
+
+    On a 24/7 host a restart is a scheduled event, not an edge case. With the
+    denylist in memory only, every session the operator explicitly cancelled came
+    back to life on the next boot: the credential outlived the decision to
+    cancel it. Simulated by building a *second* AuthService over the same file,
+    which is what a restart actually does.
+
+    The signing secret is pinned BEFORE the token is issued, and a CONTROL
+    assertion checks that a token which was NOT revoked still verifies on the
+    restarted service. That control is not decoration: the first version of this
+    test set the secret *after* issuing, so `verify` failed on a signature
+    mismatch and passed whether or not revocations were loaded at all. Sabotaging
+    `_load_revocations` left the suite green, which is how a test that looks like
+    it covers a restart can be covering nothing.
+    """
+    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    from governance.auth import AuthError, AuthService
+    from governance.auth import auth as auth_svc
+
+    auth_svc._secret = b"fixed-test-signing-secret-value"
+    _uid, email, password = _operator(client, monkeypatch)
+
+    revoked_token = client.post("/auth/login", json={
+        "email": email, "password": password}).json()["token"]
+    live_token = client.post("/auth/login", json={
+        "email": email, "password": password}).json()["token"]
+    assert client.post("/auth/logout", headers={
+        "Authorization": f"Bearer {revoked_token}"}).status_code == 200
+
+    # the control, BEFORE the restart: the revoked one is dead, the live one works
+    with pytest.raises(AuthError):
+        auth_svc.verify(revoked_token)
+    assert auth_svc.verify(live_token).token_id
+
+    # a restart: fresh service, same on-disk revocations, same signing secret
+    restarted = AuthService()
+    restarted._secret = b"fixed-test-signing-secret-value"
+
+    # CONTROL: without this, a signature mismatch would make every assertion
+    # below pass for the wrong reason.
+    assert restarted.verify(live_token).token_id
+    with pytest.raises(AuthError):
+        restarted.verify(revoked_token)
+
+
+def test_a_corrupt_revocation_file_does_not_stop_the_platform_from_starting(
+        client, monkeypatch):
+    """A truncated or hand-edited file must degrade to "no durable revocations
+    remembered", never to an exception on boot. An auth store that can take the
+    API down is worse than one that forgets."""
+    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    from governance.auth import AuthService
+
+    path = os.environ["TRADERAIG_REVOCATION_FILE"]
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write('{"revoked": {"trunc')
+
+        restarted = AuthService()   # must not raise
+        # forgetting the old revocations is the stated behaviour, so assert it
+        # rather than the tautology "False or True" that used to sit here
+        assert restarted.revocation_is_durable() is True
+        assert len(restarted._revoked) == 0
+    from governance.auth import auth as auth_svc
+    auth_svc._secret = b"fixed-test-signing-secret-value"
+    _uid, email, password = _operator(client, monkeypatch)
+    token = client.post("/auth/login", json={
+        "email": email, "password": password}).json()["token"]
+    assert client.post("/auth/logout", headers={
+        "Authorization": f"Bearer {token}"}).status_code == 200
+
+
+def test_a_revocations_file_with_junk_entries_ignores_them(client, monkeypatch):
+    """A hand-edited or half-written file may contain anything. Non-numeric
+    expiry must be dropped, not trusted and not fatal."""
+    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    from governance.auth import AuthService
+
+    path = os.environ["TRADERAIG_REVOCATION_FILE"]
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps({"revoked": {
+            "good-token": time.time() + 600,
+            "bad-expiry": "not-a-number",
+            "null-expiry": None,
+        }}))
+
+    restarted = AuthService()
+    assert "good-token" in restarted._revoked
+    assert "bad-expiry" not in restarted._revoked
+    assert "null-expiry" not in restarted._revoked
+
+
+def test_health_reports_whether_revocation_is_durable(client, monkeypatch):
+    """A platform that reports only "sessions expire in 12h" would hide the fact
+    that a reboot resurrects cancelled credentials until someone discovers it
+    during an incident."""
+    status = client.get("/system/health").json()["auth"]
+    assert "revocation_durable" in status
+    assert isinstance(status["revocation_durable"], bool)
+    assert "revocations_tracked" in status
+
+
+def test_durability_is_stated_at_boot_not_only_after_a_logout(client, monkeypatch):
+    """The flag must mean "the store is usable", not "some logout has happened".
+
+    Deriving it from the first successful persist makes a freshly booted system
+    report `false` whenever nobody has logged out yet -- which is the normal
+    state, so the field would cry wolf permanently and train the reader to
+    ignore the one moment it mattered.
+    """
+    from governance.auth import AuthService
+
+    fresh = AuthService()
+    assert fresh.revocation_is_durable() is True
+
+    blocked = os.path.join(tempfile.mkdtemp(prefix="blocked-boot-"), "afile")
+    with open(blocked, "w", encoding="utf-8") as handle:
+        handle.write("not a directory")
+    monkeypatch.setenv("TRADERAIG_REVOCATION_FILE", os.path.join(blocked, "sub.json"))
+    assert AuthService().revocation_is_durable() is False
+
+
+def test_an_unwritable_revocation_store_still_logs_out_and_says_so(client, monkeypatch):
+    """Refusing the logout would leave the session VALID, which is strictly
+    worse than accepting it and reporting that the cancellation did not survive
+    a restart. The failure mode to avoid is the opposite one: a logout that
+    raises 500 and silently keeps the session alive."""
+    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    _uid, email, password = _operator(client, monkeypatch)
+    token = client.post("/auth/login", json={"email": email,
+                                             "password": password}).json()["token"]
+
+    # point the store at a path that cannot be created (a file, not a directory)
+    blocked = os.path.join(tempfile.mkdtemp(prefix="blocked-"), "afile")
+    with open(blocked, "w", encoding="utf-8") as handle:
+        handle.write("not a directory")
+    monkeypatch.setenv("TRADERAIG_REVOCATION_FILE", os.path.join(blocked, "sub.json"))
+
+    res = client.post("/auth/logout", headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 200
+
+    from governance.auth import AuthError
+    from governance.auth import auth as auth_svc
+    with pytest.raises(AuthError):
+        auth_svc.verify(token)          # the logout took effect...
+    assert auth_svc.revocation_is_durable() is False   # ...and said it wouldn't last
+
+
+def test_expired_revocations_are_pruned_but_live_ones_are_kept(client, monkeypatch):
+    """A token id can only be replayed while its token is valid, so once the
+    session has expired the entry protects nothing -- and without pruning, a
+    process that runs for months accumulates one dead id per logout forever, in
+    memory and on disk.
+
+    Also checks the other half: pruning must not discard a revocation that is
+    still needed, which is the failure that would be much harder to spot.
+    """
+    from governance.auth import auth as auth_svc
+    auth_svc._revoked.add("ancient-token-id")
+    auth_svc._revoked_expiry["ancient-token-id"] = time.time() - 60
+
+    _uid, email, password = _operator(client, monkeypatch)
+    token = client.post("/auth/login", json={"email": email,
+                                             "password": password}).json()["token"]
+    assert client.post("/auth/logout", headers={
+        "Authorization": f"Bearer {token}"}).status_code == 200
+
+    # the stale one is gone...
+    assert "ancient-token-id" not in auth_svc._revoked
+    # ...and the one we just made is still there
+    from governance.auth import AuthError
+    with pytest.raises(AuthError):
+        auth_svc.verify(token)
+
+
+def test_a_credential_survives_a_reboot_not_just_a_repository_round_trip(monkeypatch):
+    """A restart must not log the operator out of their own trading system.
+
+    This is the boot path, not the repository round trip: `rehydrate()` is what
+    a fresh process actually runs, and it rebuilds the user objects from the
+    database through different code than `repo.get()`. It gets its own test
+    because a credential that silently failed to rehydrate presents exactly as
+    "I typed the right password and it says invalid" -- on a host that reboots
+    unattended, discovered by the operator rather than by a test.
+
+    Persistence is redirected to an in-memory session, following the existing
+    `test_rehydrate_restores_users_subscriptions_and_entitlements` pattern.
+    Writing through the real live session here would put a test user into the
+    production database, which is the same class of bug as a test that only
+    passes by accident.
+    """
+    from governance.auth import hash_password, verify_password
+    from governance.identity import IdentityService, SubscriptionPlan
+    from persistence.db import bind_test_session
+    from persistence.repositories import UserRepository
+    import governance.identity as identity_mod
+    import persistence.db as db_module
+
+    session = bind_test_session()
+
+    def _persist(user, subscription=None):
+        UserRepository(session).save(user, subscription=subscription)
+
+    monkeypatch.setattr(identity_mod, "_persist_user", _persist)
+    monkeypatch.setattr(db_module, "make_live_session", lambda: session)
+    monkeypatch.setattr(db_module, "persistence_enabled", lambda: True)
+
+    writer = IdentityService()
+    email = f"reboot{time.time_ns()}@x.co"
+    user = writer.create_user(email, "Reboot Check", SubscriptionPlan.INSTITUTIONAL)
+    user.password_hash = hash_password("survives-a-reboot-1")
+    UserRepository(session).save(user)
+
+    # a genuinely separate service object, as a new process would build
+    restored = IdentityService()
+    assert restored.rehydrate() >= 1
+
+    rehydrated = restored.get_user(user.user_id)
+    assert rehydrated is not None, "rehydrate did not restore the user"
+    assert verify_password("survives-a-reboot-1", rehydrated.password_hash)
+    assert not verify_password("not-the-password", rehydrated.password_hash)
+    assert restored.verify_password(email, "survives-a-reboot-1")
 
 
 def test_a_failed_login_is_audited_without_the_credential(client, monkeypatch):

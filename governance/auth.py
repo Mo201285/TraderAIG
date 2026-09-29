@@ -46,6 +46,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Optional, Set
 
 log = logging.getLogger(__name__)
@@ -172,6 +173,9 @@ class AuthService:
         self._secret: Optional[bytes] = None
         self._secret_persistent = False
         self._revoked: Set[str] = set()
+        self._revoked_expiry: Dict[str, float] = {}
+        self._load_revocations()
+        self._revocation_durable = self._store_writable()
 
     # -- secret -------------------------------------------------------------
     def _signing_secret(self) -> bytes:
@@ -239,15 +243,149 @@ class AuthService:
                        expires_at=payload["exp"], token_id=payload["jti"])
 
     def revoke(self, session: Session) -> None:
-        """Logout.
+        """Logout, and make it survive a restart.
 
-        Honest about its own limit: the denylist is in memory, so a restart
-        un-revokes outstanding tokens. They remain bounded by their expiry, and
-        the alternative — a persisted session table — is not worth the moving
-        parts until there is more than one operator.
+        The earlier version kept the denylist in memory only, which meant a
+        reboot resurrected every logged-out session. On a 24/7 host that is not a
+        theoretical limit: the machine restarts, and a token the operator
+        explicitly threw away starts working again — the credential outlives the
+        decision to cancel it. The fix is a durable mirror of the same set,
+        written atomically, and the in-memory set stays the fast path so no
+        request ever waits on a file.
+
+        Only the token id and its expiry are stored. Neither is a secret: a token
+        id is a random uuid, and forging a token still requires the HMAC signing
+        secret, so this file is safe to keep unencrypted beside the database.
         """
         with self._lock:
+            self._prune_locked()
             self._revoked.add(session.token_id)
+            self._revoked_expiry[session.token_id] = session.expires_at
+        self._persist_revocations()
+
+    def _prune_locked(self) -> None:
+        """Drop revocations whose session has already expired. Caller holds the lock.
+
+        A token id can only be replayed while its token is valid, so once the
+        session has expired the entry protects nothing -- and without pruning,
+        a process that runs for months accumulates one dead id per logout
+        forever, in memory and on disk.
+        """
+        now = time.time()
+        stale = [tid for tid, exp in self._revoked_expiry.items() if exp <= now]
+        for tid in stale:
+            self._revoked.discard(tid)
+            self._revoked_expiry.pop(tid, None)
+        # ids carried over without a recorded expiry (older files) are kept:
+        # an unknown expiry is not evidence of safety, so err toward revoking
+
+    # -- durable revocation -------------------------------------------------
+
+    def _revocations_path(self) -> str:
+        base = os.getenv("TRADERAIG_REVOCATION_FILE")
+        if base:
+            return base
+        root = Path(__file__).resolve().parent.parent
+        return str(root / ".data" / "session_revocations.json")
+
+    def _store_writable(self) -> bool:
+        """Whether the durable store could be written, probed with a real write.
+
+        Reporting durability only after the first successful logout would mean a
+        freshly booted system says "not durable" for the ordinary case of nobody
+        having logged out yet -- a field that cries wolf until the first logout
+        and then stops telling you anything.
+
+        The probe actually creates and removes a file rather than asking
+        `os.access`, because the interesting failure is not "is the directory
+        writable" but "can this exact path be created" -- and the two disagree in
+        the case that matters here, where a parent path component is a regular
+        file, which `os.access` happily reports as writable.
+        """
+        path = self._revocations_path()
+        probe = f"{path}.probe"
+        try:
+            directory = os.path.dirname(path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            with open(probe, "w", encoding="utf-8") as handle:
+                handle.write("")
+            os.remove(probe)
+            return True
+        except OSError:
+            try:
+                if os.path.exists(probe):
+                    os.remove(probe)
+            except OSError:
+                pass
+            return False
+
+    def _load_revocations(self) -> None:
+        """Restore revocations at boot, dropping the ones that have expired.
+
+        Pruning on load is what keeps the file from becoming an append-only
+        ledger of every session the system ever issued: a token id whose session
+        has expired cannot be replayed anyway, so retaining it buys nothing.
+        """
+        path = self._revocations_path()
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (FileNotFoundError, OSError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        now = time.time()
+        entries = data.get("revoked", {})
+        if not isinstance(entries, dict):
+            return
+        with self._lock:
+            for token_id, exp in entries.items():
+                try:
+                    expiry = float(exp)
+                except (TypeError, ValueError):
+                    continue
+                if expiry > now:
+                    self._revoked.add(token_id)
+                    self._revoked_expiry[token_id] = expiry
+
+    def _persist_revocations(self) -> None:
+        """Mirror the denylist to disk. Never raises.
+
+        A logout must not fail because the disk is full or the directory is
+        read-only: refusing the logout would leave the session valid, which is
+        strictly worse than accepting it and reporting that the revocation could
+        not be made durable. Health says which of the two happened.
+        """
+        with self._lock:
+            payload = {
+                "version": 1,
+                "revoked": {tid: exp for tid, exp
+                            in self._revoked_expiry.items()
+                            if exp > time.time()},
+            }
+        path = self._revocations_path()
+        try:
+            directory = os.path.dirname(path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            tmp = f"{path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            os.replace(tmp, path)
+            with self._lock:
+                self._revocation_durable = True
+        except OSError:
+            with self._lock:
+                self._revocation_durable = False
+
+    def revocation_is_durable(self) -> bool:
+        """Whether a logout would survive a restart. Reported in health.
+
+        False means the platform is running with in-memory revocation, which is
+        a real limit and not something to discover during an incident.
+        """
+        return self._revocation_durable
 
     # -- machine callers ----------------------------------------------------
     def service_token_configured(self) -> bool:
@@ -314,6 +452,11 @@ class AuthService:
     def status(self) -> Dict:
         policy = self.auth_policy()
         policy["password_auth"] = "scrypt (hashlib), per-credential salt"
+        # Whether a logout survives a restart. A platform reporting only
+        # "sessions expire in 12h" would hide the fact that until the first
+        # logout is persisted, a reboot brings cancelled credentials back.
+        policy["revocation_durable"] = self._revocation_durable
+        policy["revocations_tracked"] = len(self._revoked)
         return policy
 
 

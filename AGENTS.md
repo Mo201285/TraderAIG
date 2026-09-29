@@ -28,7 +28,7 @@ If any two conflict: STOP, surface the conflict, never silently pick one.
 
 - One command: `powershell -ExecutionPolicy Bypass -File scripts\verify_all.ps1` (gates: ruff lint → py_compile → full pytest → `tsc`+`vite build` → live smoke; use `-SkipSmoke` for everything except the live boot)
 - Lint: `python -m ruff check .` in `D:\One` (must be zero; config in `pyproject.toml`)
-- Backend: `python -m pytest -q` in `D:\One` (baseline **1043 passing** — report the new count when it moves)
+- Backend: `python -m pytest -q` in `D:\One` (baseline **1099 passing** — report the new count when it moves)
 - Dashboard: in `TAIG Dash` run `node .\node_modules\typescript\bin\tsc --noEmit` then `node .\node_modules\vite\bin\vite.js build` (no page is done without both)
 - Live wire: `powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1` (7/7 steps on a real uvicorn boot)
 

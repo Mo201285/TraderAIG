@@ -3087,3 +3087,290 @@ async def bridge_ws(websocket: WebSocket) -> None:
         if sender_task:
             sender_task.cancel()
         hub.unregister(session.id)
+
+
+# ---------------------------------------------------------------------------
+# Challenge Account Management & Dynamic Policy Layer (34.1-34.14)
+#
+# Read + register only. These routes inspect the account the MT5 sync loop is
+# already maintaining and report what the policy layer thinks of it. They place
+# no order, and `34.15`'s execution ladder is deliberately not wired here: the
+# 34.23 golden rule is that governance authorizes execution, and a challenge
+# route that could execute would be the shortcut around it that 34.23 names.
+# ---------------------------------------------------------------------------
+
+
+def _challenge_account_id() -> str:
+    """The account being graded, identified by the broker login.
+
+    The MT5 login rather than a name or a position in a list, because it is the
+    only identifier here that comes from the venue and cannot be reassigned by
+    accident. Falls back to "unconnected" so a read still answers when no
+    terminal is attached, rather than 500-ing.
+    """
+    login = int(getattr(state.account, "login", 0) or 0)
+    return str(login) if login else "unconnected"
+
+
+def _challenge_snapshot(account_id: str, *, observe: bool,
+                        proposed_risk: float = 0.0,
+                        symbol: Optional[str] = None) -> Dict:
+    """Read the live account and grade it against the registered policy.
+
+    `observe` folds the reading into the account's baseline (advancing its
+    low-water marks); without it the reading is scored against the baseline as
+    it stands. Only the polling route observes, so a caller poking at the
+    dashboard cannot move the reference points a decision is measured from.
+    """
+    account = state.account
+    equity = float(getattr(account, "equity", 0.0) or 0.0)
+    balance = float(getattr(account, "balance", 0.0) or 0.0)
+    margin = float(getattr(account, "margin", 0.0) or 0.0)
+
+    # open risk from the canonical positions, so "how much room is left" is
+    # answered against risk already committed rather than in isolation
+    open_risk = 0.0
+    for position in state.positions.values():
+        try:
+            open_risk += float(getattr(position, "risk", 0.0) or 0.0)
+        except Exception:  # noqa: BLE001
+            continue
+
+    from challenge.service import challenge_service as svc
+    from challenge.policy import ChallengePolicy
+
+    provider = getattr(account, "broker", "") or ""
+    program = _challenge_program()
+    policy: Optional[ChallengePolicy] = None
+    if provider and program:
+        policy = svc.policy_for(provider, program)
+
+    if observe:
+        svc.observe(account_id, equity=equity, balance=balance,
+                    margin=margin, open_risk=open_risk)
+    return svc.evaluate(account_id, policy, equity=equity, balance=balance,
+                        margin=margin, open_risk=open_risk,
+                        proposed_risk=proposed_risk, symbol=symbol)
+
+
+def _challenge_program() -> str:
+    """The program name, from configuration.
+
+    Env-driven rather than inferred from the account: a broker reports a server
+    and a currency, never which evaluation the trader signed up for. Guessing it
+    from the balance would be the same class of assumption 34.6 forbids, and it
+    would pick a policy for an account the operator never described.
+    """
+    return str(os.getenv("TRADERAIG_CHALLENGE_PROGRAM", "") or "")
+
+
+@app.get("/challenge/status")
+def challenge_status() -> Dict:
+    """The 34.22 view of the connected account: headroom, state, permission.
+
+    Read-only and ungraded by default: it observes the account (so the
+    low-water marks advance) but proposes no trade, so this reports where the
+    account stands rather than approving anything.
+    """
+    account_id = _challenge_account_id()
+    return {"ok": True, "observed": True,
+            **_challenge_snapshot(account_id, observe=True)}
+
+
+@app.get("/challenge/headroom")
+def challenge_headroom(proposed_risk: float = 0.0,
+                       symbol: str = "") -> Dict:
+    """Headroom, optionally against a proposed trade's risk.
+
+    `proposed_risk` is a question, not an instruction: it asks whether a trade
+    of that size would fit in the remaining headroom. Nothing here executes.
+    """
+    account_id = _challenge_account_id()
+    if proposed_risk and proposed_risk < 0:
+        raise HTTPException(status_code=400,
+                            detail="proposed_risk must not be negative")
+    return {"ok": True, **_challenge_snapshot(
+        account_id, observe=False,
+        proposed_risk=float(proposed_risk or 0.0),
+        symbol=(symbol or None))}
+
+
+@app.get("/challenge/policies")
+def challenge_policies(provider: str = "", program: str = "") -> Dict:
+    """Every registered policy version, with what is still unverified.
+
+    The registry ships empty, so this returning nothing is the correct state for
+    a deployment that has not been given provider terms yet.
+    """
+    from challenge.service import challenge_service as svc
+
+    if provider and program:
+        return {"ok": True, "versions": svc._registry.versions(provider, program)}
+    return {"ok": True, **svc.as_dict()}
+
+
+@app.post("/challenge/policies")
+def challenge_policy_register(payload: Dict) -> Dict:
+    """Register one policy version, from terms the operator supplied.
+
+    Every numeric rule arrives as an explicit `{value, source}` pair. A bare
+    number is rejected rather than accepted with a blank source, because a rule
+    with no document behind it is a guess wearing a decimal point -- and 34.6's
+    requirement is that rules come from authoritative documentation.
+    """
+    from challenge.service import challenge_service as svc
+    from challenge.policy import (ChallengePolicy, DrawdownType, InstrumentPolicy,
+                                 NewsPolicy, Restriction, RuleValue)
+
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    provider = str(payload.get("provider", "") or "").strip()
+    program = str(payload.get("program", "") or "").strip()
+    version = str(payload.get("policy_version", "") or "").strip()
+    if not provider or not program or not version:
+        raise HTTPException(
+            status_code=400,
+            detail="provider, program and policy_version are required; an "
+                   "unversioned policy cannot be audited against the account "
+                   "that ran it")
+
+    def rule(name: str) -> RuleValue:
+        raw = payload.get(name)
+        if raw is None:
+            return RuleValue.unknown("not supplied")
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{name}' must be an object with 'value' and 'source'; "
+                       "a bare number carries no provenance and cannot be "
+                       "verified")
+        if "value" not in raw:
+            return RuleValue.unknown(str(raw.get("note", "")) or "no value")
+        source = str(raw.get("source", "") or "").strip()
+        if not source:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{name}' needs a 'source' naming the provider document "
+                       "the rule came from; 34.6 requires authoritative terms")
+        return RuleValue.known(float(raw["value"]), source=source,
+                               verified_at=raw.get("verified_at"),
+                               note=raw.get("note"))
+
+    drawdown_type = payload.get("drawdown_type")
+    instruments_raw = payload.get("instruments") or {}
+    news_raw = payload.get("news") or {}
+
+    def restriction(name: str, default: Restriction) -> Restriction:
+        raw = payload.get(name)
+        if raw is None:
+            return default
+        try:
+            return Restriction(str(raw))
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{name}' must be one of "
+                       + ", ".join(r.value for r in Restriction))
+
+    policy = ChallengePolicy(
+        provider=provider, program=program, policy_version=version,
+        account_size=float(payload.get("account_size", 0.0) or 0.0),
+        effective_from=payload.get("effective_from"),
+        effective_until=payload.get("effective_until"),
+        profit_target=rule("profit_target"),
+        daily_loss_limit=rule("daily_loss_limit"),
+        max_drawdown=rule("max_drawdown"),
+        minimum_trading_days=rule("minimum_trading_days"),
+        max_leverage=rule("max_leverage"),
+        drawdown_type=DrawdownType(str(drawdown_type)) if drawdown_type else None,
+        consistency_rule=payload.get("consistency_rule"),
+        instruments=InstrumentPolicy(
+            denied_symbols=list(instruments_raw.get("denied_symbols", []) or []),
+            default=restriction("instruments_default", Restriction.UNKNOWN),
+            source=instruments_raw.get("source")),
+        news=NewsPolicy(
+            mode=restriction("news_mode", Restriction.UNKNOWN),
+            minutes_before=news_raw.get("minutes_before"),
+            minutes_after=news_raw.get("minutes_after"),
+            source=news_raw.get("source")),
+        overnight=restriction("overnight", Restriction.UNKNOWN),
+        weekend=restriction("weekend", Restriction.UNKNOWN),
+        max_lot=payload.get("max_lot"),
+        notes=payload.get("notes"),
+    )
+    try:
+        result = svc.register_policy(policy)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    try:
+        identity.record_audit(
+            _acting_actor() or "api", "challenge.policy.registered", "ChallengePolicy",
+            result["key"], {"version": version, "provider": provider,
+                            "program": program,
+                            "is_fully_specified": result["is_fully_specified"],
+                            "missing_rules": result["missing_rules"]})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, **result}
+
+
+@app.post("/challenge/accounts/{account_id}/state")
+def challenge_transition(account_id: str, payload: Dict) -> Dict:
+    """Move one account's state, or refuse with the machine's own reason."""
+    from challenge.service import challenge_service as svc
+    from challenge.state_machine import ChallengeState
+
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    target = str(payload.get("state", "") or "")
+    reason = str(payload.get("reason", "") or "")
+    try:
+        wanted = ChallengeState(target)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="state must be one of "
+                   + ", ".join(s.value for s in ChallengeState))
+    result = svc.transition(account_id, wanted, reason=reason,
+                            actor=_acting_actor() or "operator")
+    if not result.get("applied"):
+        # 409, not 400: the request was well-formed, the account's history is
+        # what refuses it, and the operator needs that distinction.
+        raise HTTPException(status_code=409, detail=result.get("reason"))
+    try:
+        identity.record_audit(
+            _acting_actor() or "api", "challenge.state.changed", "ChallengeAccount",
+            account_id, {"to": target, "reason": reason})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, **result}
+
+
+@app.post("/challenge/accounts/{account_id}/recover")
+def challenge_recover(account_id: str, payload: Dict) -> Dict:
+    """Resume a halted account -- the only path out of HALTED (34.10).
+
+    Requires `authorized_by` by name. A recovery nobody can attribute is the
+    silent resume 34.10 forbids, so an empty authorizer is refused here rather
+    than defaulted to "system".
+    """
+    from challenge.service import challenge_service as svc
+
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    reason = str(payload.get("reason", "") or "")
+    authorized_by = str(payload.get("authorized_by", "") or "").strip()
+    if not authorized_by:
+        raise HTTPException(
+            status_code=400,
+            detail="authorized_by is required and must name a person; an "
+                   "unattributed recovery is the silent resume 34.10 forbids")
+    result = svc.recover(account_id, reason=reason, authorized_by=authorized_by,
+                         conditions_met=payload.get("conditions_met"))
+    if not result.get("applied"):
+        raise HTTPException(status_code=409, detail=result.get("reason"))
+    try:
+        identity.record_audit(
+            authorized_by, "challenge.state.recovered", "ChallengeAccount",
+            account_id, {"reason": reason,
+                         "conditions_met": payload.get("conditions_met") or {}})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, **result}

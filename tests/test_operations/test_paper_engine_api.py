@@ -149,3 +149,50 @@ def test_ensure_backend_paper_failure_has_its_own_exit_code(monkeypatch):
     monkeypatch.setattr(eb, "backend_healthy", lambda **k: True)
     monkeypatch.setattr(eb, "start_paper_watch", lambda **k: (False, "nope"))
     assert eb.main(["--start-paper-sync"]) == 4
+
+
+def test_ensure_backend_reasserts_the_cex_feed(monkeypatch):
+    """The tier-90 venue feed is in-process too: it dies with the backend."""
+    import scripts.ensure_backend as eb
+
+    calls = []
+
+    def fake_post(url, payload=None, timeout=30.0):
+        calls.append((url, payload))
+        return 200, {"started": True, "status": {"mode": "paper"}}
+
+    monkeypatch.setattr(eb, "http_post", fake_post)
+    ok, detail = eb.start_cex_paper(port=8000)
+    assert ok is True
+    assert "mode=paper" in detail
+    assert calls[0][0].endswith("/cex/engine/start")
+
+
+def test_ensure_backend_cex_boot_never_arms_a_live_venue(monkeypatch):
+    """A boot script must not be a way to arm a real exchange.
+
+    `mode` is never sent, so `CEXEngine` keeps its own gate: the payload here
+    is the whole authority surface, and it must stay free of any mode/live flag.
+    """
+    import scripts.ensure_backend as eb
+
+    calls = []
+
+    def fake_post(url, payload=None, timeout=30.0):
+        calls.append((url, payload))
+        return 200, {"started": True, "status": {"mode": "paper"}}
+
+    monkeypatch.setattr(eb, "http_post", fake_post)
+    eb.start_cex_paper(port=8000)
+    payload = calls[0][1] or {}
+    for forbidden in ("mode", "live", "live_armed", "testnet", "CEX_LIVE_ALLOWED"):
+        assert forbidden not in payload, f"boot payload must not carry {forbidden!r}"
+    assert set(payload) == {"interval"}
+
+
+def test_ensure_backend_cex_failure_has_its_own_exit_code(monkeypatch):
+    import scripts.ensure_backend as eb
+
+    monkeypatch.setattr(eb, "backend_healthy", lambda **k: True)
+    monkeypatch.setattr(eb, "start_cex_paper", lambda **k: (False, "nope"))
+    assert eb.main(["--start-cex-sync"]) == 5

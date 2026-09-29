@@ -3,30 +3,35 @@
 The 24/7 contract is two layers, and this script owns the second one:
 
 1. `scripts/mt5_host_watchdog.py` keeps the TERMINAL publishing (frames fresh).
-2. This script keeps the SERVER running and the PRIMARY `mt5` rail syncing.
+2. This script keeps the SERVER running and re-asserts every piece of state
+   that only exists inside it: the tier-100 `mt5` rail, the paper decision
+   desk, and the CEX feed loop.
 
 Why it must exist instead of a scheduled `python main.py`: three pieces of state
 are in-process and die with the process. The file poller is restarted by the
 API lifespan, but the mt5 watcher is a thread started only by
-`POST /mt5/watcher` - so after every reboot the tier-100 `mt5` source silently
-stays off and the plane quietly falls back to `bridge:file` (tier 50). That
-fallback is designed behaviour, which is exactly why it is dangerous: it looks
-perfectly healthy. The same is true of the paper decision loop, which only
-exists once `POST /paper/engine/start` has run. This script re-asserts all of
-them after every boot.
+`POST /mt5/watcher`, the paper desk only by `POST /paper/engine/start`, and the
+CEX feed only by `POST /cex/engine/start` - so after every reboot the tier-100
+`mt5` source silently stays off and the plane quietly falls back to
+`bridge:file` (tier 50), the paper desk is simply absent, and the venue stops
+publishing. That fallback is designed behaviour, which is exactly why it is
+dangerous: it looks perfectly healthy. This script re-asserts all of them after
+every boot.
 
 It is idempotent (port check, never a second backend), it starts the backend
 detached through the operator console's own launcher so the logs stay in
 `logs/backend.*.log`, and it never places a venue order: the paper desk is a
-`PaperExecutor`, and the `LiveMT5Executor` engine is not started here, so no
-order path to the terminal exists.
+`PaperExecutor`, the CEX loop is left to its own `CEXEngine` gate, and the
+`LiveMT5Executor` engine is not started here, so no order path to the terminal
+exists.
 
 Exit codes:
-  0  backend already healthy (and the rail/paper desk were already up, if asked)
+  0  backend already healthy (and the rail/paper/cex were already up, if asked)
   1  backend started now / rail (re)started now / paper desk (re)started now
   2  backend did not become healthy within --wait seconds
   3  backend is up but the mt5 rail could not be started (e.g. 403 entitlement)
   4  mt5 rail is up but the paper decision loop could not be started
+  5  paper desk is up but the CEX feed loop could not be started
 """
 from __future__ import annotations
 
@@ -181,6 +186,26 @@ def start_paper_watch(port: int = 8000, interval: float = DEFAULT_INTERVAL
     return started, "paper desk running" if started else f"paper desk not started: {body}"
 
 
+def start_cex_paper(port: int = 8000, interval: float = 20.0) -> Tuple[bool, str]:
+    """(Re)start the CEX feed loop through the API, in paper mode.
+
+    The third piece of in-process state, and the easiest to forget: the tier-90
+    `cex:<venue>` feed is a thread started only by `POST /cex/engine/start`, so
+    after a reboot the venue quietly stops publishing while `/market/feeds`
+    lists nothing wrong. `mode` is never sent - `CEXEngine` reads its own gate,
+    and this call must not be a way to arm a live venue from a boot script.
+    """
+    base = f"http://127.0.0.1:{port}"
+    status, body = http_post(f"{base}/cex/engine/start", {"interval": interval})
+    if status not in (200, 201):
+        return False, f"cex paper rejected ({status}): {body}"
+    started = bool(isinstance(body, dict) and body.get("started"))
+    st = body.get("status") if isinstance(body, dict) else {}
+    mode = st.get("mode") if isinstance(st, dict) else None
+    detail = f"cex feed running (mode={mode})" if started else f"cex feed not started: {body}"
+    return started, detail
+
+
 def _log(message: str, log_path: Optional[Path]) -> None:
     line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}"
     print(line)
@@ -203,6 +228,8 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="also (re)start the primary mt5 rail watcher")
     parser.add_argument("--start-paper-sync", action="store_true",
                         help="also (re)start the in-process paper decision loop")
+    parser.add_argument("--start-cex-sync", action="store_true",
+                        help="also (re)start the CEX feed loop (never arms a live venue)")
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
     parser.add_argument("--symbols", default=None,
                         help="comma separated symbols for the rail (default: .env list)")
@@ -246,6 +273,12 @@ def main(argv: Optional[List[str]] = None) -> int:
              log_path)
         if not ok:
             return 4
+    if args.start_cex_sync:
+        ok, detail = start_cex_paper(port=args.port)
+        _log(f"ensure_backend: cex feed -> {'OK ' + detail if ok else 'FAILED ' + detail}",
+             log_path)
+        if not ok:
+            return 5
     return 1 if started_now else 0
 
 

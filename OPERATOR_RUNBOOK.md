@@ -165,19 +165,23 @@ python scripts\mt5_host_watchdog.py --restart            # إعادة تشغيل
 python scripts\mt5_host_watchdog.py --ensure-terminal     # تشغيل الطرفية إن كانت down (مهمة الإقلاع)
 ```
 
-الطبقة الثانية: `scripts\ensure_backend.py` — بقاء **الخادم** حيًّا، وإبقاء **السكك الأساسي
-`mt5` (رتبة 100)** مزامنًا، وإبقاء **مكتب paper** حيًّا. لماذا سكربت لا مجرّد مهمة
-`python main.py`: ثلاث حالات تعيش داخل العملية وتموتان معها — الـpoller يعيده إقلاع الـAPI،
-لكن **مراقب `mt5` خيطٌ يبدأه فقط `POST /mt5/watcher`**، و**مكتب paper يبدأه فقط
-`POST /paper/engine/start`**. فبعد كل إقلاع يبقى المصدر الأعلى صامتًا وتسقط الـplane بصمت إلى
-`bridge:file` (رتبة 50) — أو يبقى مكتب paper مطفأً. والاثنان سلوك **مصمَّم**، ولهذا هو الخطر:
-يبدوان سليمَين تمامًا.
+الطبقة الثانية: `scripts\ensure_backend.py` — بقاء **الخادم** حيًّا، وإعادة تأكيد كل حالة
+تعيش **داخل العملية** وتموت معها. لماذا سكربت لا مجرّد مهمة `python main.py`: **ثلاث**
+حالات من هذا النوع — الـpoller يعيده إقلاع الـAPI، لكن **مراقب `mt5` خيطٌ يبدأه فقط
+`POST /mt5/watcher`**، و**مكتب paper يبدأه فقط `POST /paper/engine/start`**، و**حلقة CEX
+تبدأه فقط `POST /cex/engine/start`**. فبعد كل إقلاع يبقى المصدر الأعلى صامتًا وتسقط
+الـplane بصمت إلى `bridge:file` (رتبة 50)، أو يبقى مكتب paper مطفأً، أو تتوقف البورصة عن
+النشر — والثلاثة سلوك **مصمَّم**، ولهذا هي الخطر: تبدو سليمة تمامًا.
 
 ```powershell
 python scripts\ensure_backend.py                             # تأكّد أن :8000 سليم فقط
 python scripts\ensure_backend.py --start-mt5-sync --interval 5   # + اربط السكك الأساسي وشغّل مراقبه
-python scripts\ensure_backend.py --start-mt5-sync --start-paper-sync   # + شغّل مكتب paper
+python scripts\ensure_backend.py --start-mt5-sync --start-paper-sync --start-cex-sync
 ```
+
+> `--start-cex-sync` **لا يمرّر** `mode` أبدًا: بوابة `CEX_MODE`/`CEX_LIVE_ALLOWED` تبقى
+> ملك `CEXEngine` وحده، وسكربت الإقلاع ليس طريقًا لتarming بورصة حقيقية. ويثبت اختبار أن
+> حمولة الإقلاع = `{"interval": ...}` لا أكثر.
 
 **مكتب paper داخل عملية الخادم، لا عملية مستقلة.** جرّب أوّلًا سكربت مستقل
 (`scripts/paper_engine.py`) فاشتغل فعلًا ودوّر خط القرار على شموع MT5 حقيقية، ثم **حُذف**:
@@ -212,14 +216,29 @@ Get-Content logs\dash.err.log -Tail 20                      # سجلّ vite prev
 | المهمّة | التوقيت | ما تفعله |
 | --- | --- | --- |
 | `TAIG-MT5-Terminal-Start` | عند تسجيل الدخول | تشغّل الطرفية إن كانت down (idempotent، لا تشغيل مزدوج) |
-| `TAIG-Backend-Start` | عند تسجيل الدخول | تتأكّد أن :8000 سليم + تعيد تأكيد مراقب السكك الأساسي **ومكتب paper** |
+| `TAIG-Backend-Start` | عند تسجيل الدخول | تتأكّد أن :8000 سليم + تعيد تأكيد **السكك الأساسي ومكتب paper وحلقة CEX** |
 | `TAIG-MT5-Watchdog` | كل 5 دقائق | تقرير حيّية السوق إلى `logs\watchdog.log` — **تقرير فقط**، لا تعيد التشغيل |
-| `TAIG-Backend-Watchdog` | كل 5 دقائق | **تعيد تشغيل خادم ساقط** وتعيد تأكيد السكك الأساسي ومكتب paper (مُثبَت: قُتل الخادم فعاد في <60s) |
+| `TAIG-Backend-Watchdog` | كل 5 دقائق | **تعيد تشغيل خادم ساقط** وتعيد تأكيد السكك الأساسي ومكتب paper وحلقة CEX |
 | `TAIG-Dashboard-Watchdog` | كل 5 دقائق | تعيد تقديم `:8443` فقط إذا توقّف عن الإجابة (idempotent؛ لا تلمس خادمًا حيًّا) |
+
+**إقلاع اللوحة عند تسجيل الدخول**: لم يُسجَّل `TAIG-Dashboard-Start` كمهمّة لأن إنشاء مهمّة
+بـ`ONLOGON` يتطلب **ترقية (elevated)**، وهذا الطرفية غير مرقّاة. البديل المُثبت هو ملف
+`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\TAIG-Dashboard-Start.cmd`
+(إقلاع لكل مستخدم، بلا ترقية) — ومهمّة `TAIG-Dashboard-Watchdog` تبقَ مسار تعافٍ مستقل.
+لمن يريد المهمّة بدل الملف، في **موجّه أوامر مرقّى**:
+
+```powershell
+schtasks /Create /TN "TAIG-Dashboard-Start" /SC ONLOGON /TR "C:\Python314\python.exe D:\One\scripts\ensure_dashboard.py --port 8443 --wait 40 --log D:\One\logs\dashboard_boot.log" /RL HIGHEST /F
+```
+
+**إثبات التعافي (2026-09-29)**: قُتل `:8000` **و** `:8443` معًا (محاكاة إقلاع نظيف) ثم
+أُطلق المراقبان: عادتا **خلال 20 ثانية**، وأعد الإقلاع إنشاء **حلقة paper** (3 دورات بعد
+القتل مقابل 47 قبله) و**حلقة CEX** (4 مقابل 66) — أي أنهما **أُعيد إنشاؤهما** لا أنهما
+نجوا، وهذا هو الدليل على أن مسار الإقلاع يغطّي كل الحالات داخل العملية.
 
 ```powershell
 Get-Content logs\watchdog.log -Tail 20          # آخر تقارير الطرفية
-Get-Content logs\backend_boot.log -Tail 10      # آخر تقارير الخادم/السكك/paper
+Get-Content logs\backend_boot.log -Tail 10      # آخر تقارير الخادم/السكك/paper/cex
 Get-Content logs\dashboard_boot.log -Tail 10    # آخر تقارير اللوحة
 Get-ScheduledTask -TaskName 'TAIG-*'            # حالة المهمّات
 Unregister-ScheduledTask -TaskName 'TAIG-MT5-Watchdog' -Confirm:$false   # إزالة

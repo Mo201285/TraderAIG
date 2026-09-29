@@ -299,15 +299,51 @@ python tools\tradraig.py user list                        # من الهوية ا
 
 `institutional` = **كل** الصلاحيات (`PLAN_ENTITLEMENTS[INSTITUTIONAL] = set(Entitlement)`):
 `read_only, api_access, can_trade, can_copy, multi_account, can_manage_risk` — أي plans
-أخرى جزئية. إنشاء هوية لا يعطي صلاحيات: الاشتراك يبقى `pending` حتى التفعيل، ومع
-`POST /users/{id}/subscription/activate` **يلزم `{"plan": "institutional"}` صريحًا**؛ جسم
-فارغ `{}` يرقّي الخطة إلى `free` ويسحب `can_trade`، فيرفض المشغّل السكك:
+أخرى جزئية. إنشاء هوية لا يعطي صلاحيات: الاشتراك يبقى `pending` حتى التفعيل.
+
+**الخطر الذي أُزيل 2026-09-29 — لا تُرسل جسمًا فارغًا أبدًا.** كان
+`POST /users/{id}/subscription/activate` يقرأ `payload.get("plan", "free")`، فكان
+`{}` يعني «خفّض الخطة إلى free». ولأن `grant_plan_entitlements()` تستبدل مجموعة
+الصلاحيات بالكامل، كانت POST واحدة بلا نية تُسقط `can_trade` عن المشغّل — وكذلك
+`/mt5/connect` وكل مسارات القرارات مُقفَلة بهذه الصلاحية، تبدأ
+`TAIG-Backend-Watchdog` فيتبدأف بملف 403 في очередتها التالية. **نظام يُخرج نفسه
+عن الخدمة استجابةً لطلب مشوّه.** الآن: `plan` إلزامي يُذكر صراحةً (وإلا 400)، وإن
+كانت الخطة تُفقد صلاحيات، يلزم `confirm_downgrade: true` (وإلا 409 يخبرك **أي**
+الصلاحيات ستضيع بالاسم):
 
 ```powershell
 python tools\tradraig.py user create --email founder@x.co --display "Founder" --plan institutional
-python tools\tradraig.py api /users/<id>/subscription/activate --post   # أرسل plan صريحًا
+python tools\tradraig.py api /users/<id>/subscription/activate --post   # أرسل {"plan": "institutional"} دائمًا
 ```
+
+**سحب الصلاحيات كان يتسلّل من نفس الباب.** لم يكن revoking ممكنًا إلا كأثر
+جانبي لـ«تفعيل» خطة أدنى، أي أن إعطاء السلطة وأخذها كانا عملية واحدة بلا اسم.
+أُضيف مسار صريح، وهو الطريق الصحيح للسحب:
+
+```powershell
+# سحب مقصود وموثّق: يطلب تأكيدًا لأنك تسحب سلطتك أنت
+python tools\tradraig.py api /users/<id>/subscription/revoke --post   # {"confirm_lockout": true, "reason": "..."}
 ```
+
+`confirm_lockout` إلزامي عندما يكون الهدف هو المشغّل نفسه. ليس فحص أمان مصطنَعًا:
+في نظام ذو مشغّل واحد، المشغّل هو المشغّل، فسحب صلاحياتك يزيل الصلاحية التي
+تُقفل عليها سكك التداول، وستبدأ النداءات المحمية — بما فيها نداءات الإقلاع
+الخاصة بالمراقب — بالـ403. وأحيانًا هذا هو المطلوب بالضبط (إيقاف النظام عن
+التداول)، فالقرار يُترك لك لكن **بكلمة صريحة**، لا يقول صامت.
+
+**حذف المستخدم كان مستحيلًا أيضًا**، فسحب الوصول كان إمّا تعديل قاعدة البيانات
+يدويًا أو استعمال فخّ التخفيض. الآن:
+
+```powershell
+# الترتيب مفروض: يجب السحب أولًا، ثم الحذف
+python tools\tradraig.py api /users/<id>/subscription/revoke --post   # بريدك
+python tools\tradraig.py api /users/<id> --delete --params confirm=true
+```
+
+حذف مستخدم له اشتراك نشط مرفوض (409) لأن حذف سجل ما زال يحمل صلاحية هو نفس
+الإزالة الصامتة التي أُغلق بابها، موصوفًا بشكل أضعف. وحذف المشغّل نفسه يحتاج
+`?confirm=true`، لأنه لا يزيل مستخدمًا فحسب بل يغيّر **من** هو المشغّل — وإن لم
+يبقَ أحد عادت البوابة إلى bootstrap، أي reopen لكل ما يسمح به bootstrap.
 
 الحالة الفعلية: `active + institutional` يعطي `can_trade` + `can_manage_risk`؛
 `active + pro` يعطي `can_trade` فقط؛ `pending/free` لا يعطي شيئًا. الرفض يُسجَّل

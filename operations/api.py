@@ -3352,6 +3352,9 @@ def challenge_baseline_declare(account_id: str, payload: Dict) -> Dict:
                                       verified=verified)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    # An unverified seed returns `graded: false` with a warning rather than
+    # looking like a successful one, so a caller who never set `verified` cannot
+    # walk away believing it holds a graded account.
     if not result["gradeable"]:
         return {"ok": True, "graded": False, **result,
                 "warning": "recorded as ASSERTED, not verified: the account will "

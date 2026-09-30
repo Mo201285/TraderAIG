@@ -64,15 +64,20 @@ class _Baseline:
         self.source: Optional[str] = None
         self.seeded_at: Optional[float] = None
 
-    def declare(self, start_equity: float, source: str) -> None:
+    def declare(self, start_equity: float, source: str, *,
+                verified: bool = False) -> None:
         """Record an opening balance that came from the provider's terms.
 
         This is the only path that makes a baseline trustworthy, and it is a
         separate call from `observe` precisely so that "we started watching"
         can never be mistaken for "we know how this account began".
+
+        `verified` distinguishes "the document was in hand" from "someone says
+        so". Only the former produces a gradable baseline; see
+        `declare_baseline` for why a source string alone cannot be that proof.
         """
         self.start_equity = float(start_equity)
-        self.origin = "declared"
+        self.origin = "declared" if verified else "asserted"
         self.source = (source or "").strip() or None
         self.seeded_at = time.time()
         if self.equity_low is None:
@@ -156,7 +161,6 @@ class _Baseline:
         """
         return self.has_baseline and self.origin == "declared"
 
-
 def _baseline_reason(baseline: "_Baseline") -> Optional[str]:
     """Why this baseline may not be graded, or None if it may.
 
@@ -169,6 +173,11 @@ def _baseline_reason(baseline: "_Baseline") -> Optional[str]:
     """
     if not baseline.has_baseline:
         return "baseline incomplete; refusing to grade the account"
+    if baseline.origin == "asserted":
+        return ("opening balance was asserted without the document in hand "
+                "(`verified=false`), so the figure is someone's word rather than "
+                "the provider's; the account is not graded until the terms are "
+                "read and the declaration is re-entered as verified")
     if not baseline.is_gradeable:
         return ("opening equity was inferred from the first reading, not declared "
                 "from the provider's terms; drawdown measured from it would "
@@ -263,7 +272,8 @@ class ChallengeService:
         }
 
     def declare_baseline(self, account_id: str, start_equity: float, *,
-                         source: str) -> Dict[str, Any]:
+                         source: str,
+                         verified: bool = False) -> Dict[str, Any]:
         """Seed an opening balance from the provider's terms.
 
         Separate from `observe` so the two can never be confused: watching an
@@ -271,6 +281,16 @@ class ChallengeService:
         opening balance is rejected outright rather than stored, because a
         baseline that cannot be true should not sit in the object waiting for
         someone to grade with it.
+
+        `verified` is the honest answer to "did you read the document?". A
+        source string is a promise, and a promise is checkable by nobody --
+        which is exactly how a caller ends up writing
+        "provider terms" against a number they guessed, because the field
+        looked like it was doing work. So a declaration carries its own
+        epistemic status: `verified` means the document was in hand when the
+        number was entered, `asserted` means it is someone's word. An
+        `asserted` baseline is deliberately **not** gradeable, so a guess
+        cannot become a permission no matter how confidently it was typed.
         """
         if not (source or "").strip():
             raise ValueError("a declared baseline must name the source of the "
@@ -285,11 +305,38 @@ class ChallengeService:
                 self._baselines[account_id] = baseline
             previous = {"origin": baseline.origin,
                         "start_equity": baseline.start_equity}
-            baseline.declare(amount, source)
-        return {"account_id": account_id, "origin": "declared",
+            baseline.declare(amount, source, verified=verified)
+        return {"account_id": account_id, "origin": baseline.origin,
                 "start_equity": amount, "source": source.strip(),
+                "gradeable": baseline.is_gradeable,
                 "replaced": previous["start_equity"] if
                 previous["origin"] != "declared" else None}
+
+    def withdraw_baseline(self, account_id: str, *, reason: str) -> Dict[str, Any]:
+        """Return an account to untrusted, keeping what watching has learned.
+
+        A wrong declaration is worse than a missing one, and the only way to
+        find out that a declared figure is wrong is to be able to take it back
+        without killing the process. This drops the declared opening balance
+        and lets the next observation rebuild the baseline as `observed` --
+        the low-water marks survive, because they are measured facts, and it
+        is the *origin* that is being withdrawn, not the account's history.
+        """
+        if not (reason or "").strip():
+            raise ValueError("withdrawing a declared baseline requires a reason")
+        with self._lock:
+            baseline = self._baselines.get(account_id)
+            if baseline is None:
+                return {"account_id": account_id, "withdrawn": False,
+                        "reason": "no baseline exists for this account"}
+            was = {"origin": baseline.origin, "start_equity": baseline.start_equity}
+            baseline.start_equity = None
+            baseline.origin = "none"
+            baseline.source = None
+            baseline.seeded_at = None
+        return {"account_id": account_id, "withdrawn": True,
+                "was_origin": was["origin"], "was_start_equity": was["start_equity"],
+                "reason": reason.strip()}
 
     def forget(self, account_id: str) -> bool:
         with self._lock:

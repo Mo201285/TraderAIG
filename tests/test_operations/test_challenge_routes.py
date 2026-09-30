@@ -231,8 +231,7 @@ def test_declaring_the_opening_balance_makes_the_account_gradable():
     policy = _policy()
 
     service.observe("1787174", equity=95_975.13, balance=95_975.13)
-    service.declare_baseline("1787174", 100_000.0,
-                             source="FTTrading competition terms, account size")
+    service.declare_baseline("1787174", 100_000.0, source="FTTrading competition terms, account size", verified=True)
     payload = service.evaluate("1787174", policy,
                                equity=95_975.13, balance=95_975.13)
 
@@ -294,9 +293,132 @@ def test_a_declared_baseline_needs_its_source_at_the_service_too():
     with pytest.raises(ValueError, match="positive"):
         service.declare_baseline("a1", 0, source="terms")
 
+    # Same argument for withdrawal, and the same mistake twice: the route checks
+    # the reason, so testing withdrawal through HTTP only ever exercises the
+    # route. The service guard is the one a script or a seeding job would meet.
+    with pytest.raises(ValueError, match="reason"):
+        service.withdraw_baseline("a1", reason="")
+    with pytest.raises(ValueError, match="reason"):
+        service.withdraw_baseline("a1", reason=None)
+
+    # A withdraw naming an account with no baseline is a 404, not a silent
+    # success -- nothing was withdrawn, and reporting otherwise would let a
+    # caller believe a wrong figure had been cleared.
+    assert service.withdraw_baseline("never-seen", reason="x")["withdrawn"] is False
+
     # And a rejected declaration leaves the account exactly as untrusted as it
     # was, rather than half-seeded.
     assert service.baseline_status("a1")["has_baseline"] is False
+
+
+def test_an_unverified_declaration_is_recorded_but_never_graded(client, monkeypatch):
+    """The mistake this endpoint actually invites, made into a test.
+
+    Somebody who does not have the terms will still want to seed the account,
+    and the old signature let them do it by typing a plausible source string
+    next to a guessed number -- which is precisely how a 100,000 was written
+    into a live account from a conversation that never contained the document.
+    A `source` is a promise nobody can check, so the claim about having read the
+    document has to be its own field, and lacking it must cost the permission.
+    """
+    from challenge.service import challenge_service as svc
+
+    _operator(client, monkeypatch)
+    svc.observe("a1", equity=95_975.13, balance=95_975.13)
+
+    response = client.post("/challenge/accounts/a1/baseline",
+                           json={"start_equity": 100_000,
+                                 "source": "FTTrading competition terms",
+                                 "verified": False})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["origin"] == "asserted"
+    assert body["gradeable"] is False
+    assert "ASSERTED" in body["warning"]
+
+    status = svc.baseline_status("a1")
+    assert status["has_baseline"] is True      # the figure is remembered
+    assert status["gradeable"] is False        # but it earns nothing
+    assert "asserted" in status["reason"]
+
+    # Omitting `verified` is the same as asserting it is false. Silence must
+    # never be read as consent.
+    default = client.post("/challenge/accounts/a1/baseline",
+                          json={"start_equity": 100_000,
+                                "source": "FTTrading competition terms"})
+    assert default.json()["origin"] == "asserted"
+    assert default.json()["gradeable"] is False
+
+    # And an asserted baseline still blocks a real decision, it does not just
+    # annotate one.
+    payload = svc.evaluate("a1", _policy(), equity=95_975.13, balance=95_975.13)
+    assert payload["counts"] is False
+    assert payload["decision"]["permission"] == "halt"
+
+
+def test_a_verified_declaration_is_graded(client, monkeypatch):
+    from challenge.service import challenge_service as svc
+
+    _operator(client, monkeypatch)
+    svc.observe("a1", equity=100_000, balance=100_000)
+
+    response = client.post("/challenge/accounts/a1/baseline",
+                           json={"start_equity": 100_000,
+                                 "source": "DemoProp terms 2026-09 p.1",
+                                 "verified": True})
+
+    assert response.json()["origin"] == "declared"
+    assert response.json()["graded"] is True
+    assert svc.baseline_status("a1")["gradeable"] is True
+
+
+def test_a_wrong_declaration_can_be_withdrawn_without_a_restart(client, monkeypatch):
+    """A declared figure that turns out wrong must be takeable back.
+
+    The alternative is to leave a wrong opening balance in place and restart the
+    host, which on a 24/7 box is a much bigger event than admitting a number
+    was wrong. The measured low-water marks survive; only the claim is dropped.
+    """
+    from challenge.service import challenge_service as svc
+
+    _operator(client, monkeypatch)
+    svc.observe("a1", equity=95_975.13, balance=95_975.13)
+    client.post("/challenge/accounts/a1/baseline",
+                json={"start_equity": 100_000, "source": "terms", "verified": True})
+    assert svc.baseline_status("a1")["gradeable"] is True
+    low_before = svc.baseline_status("a1")["equity_low"]
+
+    refused = client.post("/challenge/accounts/a1/baseline/withdraw", json={})
+    assert refused.status_code == 400
+
+    response = client.post("/challenge/accounts/a1/baseline/withdraw",
+                           json={"reason": "account size was 50,000, not 100,000"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["withdrawn"] is True
+    assert body["was_start_equity"] == 100_000.0
+    assert body["was_origin"] == "declared"
+
+    # Untrusted again, and the measured history is still there.
+    status = svc.baseline_status("a1")
+    assert status["gradeable"] is False
+    assert status["equity_low"] == low_before
+
+    # Re-seeding correctly afterwards works, and the wrong figure is gone.
+    client.post("/challenge/accounts/a1/baseline",
+                json={"start_equity": 50_000, "source": "corrected terms",
+                      "verified": True})
+    reseeded = svc.baseline_status("a1")
+    assert reseeded["gradeable"] is True
+    assert reseeded["start_equity"] == 50_000.0
+
+
+def test_withdrawing_needs_the_risk_entitlement(client, monkeypatch):
+    _unentitled(client, monkeypatch)
+
+    assert client.post("/challenge/accounts/a1/baseline/withdraw",
+                       json={"reason": "x"}).status_code == 403
 
 
 def test_a_completed_baseline_against_a_real_policy_is_allowed(client, monkeypatch):
@@ -325,7 +447,8 @@ def test_a_completed_baseline_against_a_real_policy_is_allowed(client, monkeypat
     # balance is declared from the provider's terms this must not read ALLOW,
     # which is what the next test asserts; here we declare it so the rest of the
     # decision -- verified policy, real numbers, room to trade -- is reachable.
-    svc.declare_baseline("acct", 100_000, source="DemoProp terms 2026-09 p.1")
+    svc.declare_baseline("acct", 100_000, source="DemoProp terms 2026-09 p.1",
+                         verified=True)
     payload = svc.evaluate("acct", policy, equity=100_000, balance=100_000)
 
     assert payload["counts"] is True

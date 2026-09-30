@@ -3340,20 +3340,71 @@ def challenge_baseline_declare(account_id: str, payload: Dict) -> Dict:
             status_code=400,
             detail="source is required; an opening balance with no document "
                    "behind it is the same guess this endpoint exists to prevent")
+    # `verified` is not a flag, it is a claim about the caller's hands. A caller
+    # who guessed the account size and typed a plausible-sounding source can set
+    # it, which is the point: the claim is recorded, an unverified claim cannot
+    # produce a permission, and the difference is visible in every response
+    # afterwards. The alternative -- trusting a source string -- is what let this
+    # endpoint be used to launder a guess into a fact.
+    verified = bool(payload.get("verified", False))
     try:
-        result = svc.declare_baseline(account_id, float(amount), source=source)
+        result = svc.declare_baseline(account_id, float(amount), source=source,
+                                      verified=verified)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if not result["gradeable"]:
+        return {"ok": True, "graded": False, **result,
+                "warning": "recorded as ASSERTED, not verified: the account will "
+                           "not be graded until this is re-entered with "
+                           "verified=true against a document actually in hand",
+                "baseline": svc.baseline_status(account_id)}
     try:
         identity.record_audit(
             _acting_actor() or "api", "challenge.baseline.declared",
             "ChallengeBaseline", account_id,
             {"start_equity": result["start_equity"], "source": result["source"],
-             "replaced": result["replaced"]})
+             "verified": True, "replaced": result["replaced"]})
     except Exception:  # noqa: BLE001
         pass
-    return {"ok": True, **result,
+    return {"ok": True, "graded": True, **result,
             "baseline": svc.baseline_status(account_id)}
+
+
+@app.post("/challenge/accounts/{account_id}/baseline/withdraw")
+def challenge_baseline_withdraw(account_id: str, payload: Dict) -> Dict:
+    """Take back a declared opening balance, with a reason.
+
+    A wrong declared figure is worse than none, and the only way to discover
+    that a figure is wrong is to be able to withdraw it without killing the
+    process. The account's low-water marks survive, because they are measured;
+    what is withdrawn is the *claim* about how the account started, and the next
+    observation rebuilds it as untrusted.
+    """
+    from challenge.service import challenge_service as svc
+
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    reason = str(payload.get("reason", "") or "").strip()
+    if not reason:
+        raise HTTPException(
+            status_code=400,
+            detail="reason is required; withdrawing a declared baseline is "
+                   "itself a governance event and is audited as one")
+    try:
+        result = svc.withdraw_baseline(account_id, reason=reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not result.get("withdrawn"):
+        raise HTTPException(status_code=404, detail=result.get("reason"))
+    try:
+        identity.record_audit(
+            _acting_actor() or "api", "challenge.baseline.withdrawn",
+            "ChallengeBaseline", account_id,
+            {"was_origin": result["was_origin"],
+             "was_start_equity": result["was_start_equity"],
+             "reason": result["reason"]})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, **result, "baseline": svc.baseline_status(account_id)}
 
 
 @app.post("/challenge/accounts/{account_id}/state")

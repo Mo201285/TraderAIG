@@ -30,6 +30,20 @@ def _engine_url() -> str:
         return (f"postgresql+psycopg://{user}:{password}@{host}:{port}/{name}"
                 f"?connect_timeout=5")
 
+    # An explicit SQLite file, if one was named.
+    #
+    # Honoured *before* the `.data` default rather than after it, because the
+    # default is the live backend's own database on this host. A knob that is
+    # set but ignored is worse than an absent one: a test harness that sets
+    # `TRADERAIG_DB_PATH` to a temp file and is silently ignored will write its
+    # rows into the running system's tables, and every assertion it makes about
+    # isolation is measuring nothing.
+    explicit = os.getenv("TRADERAIG_DB_PATH")
+    if explicit:
+        path = Path(explicit)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return f"sqlite:///{path}"
+
     # SQLite fallback for local dev / tests (kept in project data dir).
     data_dir = Path(__file__).resolve().parent.parent / ".data"
     data_dir.mkdir(parents=True, exist_ok=True)

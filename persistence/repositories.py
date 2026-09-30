@@ -6,7 +6,7 @@ leaking SQLAlchemy into business logic.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,11 +18,14 @@ from governance.identity import (
     User,
 )
 from learning.experience import ErrorType, ExperienceRecord, MarketSnapshot
-from persistence.db import bind_test_session
+from persistence.db import bind_test_session, make_live_session
 from persistence.models import (
     AuditRecordDB,
+    ChallengeBaselineDB,
+    ChallengeStateDB,
     ExperienceRecordDB,
     OpsRunRecordDB,
+    ProductEntitlementDB,
     UserRecord,
     VetoRecordDB,
     dumps,
@@ -219,6 +222,174 @@ class RiskVetoRepository:
             "checks": loads(row.checks_json),
             "recorded_at": row.recorded_at,
         }
+
+
+class ChallengeRepository:
+    """Persists challenge baselines and states so a restart forgets nothing.
+
+    Every method here is written to be *safe* when the database is not: a read
+    that cannot reach the store returns nothing rather than raising, and a write
+    that fails is swallowed by the caller. The reason is asymmetry. Losing a
+    baseline write downgrades an account to untrusted, which costs the operator
+    a re-declaration. Raising out of the observation path would take the API
+    down, and on a 24/7 host that turns a storage problem into an outage. The
+    in-memory copy is always the authority for the current process; the row is
+    the copy that has to survive it.
+    """
+
+    def __init__(self, session: Optional[Session] = None) -> None:
+        # `make_live_session()`, NOT `bind_test_session()`.
+        #
+        # Every other repository in this file defaults to an in-memory SQLite
+        # with a StaticPool, which is the right trade for a cache you are happy
+        # to lose. It is the wrong trade for the one repository whose entire
+        # reason to exist is to survive a restart: an in-memory database dies
+        # with the process, so the running backend would have answered
+        # `durable: true` on every `/challenge/status` while keeping every
+        # baseline in RAM. The control would report itself armed with no memory.
+        self._session = session or make_live_session()
+
+    # -- baselines ------------------------------------------------------
+
+    def save_baseline(self, baseline: Dict) -> None:
+        row = ChallengeBaselineDB(
+            account_id=str(baseline.get("account_id") or ""),
+            start_equity=_opt_float(baseline.get("start_equity")),
+            equity_low=_opt_float(baseline.get("equity_low")),
+            day_start_equity=_opt_float(baseline.get("day_start_equity")),
+            day_low_equity=_opt_float(baseline.get("day_low_equity")),
+            day_epoch=_opt_int(baseline.get("day_epoch")),
+            trading_days=int(baseline.get("trading_days") or 0),
+            origin=str(baseline.get("origin") or "observed"),
+            source=(str(baseline["source"]) if baseline.get("source") else None),
+            seeded_at=_opt_float(baseline.get("seeded_at")),
+        )
+        self._session.merge(row)
+        self._session.commit()
+
+    def load_baselines(self) -> List[Dict]:
+        rows = self._session.execute(
+            select(ChallengeBaselineDB)).scalars().all()
+        return [{
+            "account_id": r.account_id,
+            "start_equity": r.start_equity,
+            "equity_low": r.equity_low,
+            "day_start_equity": r.day_start_equity,
+            "day_low_equity": r.day_low_equity,
+            "day_epoch": r.day_epoch,
+            "trading_days": int(r.trading_days or 0),
+            "origin": r.origin or "observed",
+            "source": r.source,
+            "seeded_at": r.seeded_at,
+        } for r in rows]
+
+    def delete_baseline(self, account_id: str) -> bool:
+        row = self._session.get(ChallengeBaselineDB, account_id)
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._session.commit()
+        return True
+
+    # -- states ---------------------------------------------------------
+
+    def save_state(self, account_id: str, state: str) -> None:
+        self._session.merge(ChallengeStateDB(
+            account_id=account_id, state=state))
+        self._session.commit()
+
+    def load_states(self) -> List[Dict]:
+        rows = self._session.execute(
+            select(ChallengeStateDB)).scalars().all()
+        return [{"account_id": r.account_id, "state": r.state or "onboarding"}
+                for r in rows]
+
+
+class ProductRepository:
+    """Persists paid-product entitlements (§34.2).
+
+    `make_live_session()`, not the in-memory default, for the same reason
+    `ChallengeRepository` uses it: an in-memory store would let the running
+    backend report `challenge_management: true` for a customer who paid, and then
+    lose the receipt at restart. The row is the part that has to survive.
+
+    One row per (user, product) rather than one row per purchase, because the
+    question this table answers is "what does this user hold right now", not
+    "what has this user ever bought". Renewals are recorded by the audit trail;
+    keeping both here would mean two answers to the same question.
+    """
+
+    def __init__(self, session: Optional[Session] = None) -> None:
+        self._session = session or make_live_session()
+
+    def save(self, ent: Any) -> None:
+        row = ProductEntitlementDB(
+            entitlement_id=str(ent.entitlement_id),
+            user_id=str(ent.user_id),
+            product_id=str(ent.product_id),
+            entitlement=str(ent.entitlement),
+            state=str(ent.state),
+            price_usd=float(ent.price_usd or 0.0),
+            currency=str(ent.currency or "USD"),
+            charge_id=str(ent.charge_id or ""),
+            started_at=float(ent.started_at or 0.0),
+            expires_at=float(ent.expires_at or 0.0),
+            grace_until=float(ent.grace_until or 0.0),
+            note=str(ent.note or ""),
+        )
+        self._session.merge(row)
+        self._session.commit()
+
+    def load_all(self) -> List[Dict[str, Any]]:
+        rows = self._session.execute(
+            select(ProductEntitlementDB)).scalars().all()
+        return [{
+            "entitlement_id": r.entitlement_id,
+            "user_id": r.user_id,
+            "product_id": r.product_id,
+            "entitlement": r.entitlement,
+            "state": r.state or "active",
+            "price_usd": float(r.price_usd or 0.0),
+            "currency": r.currency or "USD",
+            "charge_id": r.charge_id or "",
+            "started_at": float(r.started_at or 0.0),
+            "expires_at": float(r.expires_at or 0.0),
+            "grace_until": float(r.grace_until or 0.0),
+            "note": r.note or "",
+        } for r in rows]
+
+    def delete_for_user(self, user_id: str) -> int:
+        rows = self._session.execute(
+            select(ProductEntitlementDB).where(
+                ProductEntitlementDB.user_id == str(user_id))).scalars().all()
+        for row in rows:
+            self._session.delete(row)
+        self._session.commit()
+        return len(rows)
+
+
+def _opt_float(value: Any) -> Optional[float]:
+    """None stays None; 0.0 is a real measurement and must not vanish.
+
+    A baseline of zero is not a baseline (row 735's zero-equity guard), but the
+    *stored* value of a legitimately-zero field still has to round-trip, and a
+    truthiness filter here would quietly turn 0.0 into NULL.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class OpsRunRepository:

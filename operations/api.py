@@ -3313,6 +3313,31 @@ def challenge_policy_register(payload: Dict) -> Dict:
     return {"ok": True, **result}
 
 
+@app.get("/challenge/accounts/{account_id}/baseline")
+def challenge_baseline_read(account_id: str) -> Dict:
+    """Read one account's baseline: where it came from, and whether it grades.
+
+    Read-only, and ungated like the other challenge reads, because the information
+    is about the account rather than about who is asking -- there is nothing here
+    to withhold, and a panel that cannot show the provenance of a baseline is how
+    an operator ends up trusting one they never checked.
+
+    The route exists because `/challenge/status` reports the *connected* account,
+    and "connected" is not the same question as "which account do I want to look
+    at". A host with two competition accounts can only ever read one of them,
+    which makes the other one's baseline invisible at exactly the moment you go
+    looking for it.
+    """
+    from challenge.service import challenge_service as svc
+
+    status = svc.baseline_status(account_id)
+    # A 404 here would mean "no such account", which this layer cannot know:
+    # it holds no account list. Absence of a baseline is a normal state and is
+    # reported as such.
+    return {"ok": True, "account_id": account_id, "baseline": status,
+            "durability": svc.durability}
+
+
 @app.post("/challenge/accounts/{account_id}/baseline")
 def challenge_baseline_declare(account_id: str, payload: Dict) -> Dict:
     """Declare an account's opening balance, from the provider's terms.

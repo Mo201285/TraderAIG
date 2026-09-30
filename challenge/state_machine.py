@@ -175,6 +175,26 @@ class ChallengeStateMachine:
         with self._lock:
             return target in ALLOWED_TRANSITIONS.get(self._state, frozenset())
 
+    def restore(self, value: str) -> ChallengeState:
+        """Adopt a persisted state without treating it as a transition.
+
+        This is deliberately not `transition()`. A restored state did not just
+        happen -- it happened before a restart -- so it must not consume a
+        transition slot, invent a reason, or attribute itself to whoever happens
+        to be running now. It is also **not validated against the transition
+        table**: the table says which moves are legal from here, and asking that
+        question of a state loaded from disk would mean refusing to remember a
+        state the account was genuinely in, which would quietly reset a terminal
+        account to ONBOARDING -- the exact thing persistence exists to prevent.
+        The value is checked for existence and nothing else, and the
+        in-memory `history` stays empty because it is a log of this process's
+        moves; the durable audit trail is where the earlier history lives.
+        """
+        restored = ChallengeState(value)  # raises ValueError if not a state
+        with self._lock:
+            self._state = restored
+        return restored
+
     def transition(self, target: ChallengeState, *, reason: str, actor: str = "system",
                    context: Optional[Dict[str, Any]] = None) -> StateTransition:
         """Move to `target`, or refuse with an explanation.

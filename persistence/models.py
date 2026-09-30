@@ -91,6 +91,94 @@ class OpsRunRecordDB(Base):
         Float, default=lambda: datetime.now(timezone.utc).timestamp())
 
 
+class ChallengeBaselineDB(Base):
+    """Persisted challenge baselines: the numbers a restart must not forget.
+
+    The opening equity and the all-time low are a *history*. A static-drawdown
+    account that breached and recovered comes back after a restart with no
+    memory of the breach, and a control whose purpose is to notice breaches
+    would then report the allowance as untouched. So the low-water marks are
+    durable.
+
+    `day_epoch` is stored alongside them for the same reason and is easy to
+    overlook: a restart at 14:00 would otherwise treat 14:00 as the start of
+    the trading day and hand the account a fresh daily-loss allowance every
+    afternoon. Persisting the epoch means the day boundary survives a restart,
+    and the room already spent today stays spent.
+
+    `origin` is persisted too, and deliberately. Writing the row must not
+    promote a baseline: an `observed` row comes back observed, and an
+    `asserted` one comes back asserted. Storing a fact about how the figure was
+    obtained cannot improve it, and a load path that upgraded it would be
+    laundering a guess through a disk write.
+    """
+
+    __tablename__ = "challenge_baselines"
+
+    account_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    start_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    equity_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    day_start_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    day_low_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    day_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trading_days: Mapped[int] = mapped_column(Integer, default=0)
+    origin: Mapped[str] = mapped_column(String(32), default="observed")
+    source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    seeded_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[float] = mapped_column(
+        Float, default=lambda: datetime.now(timezone.utc).timestamp())
+
+
+class ChallengeStateDB(Base):
+    """Persisted challenge account states, so a HALTED account stays halted.
+
+    An in-memory state machine is a machine that forgets. If the last thing that
+    happened to an account was a halt, a restart must not hand it back a clean
+    ONBOARDING and a fresh chance -- the terminal states exist precisely
+    because an account that already failed does not get to retry. This is one
+    row per account, not a transition log: the audit trail already records how
+    it got here, and duplicating it here would be a second source of truth
+    about the same fact.
+    """
+
+    __tablename__ = "challenge_states"
+
+    account_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    state: Mapped[str] = mapped_column(String(32), default="onboarding")
+    updated_at: Mapped[float] = mapped_column(
+        Float, default=lambda: datetime.now(timezone.utc).timestamp())
+
+
+class ProductEntitlementDB(Base):
+    """Persisted paid-product entitlements (§34.2/§34.20).
+
+    A separate table, not a column on `users`, for the same reason the challenge
+    state is a separate table from the challenge baseline: they are different
+    facts with different lifecycles. A subscription expires on the plan's clock
+    and a product expires on the charge's clock, and conflating them would mean
+    one of them can silently rewrite the other. `charge_id` is stored so a
+    grant can always be traced back to the payment that caused it — a row with
+    no charge is a row nobody can explain, and `grant` is the only writer.
+    """
+
+    __tablename__ = "product_entitlements"
+
+    entitlement_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    product_id: Mapped[str] = mapped_column(String(64), index=True)
+    entitlement: Mapped[str] = mapped_column(String(64), default="")
+    state: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    price_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str] = mapped_column(String(8), default="USD")
+    charge_id: Mapped[str] = mapped_column(String(64), default="")
+    started_at: Mapped[float] = mapped_column(Float, default=0.0)
+    expires_at: Mapped[float] = mapped_column(Float, default=0.0)
+    grace_until: Mapped[float] = mapped_column(Float, default=0.0)
+    note: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[float] = mapped_column(
+        Float, default=lambda: datetime.now(timezone.utc).timestamp())
+
+
 class AuditRecordDB(Base):
     """Persisted governance audit trail."""
 

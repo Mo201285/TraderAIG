@@ -160,6 +160,145 @@ def test_an_allowance_that_does_not_count_is_reported_as_not_counting(client, mo
     assert payload["decision"]["permission"] != "allow"
 
 
+def _policy():
+    """A fully specified policy, as an object rather than a request payload."""
+    from challenge.policy import (ChallengePolicy, DrawdownType, InstrumentPolicy,
+                                 Restriction, RuleValue)
+
+    return ChallengePolicy(
+        provider="DemoProp", program="Classic 2-Step", account_size=100_000.0,
+        policy_version="2026.09",
+        profit_target=RuleValue.known(0.08, source=SOURCE),
+        daily_loss_limit=RuleValue.known(0.05, source=SOURCE),
+        max_drawdown=RuleValue.known(0.04, source=SOURCE),
+        minimum_trading_days=RuleValue.known(10, source=SOURCE),
+        max_leverage=RuleValue.known(100, source=SOURCE),
+        drawdown_type=DrawdownType.STATIC,
+        instruments=InstrumentPolicy(default=Restriction.ALLOWED, source=SOURCE),
+        overnight=Restriction.ALLOWED, weekend=Restriction.DENIED)
+
+
+def test_a_watched_account_is_not_graded_against_an_inferred_opening_balance():
+    """The defect this milestone exists for, in the shape the live account hit it.
+
+    Real account 1787174 on FTTrading-Server: 10,473 deals over five days, net
+    -6,221.32, balance 95,975.13. The process restarted, the first reading was
+    taken, and a baseline was built from 95,975.13 -- the account's *current*
+    value. Every drawdown is measured from the opening balance, so an account
+    roughly 4% down scores 0% used, and the layer would have reported it as
+    untouched while a static-drawdown challenge was already most of the way
+    spent. The numbers here are that account's real figures.
+    """
+    from challenge.registry import PolicyRegistry as Registry
+    from challenge.service import ChallengeService
+
+    service = ChallengeService(Registry())
+    policy = _policy()
+
+    # First reading after a restart: all we know is what it is worth now.
+    service.observe("1787174", equity=95_975.13, balance=95_975.13)
+    payload = service.evaluate("1787174", policy,
+                               equity=95_975.13, balance=95_975.13)
+
+    assert payload["counts"] is False
+    assert payload["decision"]["permission"] == "halt"
+    assert payload["baseline"]["origin"] == "observed"
+    assert payload["baseline"]["gradeable"] is False
+
+    # No dimension may report a number measured from the inferred baseline.
+    for name, dimension in payload["headroom"]["dimensions"].items():
+        assert dimension["is_known"] is False, f"{name} reported a number"
+        assert dimension["used"] is None, f"{name} reported used={dimension['used']}"
+        assert dimension["remaining"] is None, f"{name} reported a headroom"
+
+    assert any("inferred" in (r or "") for r in payload["blocking_reasons"])
+    # The reason has to reach the operator, not just the boolean. A decision that
+    # reports HALT with no visible cause is the kind of halt an operator learns
+    # to work around, so the baseline check is asserted to be present and to
+    # name the problem.
+    checks = {c["check"]: c for c in payload["decision"]["checks"]}
+    assert "baseline" in checks, f"no baseline check in {sorted(checks)}"
+    assert checks["baseline"]["permission"] == "halt"
+    assert "inferred" in checks["baseline"]["detail"]
+
+
+def test_declaring_the_opening_balance_makes_the_account_gradable():
+    """And the fix is the documented number, not a cleverer guess."""
+    from challenge.registry import PolicyRegistry as Registry
+    from challenge.service import ChallengeService
+
+    service = ChallengeService(Registry())
+    policy = _policy()
+
+    service.observe("1787174", equity=95_975.13, balance=95_975.13)
+    service.declare_baseline("1787174", 100_000.0,
+                             source="FTTrading competition terms, account size")
+    payload = service.evaluate("1787174", policy,
+                               equity=95_975.13, balance=95_975.13)
+
+    assert payload["baseline"]["gradeable"] is True
+    assert payload["counts"] is True
+    # Now the drawdown is real: 4024.87 of a 4,000 limit is a breach, which is
+    # the opposite of what the inferred baseline reported.
+    drawdown = payload["headroom"]["dimensions"]["max_drawdown"]
+    assert drawdown["is_known"] is True
+    assert drawdown["used"] == pytest.approx(4_024.87)
+    assert payload["decision"]["permission"] == "halt"
+
+
+def test_an_opening_balance_with_no_source_is_refused(client, monkeypatch):
+    """The route will not accept a number it cannot trace to a document."""
+    _operator(client, monkeypatch)
+
+    missing_source = client.post("/challenge/accounts/a1/baseline",
+                                 json={"start_equity": 100_000})
+    assert missing_source.status_code == 400
+    assert "source is required" in missing_source.json()["detail"]
+
+    missing_amount = client.post("/challenge/accounts/a1/baseline",
+                                 json={"source": "terms"})
+    assert missing_amount.status_code == 400
+
+    impossible = client.post("/challenge/accounts/a1/baseline",
+                             json={"start_equity": -5, "source": "terms"})
+    assert impossible.status_code == 400
+
+
+def test_a_declared_baseline_needs_the_risk_entitlement(client, monkeypatch):
+    """It is the one route that can make an account gradable."""
+    _unentitled(client, monkeypatch)
+
+    assert client.post("/challenge/accounts/a1/baseline",
+                       json={"start_equity": 100_000,
+                             "source": "terms"}).status_code == 403
+
+
+def test_a_declared_baseline_needs_its_source_at_the_service_too():
+    """Not only at the route.
+
+    The route rejects a sourceless baseline, which is what protects the HTTP
+    surface. The service is the library, and the next caller will be a script
+    or a seeding job that does not go through HTTP at all -- so the guard has to
+    live at the level where the baseline is actually written down, or it is
+    only a guard on the one path that happened to be built first.
+    """
+    from challenge.registry import PolicyRegistry as Registry
+    from challenge.service import ChallengeService
+
+    service = ChallengeService(Registry())
+
+    for source in ("", "   ", None):
+        with pytest.raises(ValueError, match="source"):
+            service.declare_baseline("a1", 100_000, source=source)
+
+    with pytest.raises(ValueError, match="positive"):
+        service.declare_baseline("a1", 0, source="terms")
+
+    # And a rejected declaration leaves the account exactly as untrusted as it
+    # was, rather than half-seeded.
+    assert service.baseline_status("a1")["has_baseline"] is False
+
+
 def test_a_completed_baseline_against_a_real_policy_is_allowed(client, monkeypatch):
     """The end-to-end happy path: real account facts, verified policy, ALLOW."""
     from challenge.service import challenge_service as svc
@@ -182,6 +321,11 @@ def test_a_completed_baseline_against_a_real_policy_is_allowed(client, monkeypat
         overnight=Restriction.ALLOWED, weekend=Restriction.DENIED)
 
     svc.observe("acct", equity=100_000, balance=100_000)
+    # Watching the account is not knowing how it began. Until the opening
+    # balance is declared from the provider's terms this must not read ALLOW,
+    # which is what the next test asserts; here we declare it so the rest of the
+    # decision -- verified policy, real numbers, room to trade -- is reachable.
+    svc.declare_baseline("acct", 100_000, source="DemoProp terms 2026-09 p.1")
     payload = svc.evaluate("acct", policy, equity=100_000, balance=100_000)
 
     assert payload["counts"] is True

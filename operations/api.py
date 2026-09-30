@@ -3313,6 +3313,49 @@ def challenge_policy_register(payload: Dict) -> Dict:
     return {"ok": True, **result}
 
 
+@app.post("/challenge/accounts/{account_id}/baseline")
+def challenge_baseline_declare(account_id: str, payload: Dict) -> Dict:
+    """Declare an account's opening balance, from the provider's terms.
+
+    This is the one route that can turn an untrusted account into a gradable
+    one, so it is deliberately narrow: it accepts an amount and a source and
+    nothing else. It will not reconstruct the opening balance from the deal
+    history, because `balance - sum(P&L)` produces a figure that looks
+    authoritative and silently absorbs any deposit, credit or bonus the account
+    ever received -- on a competition account those are routine, and the error
+    always flatters the account by shrinking its apparent drawdown.
+    """
+    from challenge.service import challenge_service as svc
+
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    amount = payload.get("start_equity")
+    source = str(payload.get("source", "") or "").strip()
+    if amount is None:
+        raise HTTPException(
+            status_code=400,
+            detail="start_equity is required; it must be the balance the "
+                   "challenge opened with, taken from the provider's terms")
+    if not source:
+        raise HTTPException(
+            status_code=400,
+            detail="source is required; an opening balance with no document "
+                   "behind it is the same guess this endpoint exists to prevent")
+    try:
+        result = svc.declare_baseline(account_id, float(amount), source=source)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        identity.record_audit(
+            _acting_actor() or "api", "challenge.baseline.declared",
+            "ChallengeBaseline", account_id,
+            {"start_equity": result["start_equity"], "source": result["source"],
+             "replaced": result["replaced"]})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, **result,
+            "baseline": svc.baseline_status(account_id)}
+
+
 @app.post("/challenge/accounts/{account_id}/state")
 def challenge_transition(account_id: str, payload: Dict) -> Dict:
     """Move one account's state, or refuse with the machine's own reason."""

@@ -53,6 +53,30 @@ class _Baseline:
         self.day_low_equity: Optional[float] = None
         self.last_seen: Optional[float] = None
         self.trading_days: int = 0
+        # Provenance of `start_equity`. "observed" means we inferred it from
+        # whatever the account happened to be worth the first time this process
+        # saw it, which is a guess wearing a number's clothes. "declared" means
+        # an operator supplied the provider's opening balance. Nothing is
+        # "derived" here: a baseline reconstructed as balance-minus-P&L looks
+        # rigorous and is wrong whenever the account took a deposit, a credit
+        # or a bonus, and on a competition account the first of those is common.
+        self.origin: str = "none"
+        self.source: Optional[str] = None
+        self.seeded_at: Optional[float] = None
+
+    def declare(self, start_equity: float, source: str) -> None:
+        """Record an opening balance that came from the provider's terms.
+
+        This is the only path that makes a baseline trustworthy, and it is a
+        separate call from `observe` precisely so that "we started watching"
+        can never be mistaken for "we know how this account began".
+        """
+        self.start_equity = float(start_equity)
+        self.origin = "declared"
+        self.source = (source or "").strip() or None
+        self.seeded_at = time.time()
+        if self.equity_low is None:
+            self.equity_low = self.start_equity
 
     def observe(self, equity: float, balance: float,
                 margin: float = 0.0, open_risk: float = 0.0,
@@ -67,7 +91,15 @@ class _Baseline:
         equity = float(equity or 0.0)
         today = int(day_epoch if day_epoch is not None else time.time() // 86400)
         if self.start_equity is None:
+            # Deliberately recorded as `observed`, not `declared`. This is the
+            # current balance of an account that may have been trading for
+            # weeks; treating it as the opening balance makes every drawdown
+            # read as zero at the exact moment the account is furthest from its
+            # high-water mark. The number is kept -- it is a real reading and
+            # discarding it would help nobody -- but it is marked untrusted, and
+            # `is_gradeable` refuses to let it produce an ALLOW.
             self.start_equity = float(balance or equity)
+            self.origin = "observed"
             self.equity_low = equity
         if self.day_epoch is None or today != self.day_epoch:
             self.day_epoch = today
@@ -99,7 +131,7 @@ class _Baseline:
 
     @property
     def has_baseline(self) -> bool:
-        """Whether the account can be graded at all.
+        """Whether we have an opening balance at all.
 
         Requires a *positive* opening equity, not merely a recorded one. A
         terminal that is attached but reporting nothing gives a reading of
@@ -109,6 +141,39 @@ class _Baseline:
         is the only safe reading of "we have not actually seen this account".
         """
         return bool(self.start_equity) and self.equity_low is not None
+
+    @property
+    def is_gradeable(self) -> bool:
+        """Whether this baseline may produce an ALLOW.
+
+        `has_baseline` is not enough, and the distinction is the whole point.
+        An observed baseline answers "what is the account worth", which is not
+        the question a drawdown limit asks -- that question is "what was the
+        account worth when the challenge started", and the first observation
+        cannot know it. Grading from an inferred opening balance makes a losing
+        account look untouched, so an untrusted baseline is reported honestly
+        and refused as a basis for permission.
+        """
+        return self.has_baseline and self.origin == "declared"
+
+
+def _baseline_reason(baseline: "_Baseline") -> Optional[str]:
+    """Why this baseline may not be graded, or None if it may.
+
+    Two distinct refusals, and the wording keeps them apart on purpose. "Not
+    enough data" is a temporary condition that watching fixes. "Inferred" is not
+    temporary at all -- no amount of further watching will ever recover the
+    opening balance of an account we joined late -- and telling an operator the
+    first thing when the second is true would have them wait for a number that
+    is never going to arrive.
+    """
+    if not baseline.has_baseline:
+        return "baseline incomplete; refusing to grade the account"
+    if not baseline.is_gradeable:
+        return ("opening equity was inferred from the first reading, not declared "
+                "from the provider's terms; drawdown measured from it would "
+                "understate the loss, so the account is not graded")
+    return None
 
 
 class ChallengeService:
@@ -185,15 +250,46 @@ class ChallengeService:
         return {
             "account_id": account_id,
             "has_baseline": baseline.has_baseline,
+            "gradeable": baseline.is_gradeable,
+            "origin": baseline.origin,
+            "source": baseline.source,
             "start_equity": baseline.start_equity,
             "equity_low": baseline.equity_low,
             "day_start_equity": baseline.day_start_equity,
             "day_low_equity": baseline.day_low_equity,
             "trading_days": baseline.trading_days,
             "last_seen": baseline.last_seen,
-            "reason": None if baseline.has_baseline else
-                      "baseline incomplete; refusing to grade the account",
+            "reason": _baseline_reason(baseline),
         }
+
+    def declare_baseline(self, account_id: str, start_equity: float, *,
+                         source: str) -> Dict[str, Any]:
+        """Seed an opening balance from the provider's terms.
+
+        Separate from `observe` so the two can never be confused: watching an
+        account is not the same as knowing how it began. A negative or zero
+        opening balance is rejected outright rather than stored, because a
+        baseline that cannot be true should not sit in the object waiting for
+        someone to grade with it.
+        """
+        if not (source or "").strip():
+            raise ValueError("a declared baseline must name the source of the "
+                             "opening balance")
+        amount = float(start_equity)
+        if amount <= 0:
+            raise ValueError(f"opening balance must be positive, got {start_equity!r}")
+        with self._lock:
+            baseline = self._baselines.get(account_id)
+            if baseline is None:
+                baseline = _Baseline(account_id)
+                self._baselines[account_id] = baseline
+            previous = {"origin": baseline.origin,
+                        "start_equity": baseline.start_equity}
+            baseline.declare(amount, source)
+        return {"account_id": account_id, "origin": "declared",
+                "start_equity": amount, "source": source.strip(),
+                "replaced": previous["start_equity"] if
+                previous["origin"] != "declared" else None}
 
     def forget(self, account_id: str) -> bool:
         with self._lock:
@@ -221,26 +317,41 @@ class ChallengeService:
         treat a permission of ALLOW as meaningless when it is False. That is
         what stops a restart from converting a breached account into an
         allowance.
+
+        The baseline check is `gradeable`, not `has_baseline`. An inferred
+        opening balance is a number we did not earn, and every dimension in the
+        report is measured against it -- a 4% drawdown silently reads as 0% --
+        so an untrusted baseline downgrades the decision to HALT rather than
+        PROTECT. PROTECT would mean "you may trade, smaller", which is only
+        defensible if the headroom figure it shrinks is true.
         """
         snapshot = self.snapshot(account_id, equity=equity, balance=balance,
                                  margin=margin, open_risk=open_risk)
         status = self.baseline_status(account_id)
-        report = headroom_report(policy, snapshot)
+        gradeable = bool(status.get("gradeable"))
+        report = headroom_report(policy, snapshot, baseline_gradeable=gradeable)
         decision = permission_for(policy, snapshot, proposed_risk=proposed_risk,
                                   symbol=symbol, is_news_window=is_news_window,
                                   is_weekend=is_weekend)
         machine = self.machine(account_id)
-        counts = bool(status["has_baseline"]) and policy is not None
+        counts = gradeable and policy is not None
         reasons: List[str] = []
-        if not status["has_baseline"]:
-            reasons.append(status.get("reason") or "baseline incomplete")
+        if not gradeable:
+            reasons.append(status.get("reason") or "baseline not trustworthy")
         if policy is None:
             reasons.append("no challenge policy resolves for this account")
         elif not policy.is_fully_specified:
             reasons.append("policy unverified: "
                            + ", ".join(policy.missing_rules()))
         if reasons and decision["permission"] == Permission.ALLOW.value:
-            decision["permission"] = Permission.PROTECT.value
+            decision["permission"] = (Permission.HALT.value if not gradeable
+                                      else Permission.PROTECT.value)
+        if not gradeable:
+            decision["checks"].append({
+                "check": "baseline",
+                "permission": Permission.HALT.value,
+                "detail": status.get("reason") or "baseline not trustworthy",
+            })
         return {
             "account_id": account_id,
             "snapshot": snapshot.as_dict(),

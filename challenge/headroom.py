@@ -97,6 +97,19 @@ class Headroom:
             "reason": self.reason,
         }
 
+    @classmethod
+    def unverified(cls, dimension: str, reason: str) -> "Headroom":
+        """A dimension we refuse to compute, with the dimension named.
+
+        The name is carried in the reason rather than as its own field so the
+        payload shape stays identical to a computed dimension -- a dashboard
+        adapter renders one of these without needing to know which branch it is
+        looking at, and a reason that says which limit went unmeasured is more
+        use to an operator than a bare `is_known: false`.
+        """
+        return cls(is_known=False,
+                   reason=f"{dimension}: {reason}")
+
 
 @dataclass
 class AccountSnapshot:
@@ -433,13 +446,22 @@ def permission_for(policy: Optional[ChallengePolicy], snapshot: AccountSnapshot,
 
 
 def headroom_report(policy: Optional[ChallengePolicy], snapshot: AccountSnapshot, *,
-                    buffer_fraction: float = 0.10) -> Dict[str, Any]:
+                    buffer_fraction: float = 0.10,
+                    baseline_gradeable: bool = True) -> Dict[str, Any]:
     """The 34.22 dashboard payload: every dimension, unknowns shown as unknowns.
 
     Anything the policy cannot answer reports `is_known: false` with a reason
     rather than a zero. A dashboard that renders an unverified limit as `0.00`
     is worse than one that renders `--`, because `0.00` invites the reader to
     reason about a number the system invented.
+
+    `baseline_gradeable` is the same argument applied one level down. Every
+    dimension here is measured against the snapshot's opening equity, so if that
+    figure was inferred from the first reading rather than declared by the
+    provider, then a known limit and a known policy still produce numbers that
+    are wrong -- an account 4% down reads as untouched. The dimensions are
+    reported as unknown rather than computed, because a precise figure built on
+    an invented baseline is the most convincing lie this report could tell.
     """
     if policy is None:
         return {
@@ -449,12 +471,31 @@ def headroom_report(policy: Optional[ChallengePolicy], snapshot: AccountSnapshot
             "dimensions": {},
             "permission": Permission.HALT.value,
         }
+    if not baseline_gradeable:
+        return {
+            "account_id": snapshot.account_id,
+            "policy_known": True,
+            "policy_key": policy.key,
+            "policy_verified": policy.is_fully_specified,
+            "missing_rules": policy.missing_rules(),
+            "dimensions": {
+                name: Headroom.unverified(
+                    name,
+                    "opening equity was not declared, so no limit can be "
+                    "measured against a trustworthy reference").as_dict()
+                for name in ("daily_loss", "max_drawdown",
+                             "profit_target", "trading_days")
+            },
+            "baseline_gradeable": False,
+            "permission": Permission.HALT.value,
+        }
     return {
         "account_id": snapshot.account_id,
         "policy_known": True,
         "policy_key": policy.key,
         "policy_verified": policy.is_fully_specified,
         "missing_rules": policy.missing_rules(),
+        "baseline_gradeable": True,
         "dimensions": {
             "daily_loss": daily_loss_headroom(
                 policy, snapshot, buffer_fraction=buffer_fraction).as_dict(),

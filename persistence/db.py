@@ -91,6 +91,11 @@ def _required_schema() -> dict[str, dict[str, str]]:
     return {
         "experiences": {"metadata_json": "TEXT DEFAULT '{}'"},
         "users": {"password_hash": "TEXT", "password_set_at": "FLOAT"},
+        # The trailing high-water mark. Nullable so the ALTER is additive and no
+        # existing row is rewritten: a row written before trailing existed has
+        # no peak, and inventing one here would be a fabricated limit wearing a
+        # column name.
+        "challenge_baselines": {"equity_peak": "FLOAT"},
     }
 
 

@@ -115,6 +115,12 @@ class _Baseline:
         self.account_id = account_id
         self.start_equity: Optional[float] = None
         self.equity_low: Optional[float] = None
+        # The all-time equity peak, for trailing drawdown. Deliberately NOT reset
+        # by the day rollover below: a trailing floor that forgets its high-water
+        # mark when the date changes is not a trailing rule, it is the floating
+        # rule under a stricter name, and it would hand back allowance the
+        # moment the clock rolled over.
+        self.equity_peak: Optional[float] = None
         self.day_epoch: Optional[int] = None
         self.day_start_equity: Optional[float] = None
         self.day_low_equity: Optional[float] = None
@@ -140,6 +146,7 @@ class _Baseline:
         return {"account_id": self.account_id,
                 "start_equity": self.start_equity,
                 "equity_low": self.equity_low,
+                "equity_peak": self.equity_peak,
                 "day_start_equity": self.day_start_equity,
                 "day_low_equity": self.day_low_equity,
                 "day_epoch": self.day_epoch,
@@ -197,6 +204,8 @@ class _Baseline:
             self.trading_days += 1
         if self.equity_low is None or equity < self.equity_low:
             self.equity_low = equity
+        if self.equity_peak is None or equity > self.equity_peak:
+            self.equity_peak = equity
         if self.day_low_equity is None or equity < self.day_low_equity:
             self.day_low_equity = equity
         self.last_seen = time.time()
@@ -215,6 +224,7 @@ class _Baseline:
             day_low_equity=self.day_low_equity,
             start_equity=self.start_equity,
             equity_low=self.equity_low,
+            equity_peak=self.equity_peak,
             trading_days=self.trading_days,
         )
 
@@ -315,6 +325,7 @@ def _baseline_from_record(record: Dict[str, Any]) -> "_Baseline":
     baseline = _Baseline(account_id)
     baseline.start_equity = start_equity
     baseline.equity_low = _require_number(record, "equity_low", account_id)
+    baseline.equity_peak = _require_number(record, "equity_peak", account_id)
     baseline.day_start_equity = _require_number(record, "day_start_equity",
                                                 account_id)
     baseline.day_low_equity = _require_number(record, "day_low_equity",
@@ -534,6 +545,7 @@ class ChallengeService:
             return {"account_id": account_id, "has_baseline": False,
                     "gradeable": False, "origin": "none", "source": None,
                     "restored": False, "start_equity": None, "equity_low": None,
+                    "equity_peak": None,
 "day_start_equity": None, "day_low_equity": None,
             "day_epoch": None,
             "trading_days": 0, "last_seen": None,
@@ -548,6 +560,11 @@ class ChallengeService:
             "restored": baseline.restored,
             "start_equity": baseline.start_equity,
             "equity_low": baseline.equity_low,
+            # The trailing high-water mark, on the same status payload as
+            # `equity_low` so an operator can see both ends of the range at
+            # once. `None` means no peak was ever observed, which is a real
+            # state rather than an error.
+            "equity_peak": baseline.equity_peak,
             "day_start_equity": baseline.day_start_equity,
             "day_low_equity": baseline.day_low_equity,
             # Exposed because it is the field that decides whether today's low

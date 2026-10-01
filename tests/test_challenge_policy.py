@@ -232,6 +232,138 @@ def test_a_floating_drawdown_account_regains_room_only_when_the_day_rolls():
     assert max_drawdown_headroom(policy, next_day).remaining == pytest.approx(4_000.0)
 
 
+def test_a_trailing_drawdown_is_measured_from_the_peak_not_from_the_day_start():
+    """The defect this pins: trailing used to score identically to floating.
+
+    `DrawdownType.TRAILING` fell through to the `else` branch, so it measured
+    the day's start against the day's low. The peak here was reached on an
+    earlier day, which is the only situation where the two bases disagree: an
+    account that opens a day below its high-water mark and then falls further
+    reads as having spent only today's loss, and gets handed room it has
+    already lost.
+    """
+    policy = _full_policy()
+    policy.drawdown_type = DrawdownType.TRAILING
+    policy.max_drawdown = RuleValue.known(0.05, source=SOURCE)
+
+    # Peaked at 110k on day 1. Today opened at 105k and is now at 100k: 10k
+    # below the peak, which is 9.1% of it against a 5% trailing limit.
+    snap = _snapshot(equity=100_000.0, equity_peak=110_000.0,
+                     equity_low=100_000.0, day_start_equity=105_000.0,
+                     day_low_equity=100_000.0)
+
+    headroom = max_drawdown_headroom(policy, snap)
+
+    assert snap.trailing_basis == pytest.approx(110_000.0)
+    assert headroom.limit == pytest.approx(5_500.0), \
+        "a trailing limit is a fraction of the high-water mark, not of 105k"
+    assert headroom.used == pytest.approx(10_000.0)   # 110k peak -> 100k now
+    assert headroom.remaining == pytest.approx(0.0)
+    assert headroom.remaining <= 0, "a breached trailing account must be told so"
+
+    # The floating reading of the same numbers, which is what it used to report.
+    policy.drawdown_type = DrawdownType.FLOATING
+    assert max_drawdown_headroom(policy, snap).used == pytest.approx(5_000.0)
+
+
+def test_a_trailing_peak_rises_with_equity_and_never_falls_back():
+    """The floor is set at the peak, so a new high spends fresh allowance and a
+    recovery does not give any back."""
+    policy = _full_policy()
+    policy.drawdown_type = DrawdownType.TRAILING
+    policy.max_drawdown = RuleValue.known(0.05, source=SOURCE)
+
+    at_peak = _snapshot(equity=110_000.0, equity_peak=110_000.0,
+                        equity_low=110_000.0)
+    assert max_drawdown_headroom(policy, at_peak).used == pytest.approx(0.0)
+
+    # Run up further: the peak and the limit both move up.
+    higher = _snapshot(equity=120_000.0, equity_peak=120_000.0,
+                       equity_low=120_000.0)
+    assert max_drawdown_headroom(policy, higher).limit == pytest.approx(6_000.0)
+
+    # Drop 10% from 120k and recover back to it. Recovery must not restore it.
+    dropped = _snapshot(equity=108_000.0, equity_peak=120_000.0,
+                        equity_low=108_000.0, day_start_equity=120_000.0)
+    breached = max_drawdown_headroom(policy, dropped)
+    assert breached.used == pytest.approx(12_000.0)
+    assert breached.remaining == pytest.approx(0.0)
+
+    recovered = _snapshot(equity=120_000.0, equity_peak=120_000.0,
+                          equity_low=108_000.0, day_start_equity=120_000.0)
+    assert max_drawdown_headroom(policy, recovered).used == pytest.approx(12_000.0), \
+        "recovery must not hand back a trailing allowance"
+
+
+def test_a_trailing_peak_survives_a_day_rollover_and_a_snapshot_without_one():
+    """A trailing peak is lifetime, not daily.
+
+    Two ways to get this wrong: resetting it when `day_epoch` moves, which turns
+    trailing into floating at midnight, and letting a snapshot that never
+    observed a peak silently measure from a single moment's equity.
+    """
+    policy = _full_policy()
+    policy.drawdown_type = DrawdownType.TRAILING
+    policy.max_drawdown = RuleValue.known(0.05, source=SOURCE)
+
+    # The peak predates the day. `day_start_equity` is deliberately lower, so a
+    # calculator that used the day start would understate the loss.
+    next_day = _snapshot(equity=101_000.0, equity_peak=110_000.0,
+                         equity_low=101_000.0, day_start_equity=101_000.0,
+                         day_low_equity=101_000.0)
+    assert next_day.trailing_basis == pytest.approx(110_000.0)
+    assert max_drawdown_headroom(policy, next_day).limit == pytest.approx(5_500.0)
+
+    # With no recorded peak, the basis must not collapse to current equity --
+    # that is what reports a breached account as untouched.
+    unrecorded = _snapshot(equity=100_000.0)
+    unrecorded.equity_peak = None
+    assert max_drawdown_headroom(policy, unrecorded).used == pytest.approx(0.0)
+    assert unrecorded.trailing_basis == pytest.approx(100_000.0), \
+        "with no peak the fallback is the opening basis, which reads as unused"
+
+
+def test_observe_raises_the_peak_instead_of_only_carrying_one():
+    """The peak has to be *tracked*, not just passed through.
+
+    Every other trailing test hands `equity_peak` in explicitly, which left the
+    mutation that deleted the tracking line in `observe()` alive: the tests still
+    passed, because a peak that is merely echoed back is indistinguishable from
+    one that was measured until equity climbs above every value seen so far.
+    That case is the whole job -- an account making new highs must move its own
+    trailing floor, and a peak that only ever arrives pre-set never moves.
+    """
+    snap = AccountSnapshot(account_id="acct-1", equity=100_000.0,
+                           start_equity=100_000.0, day_start_equity=100_000.0)
+    AccountSnapshot.observe(snap)
+    assert snap.equity_peak == pytest.approx(100_000.0)
+
+    # A run-up raises it, without anybody assigning the field.
+    snap.equity = 115_000.0
+    AccountSnapshot.observe(snap)
+    assert snap.equity_peak == pytest.approx(115_000.0)
+
+    # A pullback must not lower it -- the mark is a high-water mark.
+    snap.equity = 108_000.0
+    AccountSnapshot.observe(snap)
+    assert snap.equity_peak == pytest.approx(115_000.0), \
+        "the peak only ever rises"
+
+    policy = _full_policy()
+    policy.drawdown_type = DrawdownType.TRAILING
+    policy.max_drawdown = RuleValue.known(0.05, source=SOURCE)
+    # 15k below the tracked peak of 115k: 13.0% of it, over a 5% limit. The
+    # figure is larger than the 7k fall from the peak alone because `equity_low`
+    # also remembers the 100k the account opened at -- the conservative pairing
+    # documented on the trailing branch, and the safe direction for a limit
+    # that decides whether the account still exists.
+    headroom = max_drawdown_headroom(policy, snap)
+    assert headroom.limit == pytest.approx(5_750.0)   # 5% of 115k
+    assert headroom.used == pytest.approx(15_000.0)
+    assert headroom.remaining == pytest.approx(0.0)
+
+
+
 def test_daily_loss_is_measured_from_the_days_low_not_from_current_equity():
     """A dip and a recovery inside one day has still spent the day's room."""
     snap = _snapshot(equity=100_000.0)

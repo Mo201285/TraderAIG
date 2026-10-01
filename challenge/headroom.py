@@ -137,6 +137,20 @@ class AccountSnapshot:
     # `equity` at read time reports a fully recovered account as untouched --
     # which is precisely the account the rule exists to catch.
     equity_low: Optional[float] = None
+    # The account's all-time equity PEAK. Like `equity_low` this cannot be
+    # derived from a snapshot -- a snapshot is a moment, and the number that
+    # decides a trailing account is where equity was at its *highest* moment,
+    # possibly days before the day that breaches it. It is also monotonic in
+    # the opposite direction: it only ever rises, and it must NOT be reset when
+    # the day rolls, because a trailing floor that resets daily is not a
+    # trailing rule, it is the floating rule wearing the wrong name.
+    #
+    # `equity_low` alone cannot stand in for it either. Their difference is
+    # exactly what a trailing drawdown measures, so approximating the peak with
+    # `day_start_equity` silently reports an account as having room whenever its
+    # peak predates the day it breached on -- the most permissive possible
+    # answer for the rule that exists to be the strictest.
+    equity_peak: Optional[float] = None
     realized_pnl: float = 0.0
     trading_days: int = 0
     timestamp: float = field(default_factory=time.time)
@@ -166,11 +180,27 @@ class AccountSnapshot:
                 return float(candidate)
         return float(self.equity or 0.0)
 
+    @property
+    def trailing_basis(self) -> float:
+        """The equity the trailing rule measures down from: the high-water mark.
+
+        Falls back to the widest plausible mark rather than to current equity,
+        because every fallback here is at or above the current reading and the
+        error direction of a drawdown limit must be the tight one. `balance` is
+        last because it is the one figure that can sit above equity for reasons
+        that have nothing to do with trader performance.
+        """
+        for candidate in (self.equity_peak, self.start_equity,
+                          self.day_start_equity, self.balance):
+            if candidate:
+                return float(candidate)
+        return float(self.equity or 0.0)
+
     @staticmethod
     def observe(snapshot: "AccountSnapshot") -> "AccountSnapshot":
-        """Fold this observation into the snapshot's low-water marks.
+        """Fold this observation into the snapshot's low- and high-water marks.
 
-        The caller owns persistence of `equity_low`/`day_low_equity` across
+        The caller owns persistence of `equity_low`/`equity_peak` across
         snapshots; this only carries the current reading into the fields the
         calculator reads. Doing it here rather than inside the calculator is the
         whole point -- a calculator that tracks its own history has no history
@@ -181,6 +211,8 @@ class AccountSnapshot:
             snapshot.equity_low = equity
         if snapshot.day_low_equity is None or equity < float(snapshot.day_low_equity):
             snapshot.day_low_equity = equity
+        if snapshot.equity_peak is None or equity > float(snapshot.equity_peak):
+            snapshot.equity_peak = equity
         return snapshot
 
     def as_dict(self) -> Dict[str, Any]:
@@ -194,6 +226,7 @@ class AccountSnapshot:
             "day_low_equity": self.day_low_equity,
             "start_equity": self.start_equity,
             "equity_low": self.equity_low,
+            "equity_peak": self.equity_peak,
             "realized_pnl": self.realized_pnl,
             "trading_days": self.trading_days,
             "timestamp": self.timestamp,
@@ -275,6 +308,25 @@ def max_drawdown_headroom(policy: ChallengePolicy, snapshot: AccountSnapshot, *,
     if policy.drawdown_type is DrawdownType.STATIC:
         # start -> worst point ever reached. Recovery does NOT restore it.
         reference = snapshot.static_basis
+        low = float(snapshot.equity_low if snapshot.equity_low
+                    else snapshot.equity or 0.0)
+    elif policy.drawdown_type is DrawdownType.TRAILING:
+        # highest point ever reached -> worst point ever reached. Like static,
+        # recovery does NOT restore it, because the floor has already been set
+        # at the peak and a breach is a breach. Unlike static, the floor itself
+        # RISES with the peak, so the limit is a fraction of the high-water mark
+        # rather than of the opening balance.
+        #
+        # Pairing the lifetime peak with the lifetime low is deliberate and
+        # slightly conservative: the exact floor in force at the moment of the
+        # low was the peak *as of that moment*, which this pair does not retain.
+        # It can only ever overstate the loss -- a peak reached after the low
+        # pulls the reference up -- and for a limit that decides whether an
+        # account still exists, overstating is the direction to err in. The
+        # alternative, persisting a peak/low pair, buys precision the rule does
+        # not need at the price of a second number that can disagree with the
+        # first.
+        reference = snapshot.trailing_basis
         low = float(snapshot.equity_low if snapshot.equity_low
                     else snapshot.equity or 0.0)
     else:

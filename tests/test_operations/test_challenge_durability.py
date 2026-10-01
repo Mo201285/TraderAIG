@@ -579,6 +579,89 @@ def _rows(db: Path, table: str) -> list:
         return conn.execute(f"SELECT * FROM {table}").fetchall()
 
 
+def test_a_trailing_peak_survives_a_restart(backend):
+    """A high-water mark that a restart erases is not a high-water mark.
+
+    This is the trailing counterpart of the `day_epoch` test above, and it is
+    why the peak needed a column of its own instead of being recomputed from
+    what is in memory. Without it, a trailing account whose peak was reached
+    last week comes back measuring from wherever equity is today, handing back
+    allowance the moment the process is recycled -- the quietest possible way to
+    lose a drawdown control.
+
+    The fixture is built through the ordinary write path rather than by hand,
+    so this also proves the peak is written by `observe` and not only read back
+    by a row somebody placed by hand.
+    """
+    from challenge.headroom import max_drawdown_headroom
+    from challenge.policy import ChallengePolicy, DrawdownType, RuleValue
+
+    db = backend.db_path
+    service = _service(db)
+    service.declare_baseline("trail-1", 100_000.0, source="terms", verified=True)
+    # Day 1: run up to a peak of 110k.
+    service.observe("trail-1", equity=100_000.0, balance=100_000.0, day_epoch=1000)
+    service.observe("trail-1", equity=110_000.0, balance=110_000.0, day_epoch=1000)
+    # Day 2: falls to 100k. That is 10k below the peak -- 9.1% of it.
+    service.observe("trail-1", equity=100_000.0, balance=100_000.0, day_epoch=1001)
+
+    policy = ChallengePolicy(
+        provider="DemoProp", program="Classic 2-Step", account_size=100_000.0,
+        policy_version="2026.09", effective_from="2026-09-01",
+        max_drawdown=RuleValue.known(0.05, source="provider terms"),
+        drawdown_type=DrawdownType.TRAILING,
+        daily_loss_limit=RuleValue.known(0.05, source="provider terms"),
+        profit_target=RuleValue.known(0.08, source="provider terms"),
+        minimum_trading_days=RuleValue.known(10, source="provider terms"),
+        max_leverage=RuleValue.known(100, source="provider terms"),
+    )
+    before = max_drawdown_headroom(
+        policy, service.snapshot("trail-1", equity=100_000.0, balance=100_000.0))
+
+    after = _service(db)  # the restart
+    status = after.baseline_status("trail-1")
+    assert status["restored"] is True
+    assert status["equity_peak"] == pytest.approx(110_000.0), \
+        "the peak must come back from the row, not from the current reading"
+
+    survived = max_drawdown_headroom(
+        policy, after.snapshot("trail-1", equity=100_000.0, balance=100_000.0))
+    assert survived.limit == pytest.approx(5_500.0)   # 5% of the restored peak
+    assert survived.used == pytest.approx(10_000.0)
+    assert survived.remaining == pytest.approx(0.0)
+    assert survived.remaining == before.remaining, \
+        "a restart must not change what a trailing account has left"
+
+
+def test_the_peak_is_written_and_reloaded_through_the_ordinary_paths(backend):
+    """`equity_peak` has to survive the normal observe -> persist -> restore
+    loop, not only a hand-written row, or the column is decorative."""
+    service = _service(backend.db_path)
+    service.declare_baseline("peak-1", 100_000.0, source="terms", verified=True)
+
+    service.observe("peak-1", equity=110_000.0, balance=110_000.0)
+    service.observe("peak-1", equity=104_000.0, balance=104_000.0)
+
+    assert service.baseline_status("peak-1")["equity_peak"] == pytest.approx(110_000.0)
+
+    reloaded = _service(backend.db_path)
+    status = reloaded.baseline_status("peak-1")
+    assert status["equity_peak"] == pytest.approx(110_000.0), \
+        "a running high must not be forgotten by a restart"
+    assert status["equity_low"] == pytest.approx(100_000.0)
+
+    # And a day roll must not take the peak with it: `day_start_equity` resets,
+    # `equity_low` and `equity_peak` are lifetime marks and must not.
+    reloaded.observe("peak-1", equity=108_000.0, balance=108_000.0, day_epoch=2001)
+    rolled = reloaded.baseline_status("peak-1")
+    assert rolled["day_start_equity"] == pytest.approx(108_000.0), \
+        "the day genuinely did roll"
+    assert rolled["equity_peak"] == pytest.approx(110_000.0), \
+        "a trailing peak must not reset when the date changes"
+    assert rolled["equity_low"] == pytest.approx(100_000.0), \
+        "nor must the lifetime low"
+
+
 def test_the_repository_does_not_pin_a_pooled_connection():
     """A repository that holds a session pins a connection for the whole process.
 

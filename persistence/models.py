@@ -118,6 +118,15 @@ class ChallengeBaselineDB(Base):
     account_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     start_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
     equity_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The all-time equity PEAK, added for trailing drawdown. It is nullable and
+    # absent on every row written before it existed, which is the honest state:
+    # a peak that was never recorded cannot be reconstructed from the opening
+    # balance or from today's readings, and backfilling one of those would
+    # fabricate a high-water mark that the account may never have reached --
+    # which is the same class of error as row 735's invented 100,000. Until an
+    # observation supplies a real peak the column stays NULL and the trailing
+    # calculator falls back to the widest plausible basis it has.
+    equity_peak: Mapped[float | None] = mapped_column(Float, nullable=True)
     day_start_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
     day_low_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
     day_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)

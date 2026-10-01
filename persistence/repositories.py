@@ -5,6 +5,7 @@ leaking SQLAlchemy into business logic.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -247,29 +248,60 @@ class ChallengeRepository:
         # with the process, so the running backend would have answered
         # `durable: true` on every `/challenge/status` while keeping every
         # baseline in RAM. The control would report itself armed with no memory.
-        self._session = session or make_live_session()
+        self._injected = session
+        self._session = session
+
+    @contextmanager
+    def _db(self):
+        """A session for one call, closed afterwards.
+
+        Holding a session for the lifetime of the repository pins a connection
+        out of the pool for the lifetime of the process, and the pool is five
+        plus ten. That is not a theoretical ceiling: a service constructed per
+        account, or per test, exhausts it, and every later call then blocks for
+        30 seconds and raises. The failure was quiet in the worst possible way
+        -- `challenge.service` degrades a store error rather than raising, so
+        pool exhaustion surfaced as a log full of warnings and a `durability:
+        false` nobody was watching, while the suite stayed green. A degraded
+        control that nobody notices is precisely what this repository exists to
+        prevent, so the leak is closed here rather than tolerated.
+
+        An injected session belongs to the caller, so it is used as-is and not
+        closed; that is the path the tests take when they hand in their own
+        engine, and closing it out from under them would break the next call.
+        """
+        if self._injected is not None:
+            yield self._injected
+            return
+        session = self._session or make_live_session()
+        try:
+            yield session
+        finally:
+            session.close()
 
     # -- baselines ------------------------------------------------------
 
-    def save_baseline(self, baseline: Dict) -> None:
-        row = ChallengeBaselineDB(
-            account_id=str(baseline.get("account_id") or ""),
-            start_equity=_opt_float(baseline.get("start_equity")),
-            equity_low=_opt_float(baseline.get("equity_low")),
-            day_start_equity=_opt_float(baseline.get("day_start_equity")),
-            day_low_equity=_opt_float(baseline.get("day_low_equity")),
-            day_epoch=_opt_int(baseline.get("day_epoch")),
-            trading_days=int(baseline.get("trading_days") or 0),
-            origin=str(baseline.get("origin") or "observed"),
-            source=(str(baseline["source"]) if baseline.get("source") else None),
-            seeded_at=_opt_float(baseline.get("seeded_at")),
-        )
-        self._session.merge(row)
-        self._session.commit()
+    def save_baseline(self, baseline: Dict[str, Any]) -> None:
+        with self._db() as session:
+            row = ChallengeBaselineDB(
+                account_id=str(baseline.get("account_id") or ""),
+                start_equity=_opt_float(baseline.get("start_equity")),
+                equity_low=_opt_float(baseline.get("equity_low")),
+                day_start_equity=_opt_float(baseline.get("day_start_equity")),
+                day_low_equity=_opt_float(baseline.get("day_low_equity")),
+                day_epoch=_opt_int(baseline.get("day_epoch")),
+                trading_days=int(baseline.get("trading_days") or 0),
+                origin=str(baseline.get("origin") or "observed"),
+                source=(str(baseline["source"]) if baseline.get("source") else None),
+                seeded_at=_opt_float(baseline.get("seeded_at")),
+            )
+            session.merge(row)
+            session.commit()
 
     def load_baselines(self) -> List[Dict]:
-        rows = self._session.execute(
-            select(ChallengeBaselineDB)).scalars().all()
+        with self._db() as session:
+            rows = session.execute(
+                select(ChallengeBaselineDB)).scalars().all()
         return [{
             "account_id": r.account_id,
             "start_equity": r.start_equity,
@@ -284,23 +316,25 @@ class ChallengeRepository:
         } for r in rows]
 
     def delete_baseline(self, account_id: str) -> bool:
-        row = self._session.get(ChallengeBaselineDB, account_id)
-        if row is None:
-            return False
-        self._session.delete(row)
-        self._session.commit()
-        return True
+        with self._db() as session:
+            row = session.get(ChallengeBaselineDB, account_id)
+            if row is None:
+                return False
+            session.delete(row)
+            session.commit()
+            return True
 
     # -- states ---------------------------------------------------------
 
     def save_state(self, account_id: str, state: str) -> None:
-        self._session.merge(ChallengeStateDB(
-            account_id=account_id, state=state))
-        self._session.commit()
+        with self._db() as session:
+            session.merge(ChallengeStateDB(account_id=account_id, state=state))
+            session.commit()
 
     def load_states(self) -> List[Dict]:
-        rows = self._session.execute(
-            select(ChallengeStateDB)).scalars().all()
+        with self._db() as session:
+            rows = session.execute(
+                select(ChallengeStateDB)).scalars().all()
         return [{"account_id": r.account_id, "state": r.state or "onboarding"}
                 for r in rows]
 

@@ -488,8 +488,12 @@ def test_the_default_store_is_a_real_database_not_an_in_memory_one():
     service = ChallengeService()
     assert service.durability["durable"] is True
 
-    store = service._store
-    engine = store._session.get_bind()
+    from persistence.db import engine
+
+    # The repository holds no session of its own now -- it opens one per call
+    # against the configured engine -- so "durable" is a property of that
+    # engine, and that is what has to be a real file.
+    assert service._store._injected is None
     url = str(engine.url)
     assert not url.startswith("sqlite:///:memory:")
     assert "mode=memory" not in url
@@ -498,6 +502,129 @@ def test_the_default_store_is_a_real_database_not_an_in_memory_one():
     # process holding it open.
     pool_name = getattr(engine.pool, "class_", None)
     assert getattr(pool_name, "__name__", "") != "StaticPool", engine.pool
+
+
+def test_an_unconnected_reading_is_not_written_to_disk(db):
+    """The live defect this milestone's verification found, in the shape it took.
+
+    `connected_account_id()` answers `"unconnected"` when no terminal is
+    attached, and `/challenge/status` observes whatever that resolves to. Before
+    this guard, that observation became a durable row -- `start_equity: 0.0`,
+    `origin: observed`, for a string that is not an account -- which then came
+    back on the next boot as a restore failure. Fail-closed at grading time is
+    not fail-closed at write time, and persistence moved the same bad reading
+    somewhere the old guard did not reach.
+    """
+    from challenge.service import UNCONNECTED_ACCOUNT_ID
+
+    service = _service(db)
+    snapshot = service.observe(UNCONNECTED_ACCOUNT_ID, equity=0.0, balance=0.0,
+                               day_epoch=1000)
+
+    assert snapshot.equity == 0.0
+    assert service.baseline_status(UNCONNECTED_ACCOUNT_ID)["has_baseline"] is False
+    assert UNCONNECTED_ACCOUNT_ID not in service.accounts()
+    # The row is the point: it has to be absent from storage, not merely
+    # ungraded on the way out.
+    assert _rows(db, "challenge_baselines") == []
+
+    # And the read still answers, fail-closed rather than raising: `counts` is
+    # false and no dimension reports a number. The permission is `protect`
+    # rather than `halt` because `protect` is what a complete policy says
+    # about a dimension it cannot measure -- halting is reserved for an
+    # untrusted *baseline*, which is a different defect with a different fix.
+    payload = service.evaluate(UNCONNECTED_ACCOUNT_ID, _policy(), equity=0.0,
+                               balance=0.0)
+    assert payload["counts"] is False
+    assert payload["decision"]["permission"] == "protect"
+    for name, dimension in payload["headroom"]["dimensions"].items():
+        assert dimension["is_known"] is False, f"{name} reported a number"
+        assert dimension["used"] is None, f"{name} reported used={dimension['used']}"
+
+
+def test_a_restart_after_an_unconnected_reading_starts_clean(db):
+    """No restore failure invented by our own absence.
+
+    The observable symptom on the live host was a `restore_failures` entry
+    naming a non-account on every boot, which trains an operator to ignore the
+    field that exists to tell them something real.
+    """
+    from challenge.service import UNCONNECTED_ACCOUNT_ID
+
+    _service(db).observe(UNCONNECTED_ACCOUNT_ID, equity=0.0, balance=0.0,
+                         day_epoch=1000)
+
+    restarted = _service(db)
+    assert restarted.durability["restore_failures"] == []
+    assert restarted.durability["restored"] == []
+
+
+def test_competition_terms_cannot_be_declared_for_a_placeholder(db):
+    """A declaration is the one act that makes an account gradable.
+
+    So it is the last place that should accept the placeholder as an identity,
+    and the row it writes is the durable one.
+    """
+    from challenge.service import UNCONNECTED_ACCOUNT_ID
+
+    service = _service(db)
+    with pytest.raises(ValueError, match="not an account"):
+        service.declare_baseline(UNCONNECTED_ACCOUNT_ID, 100_000.0,
+                                 source="terms", verified=True)
+    assert _rows(db, "challenge_baselines") == []
+
+
+def _rows(db: Path, table: str) -> list:
+    with sqlite3.connect(db) as conn:
+        return conn.execute(f"SELECT * FROM {table}").fetchall()
+
+
+def test_the_repository_does_not_pin_a_pooled_connection():
+    """A repository that holds a session pins a connection for the whole process.
+
+    The pool is five plus ten, and a service constructed per account -- or per
+    test -- exhausts it. Every later call then blocks for 30 seconds and raises,
+    and because `challenge.service` degrades a store error rather than raising,
+    that surfaces as a log full of warnings and a `durability: false` nobody was
+    watching. The suite stays green throughout, which is what makes it worth a
+    test of its own: the symptom is a control quietly reporting itself
+    disarmed.
+    """
+    from persistence.db import engine
+    from persistence.repositories import ChallengeRepository
+
+    def pool_in_use() -> int:
+        # A delta, not an absolute: the pool is process-global and other
+        # fixtures legitimately hold connections. What must not happen is that
+        # *these* constructions add any.
+        return engine.pool.checkedin()
+
+    before = pool_in_use()
+    services = [ChallengeRepository() for _ in range(12)]
+    assert pool_in_use() == before, "constructing a repository pinned a connection"
+
+    for repo in services:
+        repo.save_state("pool-probe", "active")
+        repo.load_states()
+    assert pool_in_use() == before, "a repository call left its connection checked out"
+
+
+def test_an_injected_session_is_the_callers_to_close(tmp_path):
+    """Closing a caller's session out from under it breaks their next call.
+
+    The tests hand in their own engine, so the injected path has to leave the
+    session exactly as it found it.
+    """
+    from challenge.service import ChallengeService
+
+    repo = _tmp_repo(tmp_path / "challenge_injected_probe.db")
+    service = ChallengeService(store=repo)
+    service.declare_baseline("pool-injected", 100_000.0, source="t", verified=True)
+
+    status = service.baseline_status("pool-injected")
+    assert status["gradeable"] is True
+    # A second call must still work: the session was not closed underneath us.
+    assert service.baseline_status("pool-injected")["gradeable"] is True
 
 
 def test_a_real_backend_reports_its_durability(backend):

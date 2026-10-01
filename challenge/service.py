@@ -69,6 +69,19 @@ class _DefaultStore:
 
 _DEFAULT_STORE = _DefaultStore()
 
+#: The account id used when no terminal is attached.
+#:
+#: A reading taken under this id is a measurement of the *absence* of an account,
+#: not of an account. Row 735 already refused to grade a zero-equity reading --
+#: "the disconnected account is the healthiest account on the platform" -- but
+#: that guard lived in `has_baseline`, at the moment of grading. Persistence
+#: moved the same reading somewhere new and unguarded: `observe` folded it in and
+#: wrote a durable row for a non-account, `start_equity: 0.0`, which then came
+#: back on the next boot as a restore failure. Fail-closed at grading time is
+#: not fail-closed at write time, and a store that remembers the absence of an
+#: account is a store that will one day remember it as a real one.
+UNCONNECTED_ACCOUNT_ID = "unconnected"
+
 
 def _load_store() -> Optional[Any]:
     """The durable store, or None when this deployment has none.
@@ -464,6 +477,19 @@ class ChallengeService:
         tested at midnight is a control nobody tests.
         """
         with self._lock:
+            if account_id == UNCONNECTED_ACCOUNT_ID:
+                # Refused at the write, not at the read. Everything downstream
+                # already handles an account with no baseline correctly -- it
+                # halts and reports every dimension unknown -- so the honest
+                # result here is simply the unbased snapshot. What must not
+                # happen is the row: a persisted `start_equity: 0.0` for a
+                # string that is not an account is a fabricated baseline that
+                # outlives the process that made it.
+                return AccountSnapshot(account_id=account_id,
+                                       balance=float(balance or 0.0),
+                                       equity=float(equity or 0.0),
+                                       margin=float(margin or 0.0),
+                                       open_risk=float(open_risk or 0.0))
             baseline = self._baselines.get(account_id)
             if baseline is None:
                 baseline = _Baseline(account_id)
@@ -557,6 +583,14 @@ class ChallengeService:
         if not (source or "").strip():
             raise ValueError("a declared baseline must name the source of the "
                              "opening balance")
+        if account_id == UNCONNECTED_ACCOUNT_ID:
+            # Same reason as `observe`: competition terms cannot be declared
+            # for a string that stands in for the absence of an account. A
+            # declaration is the one act here that makes an account gradable,
+            # so it is the last place to accept a placeholder as an identity --
+            # and it would be the durable one, outliving every restart.
+            raise ValueError(f"{UNCONNECTED_ACCOUNT_ID!r} is not an account: "
+                             f"declare a baseline for a broker login")
         amount = float(start_equity)
         if amount <= 0:
             raise ValueError(f"opening balance must be positive, got {start_equity!r}")

@@ -3103,17 +3103,16 @@ async def bridge_ws(websocket: WebSocket) -> None:
 def _challenge_account_id() -> str:
     """The account being graded, identified by the broker login.
 
-    The MT5 login rather than a name or a position in a list, because it is the
-    only identifier here that comes from the venue and cannot be reassigned by
-    accident. Falls back to "unconnected" so a read still answers when no
-    terminal is attached, rather than 500-ing.
+    Kept as a route-level name because the account is a fact about the read, not
+    about who is asking; the resolution itself lives in `challenge.live` because
+    the risk governor has to reach the same account without going through here.
     """
-    login = int(getattr(state.account, "login", 0) or 0)
-    return str(login) if login else "unconnected"
+    from challenge.live import connected_account_id
+
+    return connected_account_id()
 
 
-def _challenge_snapshot(account_id: str, *, observe: bool,
-                        proposed_risk: float = 0.0,
+def _challenge_snapshot(*, observe: bool, proposed_risk: float = 0.0,
                         symbol: Optional[str] = None) -> Dict:
     """Read the live account and grade it against the registered policy.
 
@@ -3121,36 +3120,53 @@ def _challenge_snapshot(account_id: str, *, observe: bool,
     low-water marks); without it the reading is scored against the baseline as
     it stands. Only the polling route observes, so a caller poking at the
     dashboard cannot move the reference points a decision is measured from.
+
+    The reading, the account identity and the policy lookup all come from
+    `challenge.live`, which the Risk Governor uses too. Two implementations of
+    "which account, which policy" would eventually disagree, and the disagreement
+    would show up as a dashboard reporting headroom the governor never applied.
     """
-    account = state.account
-    equity = float(getattr(account, "equity", 0.0) or 0.0)
-    balance = float(getattr(account, "balance", 0.0) or 0.0)
-    margin = float(getattr(account, "margin", 0.0) or 0.0)
+    from challenge.live import verdict
 
-    # open risk from the canonical positions, so "how much room is left" is
-    # answered against risk already committed rather than in isolation
-    open_risk = 0.0
-    for position in state.positions.values():
-        try:
-            open_risk += float(getattr(position, "risk", 0.0) or 0.0)
-        except Exception:  # noqa: BLE001
-            continue
+    return verdict(symbol=symbol, proposed_risk=proposed_risk, observe=observe)
 
-    from challenge.service import challenge_service as svc
-    from challenge.policy import ChallengePolicy
 
-    provider = getattr(account, "broker", "") or ""
-    program = _challenge_program()
-    policy: Optional[ChallengePolicy] = None
-    if provider and program:
-        policy = svc.policy_for(provider, program)
+def _guard_challenge() -> Dict:
+    """`challenge_management` is REQUIRED on every mutating challenge route (34.15).
 
-    if observe:
-        svc.observe(account_id, equity=equity, balance=balance,
-                    margin=margin, open_risk=open_risk)
-    return svc.evaluate(account_id, policy, equity=equity, balance=balance,
-                        margin=margin, open_risk=open_risk,
-                        proposed_risk=proposed_risk, symbol=symbol)
+    `_guard(CAN_MANAGE_RISK)` is not a substitute. That entitlement answers "may
+    this operator change risk policy"; `challenge_management` answers "is anyone
+    paying for the challenge service at all". An institutional operator has both
+    and has paid nothing for the $9.99 product, and §34.15 makes the second
+    question the one that governs execution.
+
+    Reads stay ungated, and deliberately: a panel that cannot show WHY an account
+    is unprotected is how an operator finds out about it from a halted trade.
+
+    Bootstrap (`bootstrap: True`) passes, matching `_guard()`'s documented
+    reasoning: with no principal configured there is nobody to charge and no
+    service running yet, and refusing here would make a fresh install unable to
+    register a policy or seed a baseline at all. The live path does NOT get that
+    allowance — see `challenge.entitlement` — because the governor's question is
+    whether an account that has declared itself a challenge account is paid for,
+    and silence there is a halt.
+    """
+    from challenge.entitlement import challenge_gate
+
+    gate = challenge_gate()
+    if gate.get("active") or gate.get("bootstrap"):
+        return gate
+    gate_detail = (f"challenge_management entitlement required "
+                   f"({gate.get('reason')}): {gate.get('detail')}")
+    try:
+        identity.record_audit(
+            _acting_actor() or "api", "entitlement.denied", "ChallengePolicy",
+            _challenge_account_id(),
+            {"entitlement": "challenge_management",
+             "reason": gate.get("reason"), "detail": gate.get("detail")})
+    except Exception:  # noqa: BLE001
+        pass
+    raise HTTPException(status_code=403, detail=gate_detail)
 
 
 def _challenge_program() -> str:
@@ -3161,7 +3177,9 @@ def _challenge_program() -> str:
     from the balance would be the same class of assumption 34.6 forbids, and it
     would pick a policy for an account the operator never described.
     """
-    return str(os.getenv("TRADERAIG_CHALLENGE_PROGRAM", "") or "")
+    from challenge.live import configured_program
+
+    return configured_program()
 
 
 @app.get("/challenge/status")
@@ -3171,10 +3189,17 @@ def challenge_status() -> Dict:
     Read-only and ungraded by default: it observes the account (so the
     low-water marks advance) but proposes no trade, so this reports where the
     account stands rather than approving anything.
+
+    Also reports the commercial side (34.2), because an operator looking at this
+    panel is asking two questions at once — is my account inside its rules, and
+    am I paying for the thing that watches them. The second one is answered here
+    rather than inferred from whether the panel works.
     """
-    account_id = _challenge_account_id()
+    from challenge.entitlement import status as commercial_status
+
     return {"ok": True, "observed": True,
-            **_challenge_snapshot(account_id, observe=True)}
+            "commercial": commercial_status(),
+            **_challenge_snapshot(observe=True)}
 
 
 @app.get("/challenge/headroom")
@@ -3185,12 +3210,11 @@ def challenge_headroom(proposed_risk: float = 0.0,
     `proposed_risk` is a question, not an instruction: it asks whether a trade
     of that size would fit in the remaining headroom. Nothing here executes.
     """
-    account_id = _challenge_account_id()
     if proposed_risk and proposed_risk < 0:
         raise HTTPException(status_code=400,
                             detail="proposed_risk must not be negative")
     return {"ok": True, **_challenge_snapshot(
-        account_id, observe=False,
+        observe=False,
         proposed_risk=float(proposed_risk or 0.0),
         symbol=(symbol or None))}
 
@@ -3223,6 +3247,7 @@ def challenge_policy_register(payload: Dict) -> Dict:
                                  NewsPolicy, Restriction, RuleValue)
 
     _guard(Entitlement.CAN_MANAGE_RISK)
+    _guard_challenge()
     provider = str(payload.get("provider", "") or "").strip()
     program = str(payload.get("program", "") or "").strip()
     version = str(payload.get("policy_version", "") or "").strip()
@@ -3255,20 +3280,107 @@ def challenge_policy_register(payload: Dict) -> Dict:
                                verified_at=raw.get("verified_at"),
                                note=raw.get("note"))
 
-    drawdown_type = payload.get("drawdown_type")
+    def measured(name: str) -> Optional[float]:
+        """A number about the *venue*, carrying provenance like a term does.
+
+        The server offset, the weekend lead and the weekend multiplier are not
+        tournament rules, but each of them decides when the daily allowance
+        resets or when a close window opens, so a bare number is refused on the
+        same grounds `rule()` refuses one: an offset nobody recorded cannot be
+        told apart from a guessed one, and a guessed offset hands the account a
+        fresh daily allowance at the wrong hour.
+        """
+        raw = payload.get(name)
+        if raw is None:
+            return None
+        if not isinstance(raw, dict) or "value" not in raw:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{name}' must be an object with 'value' and 'source'; a "
+                       "bare number carries no provenance and cannot be verified")
+        source = str(raw.get("source", "") or "").strip()
+        if not source:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{name}' needs a 'source' naming where the number came "
+                       "from (the provider document, or the terminal's own clock)")
+        return float(raw["value"])
+
+    def weekend_schedules() -> Dict[str, Dict[str, Any]]:
+        """Per-symbol weekend boundaries, as read from MT5.
+
+        These are observations rather than terms, so the provenance is the
+        terminal that reported them -- which is the only source that can
+        contradict them later. Each value must carry an observed close, since a
+        close window with no close cannot be placed at all and every symbol then
+        reads as shut.
+        """
+        raw = payload.get("symbol_schedules")
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="'symbol_schedules' must be an object keyed by symbol")
+        out: Dict[str, Dict[str, Any]] = {}
+        for symbol, entry in raw.items():
+            if not isinstance(entry, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"symbol_schedules[{symbol}] must be an object with "
+                           "'observed_close' and 'observed_at'")
+            try:
+                observed_close = float(entry["observed_close"])
+                observed_at = float(entry["observed_at"])
+                next_open = entry.get("next_open")
+                next_open_val = None if next_open is None else float(next_open)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"symbol_schedules[{symbol}] needs numeric "
+                           f"'observed_close' and 'observed_at': {exc}") from exc
+            out[str(symbol).upper()] = {
+                "observed_close": observed_close,
+                "observed_at": observed_at,
+                "next_open": next_open_val,
+                "source": str(entry.get("source", "") or "").strip() or None,
+            }
+        return out
+
     instruments_raw = payload.get("instruments") or {}
     news_raw = payload.get("news") or {}
+
+    # A weekend multiplier above 1 would raise risk inside the very window that
+    # exists to lower it, and it would do so on the days positions are held
+    # longest. Refused here rather than clamped: a value that needs clamping is
+    # a value the operator did not mean.
+    weekend_multiplier = measured("weekend_risk_multiplier")
+    if weekend_multiplier is not None and not 0.0 < weekend_multiplier <= 1.0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'weekend_risk_multiplier' must be in (0, 1]; got "
+                   f"{weekend_multiplier}. A value above 1 raises risk during the "
+                   "window that lowers it")
+    weekend_lead = measured("weekend_close_lead_minutes")
+    if weekend_lead is not None and weekend_lead < 0.0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'weekend_close_lead_minutes' cannot be negative; got {weekend_lead}")
 
     def restriction(name: str, default: Restriction) -> Restriction:
         raw = payload.get(name)
         if raw is None:
             return default
         try:
-            return Restriction(str(raw))
+            if isinstance(raw, dict) and "value" in raw:
+                val = str(raw["value"]).strip()
+            else:
+                val = str(raw).strip() if raw is not None else ""
+            return Restriction(val)
         except ValueError:
             raise HTTPException(
-                status_code=400,
-                detail=f"'{name}' must be one of "
+                status_code=422,
+                detail=f"invalid field '{name}' must be one of "
                        + ", ".join(r.value for r in Restriction))
 
     policy = ChallengePolicy(
@@ -3281,7 +3393,7 @@ def challenge_policy_register(payload: Dict) -> Dict:
         max_drawdown=rule("max_drawdown"),
         minimum_trading_days=rule("minimum_trading_days"),
         max_leverage=rule("max_leverage"),
-        drawdown_type=DrawdownType(str(drawdown_type)) if drawdown_type else None,
+        drawdown_type=None,
         consistency_rule=payload.get("consistency_rule"),
         instruments=InstrumentPolicy(
             denied_symbols=list(instruments_raw.get("denied_symbols", []) or []),
@@ -3296,11 +3408,40 @@ def challenge_policy_register(payload: Dict) -> Dict:
         weekend=restriction("weekend", Restriction.UNKNOWN),
         max_lot=payload.get("max_lot"),
         notes=payload.get("notes"),
+        # A stopout with no source cannot be source-confirmed, and the
+        # confirmation is what lets the engine treat it as a real limit rather
+        # than as an engine-internal floor wearing a broker's number.
+        margin_level_stop_out=measured("margin_level_stop_out"),
+        margin_level_stop_out_source=(
+            str((payload.get("margin_level_stop_out") or {}).get("source", "") or "").strip()
+            or None),
+        internal_margin_floor=measured("internal_margin_floor"),
+        internal_margin_floor_source=(
+            str((payload.get("internal_margin_floor") or {}).get("source", "") or "").strip()
+            or None),
+        server_utc_offset_hours=measured("server_utc_offset_hours"),
+        weekend_close_lead_minutes=weekend_lead,
+        weekend_risk_multiplier=weekend_multiplier,
+        symbol_schedules=weekend_schedules(),
+        custom_rules=dict(payload.get("custom_rules") or {}),
+        server=payload.get("server"),
     )
+    # Extract drawdown_type properly via rule value or raw
+    try:
+        dtraw = payload.get("drawdown_type")
+        if dtraw is not None:
+            if isinstance(dtraw, dict) and "value" in dtraw:
+                dtval = str(dtraw["value"]).strip()
+            else:
+                dtval = str(dtraw).strip()
+            if dtval:
+                policy.drawdown_type = DrawdownType(dtval)
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=422, detail=f"invalid field 'drawdown_type': {exc}") from exc
     try:
         result = svc.register_policy(policy)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=422, detail=f"validation error: {exc}")
     try:
         identity.record_audit(
             _acting_actor() or "api", "challenge.policy.registered", "ChallengePolicy",
@@ -3353,6 +3494,7 @@ def challenge_baseline_declare(account_id: str, payload: Dict) -> Dict:
     from challenge.service import challenge_service as svc
 
     _guard(Entitlement.CAN_MANAGE_RISK)
+    _guard_challenge()
     amount = payload.get("start_equity")
     source = str(payload.get("source", "") or "").strip()
     if amount is None:
@@ -3411,6 +3553,7 @@ def challenge_baseline_withdraw(account_id: str, payload: Dict) -> Dict:
     from challenge.service import challenge_service as svc
 
     _guard(Entitlement.CAN_MANAGE_RISK)
+    _guard_challenge()
     reason = str(payload.get("reason", "") or "").strip()
     if not reason:
         raise HTTPException(
@@ -3442,6 +3585,7 @@ def challenge_transition(account_id: str, payload: Dict) -> Dict:
     from challenge.state_machine import ChallengeState
 
     _guard(Entitlement.CAN_MANAGE_RISK)
+    _guard_challenge()
     target = str(payload.get("state", "") or "")
     reason = str(payload.get("reason", "") or "")
     try:
@@ -3477,6 +3621,7 @@ def challenge_recover(account_id: str, payload: Dict) -> Dict:
     from challenge.service import challenge_service as svc
 
     _guard(Entitlement.CAN_MANAGE_RISK)
+    _guard_challenge()
     reason = str(payload.get("reason", "") or "")
     authorized_by = str(payload.get("authorized_by", "") or "").strip()
     if not authorized_by:

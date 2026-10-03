@@ -60,6 +60,7 @@ def _isolated(monkeypatch):
     audit_len = len(identity._audit)
     bought = dict(products._entitlements)
     monkeypatch.delenv("TRADERAIG_CHALLENGE_PROGRAM", raising=False)
+    monkeypatch.delenv("TRADERAIG_CHALLENGE_PROVIDER", raising=False)
     fresh = ChallengeService(PolicyRegistry())
     held = {k: v for k, v in fresh.__dict__.items()}
     # The registry OBJECT and its contents, both restored after the attribute
@@ -263,8 +264,8 @@ def test_a_watched_account_is_not_graded_against_an_inferred_opening_balance():
     policy = _policy()
 
     # First reading after a restart: all we know is what it is worth now.
-    service.observe("1787174", equity=95_975.13, balance=95_975.13)
-    payload = service.evaluate("1787174", policy,
+    service.observe("TEST-ACCT-OBSERVED", equity=95_975.13, balance=95_975.13)
+    payload = service.evaluate("TEST-ACCT-OBSERVED", policy,
                                equity=95_975.13, balance=95_975.13)
 
     assert payload["counts"] is False
@@ -297,9 +298,9 @@ def test_declaring_the_opening_balance_makes_the_account_gradable():
     service = ChallengeService(Registry())
     policy = _policy()
 
-    service.observe("1787174", equity=95_975.13, balance=95_975.13)
-    service.declare_baseline("1787174", 100_000.0, source="FTTrading competition terms, account size", verified=True)
-    payload = service.evaluate("1787174", policy,
+    service.observe("TEST-ACCT-OBSERVED", equity=95_975.13, balance=95_975.13)
+    service.declare_baseline("TEST-ACCT-OBSERVED", 100_000.0, source="FTTrading competition terms, account size", verified=True)
+    payload = service.evaluate("TEST-ACCT-OBSERVED", policy,
                                equity=95_975.13, balance=95_975.13)
 
     assert payload["baseline"]["gradeable"] is True

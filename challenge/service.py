@@ -392,6 +392,7 @@ class ChallengeService:
         self._store_ok = self._store is not None
         self._restored: List[str] = []
         self._restore_failures: List[str] = []
+        self._program_bindings: List[Dict[str, Any]] = []
         if restore and self._store is not None:
             self._restore_from_store()
 
@@ -428,6 +429,9 @@ class ChallengeService:
                     machine.restore(state)
                 except (ValueError, TransitionRefused) as exc:
                     self._restore_failures.append(f"{account_id}: {exc}")
+            self._program_bindings = [
+                dict(r) for r in self._safe(lambda s: s.load_program_bindings(), [])
+                if str(r.get("account_login") or "").strip()]
             self._restore_policies()
 
     def _restore_policies(self) -> None:
@@ -739,6 +743,83 @@ class ChallengeService:
         return self._registry.resolve(provider, program, on=on,
                                       account_size=account_size,
                                       server=server)
+
+    # -- per-account program binding --------------------------------------
+    #
+    # A provider runs a catalogue of programs and every one of them arrives as an
+    # ordinary MT5 login, so "which program is this account in" is a decision
+    # rather than a lookup. `challenge.programs` holds the rule; these are the
+    # service's doors onto it, and every one of them is durable so a restart
+    # cannot quietly unbind an account and drop it onto the deployment default.
+
+    def program_bindings(self) -> List[Dict[str, Any]]:
+        """Every recorded (login, server) -> program claim."""
+        with self._lock:
+            return [dict(r) for r in self._program_bindings]
+
+    def bind_program(self, account_login: Any, *, provider: str, program: str,
+                     server: Any = "", source: str = "") -> Dict[str, Any]:
+        """Record which program an account belongs to, from a sourced claim.
+
+        `source` is required. A binding is the only step in program resolution
+        that is not inference, and an unsourced one would let an operator's
+        guess decide which tournament terms govern a real balance -- the exact
+        laundering this codebase refuses everywhere else.
+        """
+        login = str(account_login or "").strip()
+        if not login:
+            raise ValueError("a program binding needs the MT5 login it describes")
+        if not str(provider or "").strip():
+            raise ValueError("a program binding needs the provider that runs it")
+        if not str(program or "").strip():
+            raise ValueError("a program binding needs the program it names")
+        if not str(source or "").strip():
+            raise ValueError(
+                "a program binding needs a source: it is a claim about what this "
+                "login signed up for, and a claim with nothing behind it is a guess")
+        record = {"account_login": login, "server": str(server or ""),
+                  "provider": str(provider).strip(), "program": str(program).strip(),
+                  "source": str(source).strip()}
+        self._safe(lambda s: s.save_program_binding(record), None)
+        with self._lock:
+            kept = [r for r in self._program_bindings
+                    if not (str(r.get("account_login") or "").strip() == login
+                            and str(r.get("server") or "") == record["server"])]
+            kept.append(record)
+            self._program_bindings = kept
+        decision = self.resolve_account_program(
+            record["provider"], login=login, server=record["server"])
+        return {"bound": True, **record,
+                "in_force": decision.program == record["program"],
+                "decision": decision.as_dict()}
+
+    def unbind_program(self, account_login: Any, server: Any = "") -> bool:
+        """Forget a binding. The account falls back to window, then default."""
+        login = str(account_login or "").strip()
+        self._safe(lambda s: s.delete_program_binding(login, str(server or "")), False)
+        with self._lock:
+            before = len(self._program_bindings)
+            self._program_bindings = [
+                r for r in self._program_bindings
+                if not (str(r.get("account_login") or "").strip() == login
+                        and str(r.get("server") or "") == str(server or ""))]
+            return len(self._program_bindings) < before
+
+    def resolve_account_program(self, provider: str, *, login: Any = None,
+                                server: Any = None, on: Optional[str] = None,
+                                default: Optional[str] = None) -> Any:
+        """Which program governs this account, and which step decided it."""
+        from .programs import resolve_program
+        with self._lock:
+            bindings = [dict(r) for r in self._program_bindings]
+        return resolve_program(self._registry, provider, login=login,
+                               server=server, bindings=bindings,
+                               default=default, on=on)
+
+    def provider_catalog(self, provider: str) -> List[Dict[str, Any]]:
+        """Every program this provider is known to run, with its versions."""
+        from .programs import catalog
+        return catalog(self._registry, provider)
 
     def _baseline_start(self, account_id: str) -> Optional[float]:
         """The declared opening balance, or None when there is not one."""

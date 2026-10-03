@@ -57,6 +57,11 @@ def _isolated(monkeypatch):
     audit_len = len(identity._audit)
     bought = dict(products._entitlements)
     monkeypatch.delenv("TRADERAIG_CHALLENGE_PROGRAM", raising=False)
+    # These tests mean "the provider is whoever the broker says it is". A
+    # developer's .env naming a real firm used to leak into the pytest process
+    # via core.config.load_dotenv, the lookup missed the DemoProp policy, and
+    # the governor approved candidates the suite expects to be vetoed.
+    monkeypatch.delenv("TRADERAIG_CHALLENGE_PROVIDER", raising=False)
     monkeypatch.delenv("IDENTITY_PRIMARY_EMAIL", raising=False)
     fresh = ChallengeService(PolicyRegistry())
     held = {k: v for k, v in fresh.__dict__.items()}

@@ -618,6 +618,15 @@ which is the same question this boolean used to answer by accident.
             "server_utc_offset_hours": self.server_utc_offset_hours,
             "weekend_close_lead_minutes": self.weekend_close_lead_minutes,
             "weekend_risk_multiplier": self.weekend_risk_multiplier,
+            # These four were absent here, so a restored policy came back with no
+            # margin floor at all: the operator's floor stopped being enforced and
+            # the dimension dropped out of the report entirely, which is the
+            # account most in need of the card. A floor that does not travel is
+            # worse than one that was never set, because the report implies it.
+            "margin_level_stop_out": self.margin_level_stop_out,
+            "margin_level_stop_out_source": self.margin_level_stop_out_source,
+            "internal_margin_floor": self.internal_margin_floor,
+            "internal_margin_floor_source": self.internal_margin_floor_source,
             "symbol_schedules": dict(self.symbol_schedules),
             "instruments": self.instruments.as_dict(),
             "news": self.news.as_dict(),
@@ -754,5 +763,9 @@ def policy_from_dict(payload: Dict[str, Any]) -> ChallengePolicy:
         overnight=restriction(payload.get("overnight"), "overnight"),
         weekend=restriction(payload.get("weekend"), "weekend"),
         max_lot=opt_float("max_lot"),
+        margin_level_stop_out=opt_float("margin_level_stop_out"),
+        margin_level_stop_out_source=payload.get("margin_level_stop_out_source"),
+        internal_margin_floor=opt_float("internal_margin_floor"),
+        internal_margin_floor_source=payload.get("internal_margin_floor_source"),
         custom_rules=dict(payload.get("custom_rules") or {}),
         notes=payload.get("notes"))

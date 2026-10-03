@@ -3219,6 +3219,75 @@ def challenge_headroom(proposed_risk: float = 0.0,
         symbol=(symbol or None))}
 
 
+@app.get("/challenge/programs")
+def challenge_programs(provider: str = "") -> Dict:
+    """The provider's programme catalogue, and which one governs this account.
+
+    A broker runs several tournaments at once and none of them name themselves on
+    the terminal, so "what does this provider offer, and what is this account in?"
+    is a question with no other home. The decision is returned with the sentence
+    that produced it, because an account reading as unmanaged is the same silence
+    whether the cause is an unbound login or a misconfigured provider.
+    """
+    from challenge.service import challenge_service as svc
+
+    provider_name = str(provider or "").strip()
+    decision = None
+    try:
+        from challenge.live import configured_provider, live_program_decision
+        provider_name = provider_name or configured_provider()
+        decision = live_program_decision()
+    except Exception:  # noqa: BLE001
+        pass
+    return {
+        "ok": True,
+        "provider": provider_name,
+        "catalog": svc.provider_catalog(provider_name) if provider_name else [],
+        "bindings": svc.program_bindings(),
+        "connected": decision.as_dict() if decision is not None else None,
+    }
+
+
+@app.post("/challenge/programs/bind")
+def challenge_program_bind(payload: Dict) -> Dict:
+    """Record which programme an MT5 account belongs to.
+
+    This is the operator's claim about what a login signed up for, and it is the
+    only step in programme resolution that is not inference, so `source` is
+    mandatory: a binding with nothing behind it would let a guess choose which
+    tournament terms govern a real balance.
+    """
+    from challenge.service import challenge_service as svc
+
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    _guard_challenge()
+    login = str(payload.get("account_login") or "").strip()
+    if not login:
+        raise HTTPException(
+            status_code=400,
+            detail="account_login is required: a binding that names no MT5 "
+                   "login describes no account")
+    if not str(payload.get("source") or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="source is required: this is a claim about what the login "
+                   "signed up for, and §34.6 does not accept an unsourced claim")
+    if bool(payload.get("unbind")):
+        removed = svc.unbind_program(login, str(payload.get("server") or ""))
+        decision = svc.resolve_account_program(
+            str(payload.get("provider") or "").strip(), login=login,
+            server=str(payload.get("server") or ""))
+        return {"ok": True, "unbound": removed, "connected": decision.as_dict()}
+    try:
+        return svc.bind_program(
+            login, provider=str(payload.get("provider") or ""),
+            program=str(payload.get("program") or ""),
+            server=str(payload.get("server") or ""),
+            source=str(payload.get("source") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.get("/challenge/policies")
 def challenge_policies(provider: str = "", program: str = "",
                        detail: str = "") -> Dict:

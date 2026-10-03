@@ -191,6 +191,45 @@ class ChallengePolicyDB(Base):
     )
 
 
+class ChallengeProgramBindingDB(Base):
+    """Which tournament program an MT5 account belongs to.
+
+    A registered policy says what a program's terms ARE. It cannot say which
+    program a given login signed up for: a broker runs several programs at once
+    -- a monthly one, a weekly one on its own schedule, a weekend one -- and
+    every one of them arrives as an ordinary MT5 login reporting a server, a
+    balance and a leverage. Nothing on the terminal names the tournament, so
+    that fact has to be recorded here, against (login, server), or read off a
+    deployment-wide environment variable that can only ever name one.
+
+    The environment variable is the reason this table exists. `For Traders` has a
+    catalogue of programs, and a deployment connected to more than one of their
+    accounts has to decide per account which catalogue entry applies. Keyed by
+    (login, server) rather than login alone because the same login number on a
+    different server is a different account with different terms.
+
+    `source` is required, not decorative: a binding is an operator's claim about
+    what a login signed up for, and a claim with nothing behind it is the same
+    guess this whole path refuses elsewhere.
+    """
+
+    __tablename__ = "challenge_program_bindings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_login: Mapped[str] = mapped_column(String(64), index=True)
+    server: Mapped[str] = mapped_column(String(128), default="", index=True)
+    provider: Mapped[str] = mapped_column(String(128), index=True)
+    program: Mapped[str] = mapped_column(String(128), index=True)
+    source: Mapped[str] = mapped_column(Text, default="")
+    bound_at: Mapped[float] = mapped_column(
+        Float, default=lambda: datetime.now(timezone.utc).timestamp())
+
+    __table_args__ = (
+        UniqueConstraint("account_login", "server",
+                         name="uq_challenge_program_binding_account"),
+    )
+
+
 class ProductEntitlementDB(Base):
     """Persisted paid-product entitlements (§34.2/§34.20).
 

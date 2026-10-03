@@ -29,16 +29,75 @@ os.environ["TRADERAIG_DB_PATH"] = os.path.join(
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
+# This directory too, so `suite_isolation` is importable by name from here and
+# from anywhere else in the suite. Only the repo root was on the path, which left
+# the guard's own helper unimportable -- and a guard that raises
+# ModuleNotFoundError during setup looks like a broken suite, not a broken
+# guard, so it would have been "fixed" by deleting the check.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+def _bound_to_the_live_database(url: str) -> bool:
+    """True when this engine URL is the running system's own storage.
+
+    The rule itself lives in `suite_isolation` so it can be tested directly: a
+    guard that can only be exercised by breaking the suite's isolation is a guard
+    nobody will ever find out is broken.
+    """
+    from suite_isolation import bound_to_the_live_database
+
+    return bound_to_the_live_database(url)
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _challenge_schema():
+def _never_write_to_the_live_database():
+    """Fail the session if the suite is pointed at the running system's tables.
+
+    `TRADERAIG_DB_PATH` above is the only thing keeping a test's fabricated rows
+    out of `.data/traderaig.db`, and it works by being read once -- at import --
+    into a module-level engine. That makes it precisely the kind of protection
+    that fails silently: miss the variable, import `persistence.db` before this
+    conftest is collected, and every row a test writes lands in the live control
+    plane with nothing to mark it as a test.
+
+    That is not hypothetical here. This suite did exactly it: a `DemoProp` policy
+    and an `observed` baseline for MT5 login 1787174 were both found sitting in
+    the live database, written by a run whose isolation had failed. Nothing about
+    the rows said "test" -- a fabricated `verified` opening balance is
+    byte-for-byte the shape of the truth, which is why it has to be stopped
+    before the write rather than explained after it.
+
+    The guard is cheap and unconditional: it checks the engine the tests actually
+    hold, rather than trusting that the environment variable still reached it.
+    """
+    from persistence.db import engine
+
+    url = str(engine.url)
+    if _bound_to_the_live_database(url):
+        pytest.fail(
+            "the test suite is bound to the live database (%s). A fabricated "
+            "baseline, policy or program binding written here would sit in the "
+            "running system's control tables indistinguishable from real "
+            "operator data. tests/conftest.py points TRADERAIG_DB_PATH at a temp "
+            "file for exactly this reason; if you are reading this, something "
+            "imported persistence.db before that conftest was collected." % url)
+    yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _challenge_schema(_never_write_to_the_live_database):
     """Create the challenge tables once per session, not once per test.
 
     `ensure_schema()` inspects the engine and runs DDL checks; calling it from
     every test added several seconds to each one and took the suite from about
     seven minutes to twenty-eight, which is its own kind of failure -- a gate
     nobody runs is a gate nobody trusts.
+
+    It takes the live-database guard as an argument on purpose. Autouse fixtures
+    otherwise run in definition order, and this one issues DDL: a guard declared
+    after it would refuse only *after* the suite had already created tables
+    wherever it was pointed. Requesting it makes the ordering explicit rather
+    than positional, so moving a fixture cannot quietly disarm the check.
     """
     from persistence.db import ensure_schema
 
@@ -56,6 +115,21 @@ def _reset_challenge_store(_challenge_schema):
     accident into a wrong answer: a test asserting "a watched account is not
     graded against an inferred opening balance" passes or fails depending on
     what ran before it. The market plane needs this for the same reason.
+
+    `challenge_policies` is in that list for the same reason, and its absence was
+    a real ordering bug rather than a tidy-up. A test that registers terms writes
+    a row, and the fixtures that restore state only restored the *in-memory*
+    registry -- so the row outlived them. The next `ChallengeService()` bound to
+    the module-level `default_registry` then restored that policy through
+    `_restore_policies` and handed the following test a provider it never asked
+    for. `test_the_process_wide_registry_starts_empty` failed depending on which
+    modules ran first, and two files that each passed alone failed together.
+    Policy rows are immutable on purpose, which is why this surfaced first as an
+    "already registered; register a new version" ValueError.
+
+    `challenge_program_bindings` belongs here too, and for a sharper reason: a
+    binding decides which tournament terms govern a real balance, so a leaked one
+    would leave a test's account inside a program for every test that followed.
     """
     def _clean():
         from sqlalchemy import text
@@ -63,7 +137,8 @@ def _reset_challenge_store(_challenge_schema):
         from persistence.db import engine
 
         with engine.begin() as conn:
-            for table in ("challenge_baselines", "challenge_states"):
+            for table in ("challenge_baselines", "challenge_states",
+                          "challenge_policies", "challenge_program_bindings"):
                 conn.execute(text(f"DELETE FROM {table}"))
 
     _clean()

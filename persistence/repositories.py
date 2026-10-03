@@ -25,6 +25,7 @@ from persistence.models import (
     AuditRecordDB,
     ChallengeBaselineDB,
     ChallengePolicyDB,
+    ChallengeProgramBindingDB,
     ChallengeStateDB,
     ExperienceRecordDB,
     OpsRunRecordDB,
@@ -398,6 +399,64 @@ class ChallengeRepository:
             decoded["policy_version"] = r.policy_version
             out.append(decoded)
         return out
+
+    def save_program_binding(self, binding: Dict[str, Any]) -> None:
+        """Record which program one MT5 account belongs to.
+
+        Upsert by (login, server) rather than append: re-binding an account to a
+        corrected program is the operator fixing their own record, and a table
+        that only grows would leave two answers for one account with nothing
+        saying which one is in force.
+        """
+        login = str(binding.get("account_login") or "").strip()
+        if not login:
+            raise ValueError("a program binding needs the MT5 login it describes")
+        with self._db() as session:
+            row = session.execute(
+                select(ChallengeProgramBindingDB).where(
+                    ChallengeProgramBindingDB.account_login == login,
+                    ChallengeProgramBindingDB.server
+                    == str(binding.get("server") or ""),
+                )).scalars().first()
+            if row is None:
+                session.add(ChallengeProgramBindingDB(
+                    account_login=login,
+                    server=str(binding.get("server") or ""),
+                    provider=str(binding.get("provider") or ""),
+                    program=str(binding.get("program") or ""),
+                    source=str(binding.get("source") or "")))
+            else:
+                row.provider = str(binding.get("provider") or "")
+                row.program = str(binding.get("program") or "")
+                row.source = str(binding.get("source") or "")
+                row.bound_at = datetime.now(timezone.utc).timestamp()
+            session.commit()
+
+    def load_program_bindings(self) -> List[Dict[str, Any]]:
+        with self._db() as session:
+            rows = session.execute(
+                select(ChallengeProgramBindingDB).order_by(
+                    ChallengeProgramBindingDB.bound_at)).scalars().all()
+        return [{"account_login": r.account_login, "server": r.server,
+                 "provider": r.provider, "program": r.program,
+                 "source": r.source, "bound_at": r.bound_at}
+                for r in rows]
+
+    def delete_program_binding(self, account_login: str,
+                              server: str = "") -> bool:
+        """Forget a binding. Used by the route that unbinds an account."""
+        with self._db() as session:
+            row = session.execute(
+                select(ChallengeProgramBindingDB).where(
+                    ChallengeProgramBindingDB.account_login
+                    == str(account_login),
+                    ChallengeProgramBindingDB.server == str(server or ""),
+                )).scalars().first()
+            if row is None:
+                return False
+            session.delete(row)
+            session.commit()
+            return True
 
 
 class ProductRepository:

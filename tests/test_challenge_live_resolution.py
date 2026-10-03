@@ -20,7 +20,7 @@ from challenge import live  # noqa: E402
 from core.state import AccountState, CanonicalState  # noqa: E402
 
 
-def _state(login=1400167, broker="", server="FTTrading-Server") -> CanonicalState:
+def _state(login="TEST-ACCT-LIVE", broker="", server="FTTrading-Server") -> CanonicalState:
     store = CanonicalState()
     store.account = AccountState(login=login, broker=broker, server=server,
                                  balance=100_000.0, equity=100_000.0)
@@ -104,6 +104,12 @@ def test_the_server_is_passed_through_as_a_scope(monkeypatch):
     seen = {}
 
     class _Service:
+        def resolve_account_program(self, provider, *, login=None, server=None,
+                                    on=None, default=None):
+            from challenge.programs import ProgramDecision
+            return ProgramDecision("Tournaments", "deployment_default",
+                                   "test double", provider, server or "", "", [])
+
         def policy_for(self, provider, program, **kwargs):
             seen.update({"provider": provider, "program": program, **kwargs})
             return "policy"
@@ -128,6 +134,12 @@ def test_a_blank_server_is_passed_as_absent_not_as_empty_string(monkeypatch):
     seen = {}
 
     class _Service:
+        def resolve_account_program(self, provider, *, login=None, server=None,
+                                    on=None, default=None):
+            from challenge.programs import ProgramDecision
+            return ProgramDecision("Tournaments", "deployment_default",
+                                   "test double", provider, server or "", "", [])
+
         def policy_for(self, provider, program, **kwargs):
             seen.update(kwargs)
             return "policy"
@@ -215,7 +227,7 @@ def test_the_status_route_explains_a_provider_mismatch_rather_than_saying_no(mon
     monkeypatch.setattr(live, "configured_program", lambda *a, **k: "Tournaments")
     monkeypatch.setattr("core.state.state", lambda *a, **k: _state(), raising=False)
 
-    report = svc.evaluate("1400167", None, equity=100_000.0, balance=100_000.0)
+    report = svc.evaluate("TEST-ACCT-NOPOLICY", None, equity=100_000.0, balance=100_000.0)
     reasons = " ".join(report.get("blocking_reasons", []))
     assert "no challenge policy resolves" in reasons
     assert "searched_key" in reasons

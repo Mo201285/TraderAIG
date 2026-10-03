@@ -160,9 +160,15 @@ def _isolated_service(db_path: Path) -> ChallengeService:
 def _tmp_repo(db_path: Path) -> ChallengeRepository:
     """A repository on its own SQLite file, not the live `.data` database.
 
-    Without this every row below would land in the same database the real
-    backend reads, and the tests would be writing fake baselines for account
-    1787174 into a live system's control tables.
+    Every row below is written through a path that exists only for the length of
+    one test. Without it each row would land in the same database the running
+    backend reads, and the suite would deposit fabricated baselines into a live
+    system's control tables -- which is not hypothetical: a run whose isolation
+    had failed left an `observed` baseline for MT5 login 1787174 and a `DemoProp`
+    policy sitting in `.data/traderaig.db`, indistinguishable from real operator
+    data. The account ids below are deliberately synthetic (`TEST-ACCT-*`) for
+    the same reason: a fabricated row should be obvious in a table dump even if
+    it escapes the isolation that was supposed to stop it.
     """
     from persistence.models import Base
     from sqlalchemy import create_engine
@@ -746,7 +752,7 @@ def test_the_api_and_the_store_agree_after_a_hard_kill(backend):
     fresh process on the same database. This is the shape of a watchdog restart,
     and it is the one the earlier rows kept describing without testing.
     """
-    account = "1787174"
+    account = "TEST-ACCT-HARDPROBE"
     seeded = backend.post(f"/challenge/accounts/{account}/baseline",
                           {"start_equity": 100_000, "source": "terms p.1",
                            "verified": True})
@@ -777,14 +783,14 @@ def test_a_real_backend_does_not_regrant_the_day_after_a_hard_kill(backend):
     """The daily allowance, checked across an actual process death."""
     today = int(time.time() // 86400)
     first = _service(backend.db_path)
-    first.declare_baseline("1787174", 100_000.0, source="terms", verified=True)
-    first.observe("1787174", equity=100_000.0, balance=100_000.0, day_epoch=today)
-    first.observe("1787174", equity=94_000.0, balance=100_000.0, day_epoch=today)
+    first.declare_baseline("TEST-ACCT-HARDPROBE", 100_000.0, source="terms", verified=True)
+    first.observe("TEST-ACCT-HARDPROBE", equity=100_000.0, balance=100_000.0, day_epoch=today)
+    first.observe("TEST-ACCT-HARDPROBE", equity=94_000.0, balance=100_000.0, day_epoch=today)
 
     backend.kill()
     backend.start()
 
-    after = _service(backend.db_path).baseline_status("1787174")
+    after = _service(backend.db_path).baseline_status("TEST-ACCT-HARDPROBE")
     assert after["day_epoch"] == today
     assert after["day_low_equity"] == 94_000.0
     assert after["day_start_equity"] == 100_000.0
@@ -1035,3 +1041,139 @@ def test_a_not_applicable_rule_survives_the_round_trip_that_raises_on_it():
     assert again.is_fully_specified is True
     assert again.is_fully_resolved is True
     assert again.missing_rules() == []
+
+
+def test_a_margin_floor_survives_the_round_trip():
+    """The operator's own floor must come back with the policy, or it is gone.
+
+    `margin_level_stop_out` and `internal_margin_floor` were missing from
+    `as_dict()`, so a restored policy reported no margin dimension at all. The
+    floor an operator believed was in force simply stopped being enforced, and
+    the account most in need of the card is the one whose card went missing.
+    """
+    from challenge.policy import policy_from_dict
+
+    src = "October Clash 2026 tournament rules"
+    policy = _tournament_policy()
+    policy.margin_level_stop_out = 50.0
+    policy.margin_level_stop_out_source = src
+    policy.internal_margin_floor = 300.0
+    policy.internal_margin_floor_source = "operator internal floor"
+
+    payload = policy.as_dict()
+    assert payload["margin_level_stop_out"] == 50.0
+    assert payload["internal_margin_floor"] == 300.0
+
+    back = policy_from_dict(payload)
+    assert back.margin_level_stop_out == 50.0
+    assert back.margin_level_stop_out_source == src
+    assert back.internal_margin_floor == 300.0
+    assert back.internal_margin_floor_source == "operator internal floor"
+
+
+# -- per-account program binding ------------------------------------------------
+#
+# A provider runs several programs at once and none of them identify themselves on
+# the terminal, so "which program is this login in" is a stored claim. It has to
+# outlive the process: an account whose binding is forgotten on restart falls back
+# to the deployment default and is then judged by another tournament's terms.
+
+
+def test_a_program_binding_survives_a_hard_kill(db):
+    """The claim is the account's identity; losing it silently re-labels it."""
+    first = _isolated_service(db)
+    first.register_policy(_tournament_policy())
+    first.bind_program("5150", provider="For Traders", program="challenge",
+                       server="FTTrading-Server", source="signup confirmation")
+
+    restarted = _isolated_service(db)
+    rows = restarted.program_bindings()
+    assert len(rows) == 1
+    assert rows[0]["program"] == "challenge"
+    assert rows[0]["source"] == "signup confirmation"
+    decision = restarted.resolve_account_program("For Traders", login="5150",
+                                                 server="FTTrading-Server")
+    assert decision.program == "challenge"
+    assert decision.reason == "binding"
+
+
+def test_a_binding_still_decides_when_nothing_else_does(db):
+    """Restart must not need an open tournament window to keep the binding."""
+    first = _isolated_service(db)
+    first.register_policy(_tournament_policy())
+    first.bind_program("5150", provider="For Traders", program="challenge",
+                       server="FTTrading-Server", source="signup confirmation")
+    again = _isolated_service(db)
+    decision = again.resolve_account_program("For Traders", login="5150",
+                                             server="FTTrading-Server",
+                                             default="")
+    assert decision.program == "challenge"
+    assert decision.reason == "binding"
+
+
+def test_rebinding_replaces_the_claim_rather_than_accumulating_them(db):
+    """A corrected program must not leave two answers for one login."""
+    svc = _isolated_service(db)
+    svc.bind_program("5150", provider="For Traders", program="challenge",
+                     server="FTTrading-Server", source="first, wrong")
+    svc.bind_program("5150", provider="For Traders", program="weekend-crypto",
+                     server="FTTrading-Server", source="second, corrected")
+
+    rows = _isolated_service(db).program_bindings()
+    assert len(rows) == 1
+    assert rows[0]["program"] == "weekend-crypto"
+    assert rows[0]["source"] == "second, corrected"
+
+
+def test_one_login_can_hold_a_claim_per_server(db):
+    """A login is only unique inside a broker; the server is part of the key."""
+    svc = _isolated_service(db)
+    svc.bind_program("5150", provider="For Traders", program="challenge",
+                     server="FTTrading-Server", source="For Traders signup")
+    svc.bind_program("5150", provider="For Traders", program="challenge",
+                     server="OtherBroker-Server", source="Other signup")
+
+    rows = _isolated_service(db).program_bindings()
+    assert len(rows) == 2
+    exact = svc.resolve_account_program("For Traders", login="5150",
+                                        server="FTTrading-Server", default="")
+    assert exact.program == "challenge"
+
+
+def test_unbinding_returns_the_account_to_inference(db):
+    """Forgetting a claim is allowed; doing it by accident is what the guard is for."""
+    svc = _isolated_service(db)
+    svc.bind_program("5150", provider="For Traders", program="challenge",
+                     server="FTTrading-Server", source="signup confirmation")
+    assert svc.unbind_program("5150", "FTTrading-Server") is True
+    assert _isolated_service(db).program_bindings() == []
+    assert svc.resolve_account_program("For Traders", login="5150",
+                                       server="FTTrading-Server",
+                                       default="").program is None
+
+
+def test_a_binding_without_a_source_is_refused(db):
+    """§34.6 does not accept an unsourced claim about which rules apply.
+
+    This is the one step in program resolution that is not inference, so a bare
+    "put this account in the weekend tournament" from an operator would let a
+    guess decide which terms govern a real balance.
+    """
+    svc = _isolated_service(db)
+    for field, blank in (("source", "   "), ("provider", "  "),
+                         ("program", ""), ("source", "")):
+        payload = {"provider": "For Traders", "program": "challenge",
+                   "server": "FTTrading-Server", "source": "signup confirmation"}
+        payload[field] = blank
+        with pytest.raises(ValueError, match=field):
+            svc.bind_program("5150", **payload)
+    assert _isolated_service(db).program_bindings() == []
+
+
+def test_a_binding_naming_no_login_is_refused(db):
+    """An unconnected account has no login, and a blank one matches nothing."""
+    svc = _isolated_service(db)
+    with pytest.raises(ValueError, match="login"):
+        svc.bind_program("  ", provider="For Traders", program="challenge",
+                         server="FTTrading-Server", source="signup confirmation")
+    assert _isolated_service(db).program_bindings() == []

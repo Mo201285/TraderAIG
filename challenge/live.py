@@ -102,23 +102,63 @@ def live_policy(state_ref: Optional[CanonicalState] = None):
     None means "no policy resolves", which the callers must distinguish from
     "everything is fine". It is the correct state for a deployment that trades
     its own money and has never registered challenge terms.
+
+    The program is decided PER ACCOUNT, not read from one deployment-wide
+    variable. A provider runs a catalogue of programs -- monthly, weekly,
+    weekend -- and each of them reaches the terminal as an ordinary login, so
+    the program cannot be a property of the process. `configured_program()`
+    survives as the last-resort default inside that resolution and nothing else;
+    it is what an unbound account falls back to, never what a bound one is
+    governed by.
     """
     account = _state(state_ref).account
     provider = configured_provider(account)
-    program = configured_program()
-    if not provider or not program:
+    if not provider:
         return None
     # The server scopes the policy; it never identifies the firm. A tournament
     # written from one broker's document must not decide an account on another,
     # and `resolve` returns nothing rather than inheriting across that gap.
     server = str(getattr(account, "server", "") or "").strip() or None
+    login = getattr(account, "login", None)
     try:
         from challenge.service import challenge_service as svc
 
-        return svc.policy_for(provider, program, server=server)
+        decision = svc.resolve_account_program(provider, login=login,
+                                               server=server)
+        if not decision.resolved:
+            log.info("no challenge program resolves for this account: %s",
+                     decision.detail)
+            return None
+        return svc.policy_for(provider, decision.program, server=server)
     except Exception:  # noqa: BLE001
         log.exception("challenge policy resolution failed")
         return None
+
+
+def live_program_decision(state_ref: Optional[CanonicalState] = None):
+    """Why this account resolves to the program it does, for the console.
+
+    A halted account needs the sentence, not just the verdict: "unresolved" and
+    "wrong program" are the same silence from the outside and completely
+    different problems for whoever has to fix it.
+    """
+    account = _state(state_ref).account
+    provider = configured_provider(account)
+    server = str(getattr(account, "server", "") or "").strip() or None
+    login = getattr(account, "login", None)
+    if not provider:
+        from challenge.programs import ProgramDecision
+        return ProgramDecision(None, "no_provider",
+                               "no provider is configured for this account",
+                               "", server or "", "", [])
+    try:
+        from challenge.service import challenge_service as svc
+        return svc.resolve_account_program(provider, login=login, server=server)
+    except Exception:  # noqa: BLE001
+        log.exception("challenge program resolution failed")
+        from challenge.programs import ProgramDecision
+        return ProgramDecision(None, "error", "program resolution raised",
+                               provider, server or "", "", [])
 
 
 def is_managed(state_ref: Optional[CanonicalState] = None) -> bool:

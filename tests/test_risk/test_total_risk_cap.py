@@ -430,3 +430,117 @@ def test_governor_cap_detail_reports_the_summed_total(managed):
     assert detail["held_total"] == pytest.approx(10.0)
     assert detail["cap_usd"] == pytest.approx(2000.0)
     assert detail["aggregation"] == "summed across symbols, not netted"
+
+
+def test_the_leverage_cache_fixture_is_actually_loaded_and_empties_between_tests():
+    """The isolation has to be real, not merely written down.
+
+    The fixture used to live in `conftest_leverage.py`, which pytest never
+    loads -- only `conftest.py` is collected -- so the process-wide margin cache
+    carried entries from one test into the next and the margin assertions were
+    order-dependent by accident rather than by design. This proves the autouse
+    fixture runs around a test and actually empties the cache.
+    """
+    from challenge import leverage
+
+    assert leverage._default_cache.as_dict() == {}, (
+        "a previous test's measurement survived into this one; the cache "
+        "fixture is not running")
+
+    leverage._default_cache._entries["LEAKTEST"] = SymbolLeverage(
+        symbol="LEAKTEST", effective_leverage=500.0, margin_per_lot=0.0,
+        notional_per_lot=100_000.0, measured_at=1.0)
+    assert "LEAKTEST" in leverage._default_cache.as_dict()
+
+
+def test_the_leverage_cache_fixture_empties_again_after_that_test():
+    """The teardown half, asserted from a sibling test.
+
+    Two tests, because "the fixture is declared" and "the fixture runs" are
+    different claims, and only the second one is worth anything.
+    """
+    from challenge import leverage
+
+    assert "LEAKTEST" not in leverage._default_cache.as_dict(), (
+        "the fixture did not invalidate after the test that filled the cache")
+
+
+# --- coverage the corruption matrix proved was absent ------------------------
+#
+# Both mutations below were applied to the implementation and the suite stayed
+# green. The guards were real; nothing exercised them.
+
+
+def test_the_100k_ceiling_binds_when_equity_is_above_it(monkeypatch):
+    """A profitable account does not get a bigger cap.
+
+    The basis is `min(equity, 100_000)` precisely so that growth does not
+    loosen the tournament limit. Every existing test used equity of exactly
+    100,000, where `min()` is the identity -- so deleting the ceiling changed
+    nothing they could see. This one is above it, where the guard is the whole
+    difference: 250,000 equity would otherwise permit 5,000 of risk instead of
+    the 2,000 the tournament allows.
+    """
+    grown = portfolio_risk_room({}, equity=250_000.0, cap_fraction=0.02)
+    assert grown["cap_usd"] == pytest.approx(2_000.0)
+    assert grown["room"] == pytest.approx(2_000.0)
+
+    at_the_ceiling = portfolio_risk_room({}, equity=100_000.0, cap_fraction=0.02)
+    assert at_the_ceiling["cap_usd"] == pytest.approx(2_000.0)
+
+    below = portfolio_risk_room({}, equity=80_000.0, cap_fraction=0.02)
+    assert below["cap_usd"] == pytest.approx(1_600.0)
+
+
+def test_a_grown_account_cannot_trade_past_the_100k_ceiling(monkeypatch):
+    """The ceiling has to bind on a verdict, not only on a reported number.
+
+    `room` was asserted directly above; this asks the question a caller asks.
+    """
+    verdict = check_portfolio_risk({}, equity=250_000.0, proposed=2_500.0,
+                               cap_fraction=0.02)
+    assert verdict["verdict"] == "resize"
+    assert verdict["cap_usd"] == pytest.approx(2_000.0)
+    # Without the ceiling this would have been a 5,000 cap and an allow.
+    assert verdict["cap_usd"] < 2_500.0
+
+
+def test_used_margin_reduces_the_size_by_exactly_its_own_amount(monkeypatch):
+    """The deduction is arithmetic, so it is asserted as arithmetic.
+
+    `test_used_margin_comes_off_the_budget_first` compares two sizes and would
+    still pass if the deduction were applied twice or to the wrong term, because
+    any monotone reduction moves the answer the same way. This one pins the
+    size to the budget that is left after the deduction.
+    """
+    import challenge.leverage as lev
+
+    monkeypatch.setattr(lev, "symbol_leverage", lambda symbol: SymbolLeverage(
+        symbol=symbol, effective_leverage=10.0, margin_per_lot=10_000.0,
+        notional_per_lot=100_000.0, measured_at=0.0))
+
+    # 100k equity at a 300% floor is 33_333 of margin budget, i.e. 3.3333 lots
+    # at 10k a lot. Spending 10_000 of it must leave exactly one lot.
+    used = size_for_candidate("XAUUSD", risk_budget=1e9, risk_per_lot=1.0,
+                              equity=100_000.0, used_margin=10_000.0)
+    assert used["lots_by_margin_floor"] == pytest.approx(2.3333, abs=0.001)
+    assert used["size"] == pytest.approx(2.33, abs=0.01)
+
+    # Spending it all leaves nothing, and "nothing" must be 0.0 rather than a
+    # refusal the caller has to interpret.
+    spent = size_for_candidate("XAUUSD", risk_budget=1e9, risk_per_lot=1.0,
+                               equity=100_000.0, used_margin=33_333.0)
+    assert spent["size"] == 0.0
+
+
+def test_used_margin_above_the_budget_refuses_rather_than_going_negative(monkeypatch):
+    """More margin in use than the account may carry is zero room, not negative
+    room -- a negative size is not a position any broker will accept."""
+    import challenge.leverage as lev
+
+    monkeypatch.setattr(lev, "symbol_leverage", lambda symbol: SymbolLeverage(
+        symbol=symbol, effective_leverage=10.0, margin_per_lot=10_000.0,
+        notional_per_lot=100_000.0, measured_at=0.0))
+    over = size_for_candidate("XAUUSD", risk_budget=1e9, risk_per_lot=1.0,
+                              equity=100_000.0, used_margin=999_999.0)
+    assert over["size"] == 0.0

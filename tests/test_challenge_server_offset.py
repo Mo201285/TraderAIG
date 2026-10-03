@@ -161,3 +161,85 @@ def test_drift_exceeds_half_hour_marks_dst_jump(monkeypatch):
     d = live.offset_drift(P())
     assert d['exceeds_one_hour'] is True
     assert abs(d['drift_hours']) > 0.5
+
+
+# --- coverage the corruption matrix proved was absent ------------------------
+#
+# Guards 3 and 4 below were neutered and the suite stayed green. Both had tests
+# by name; neither test made the guard load-bearing.
+
+
+def _tick(monkeypatch, tick_time, now):
+    """A broker whose only symbol reports `tick_time`."""
+
+    class Tick:
+        def __init__(self, t):
+            self.time = t
+
+    class FakeMT5:
+        def symbol_info_tick(self, symbol):
+            return Tick(tick_time)
+
+    monkeypatch.setattr(time, "time", lambda: now)
+    monkeypatch.setitem(sys.modules, "MetaTrader5", FakeMT5())
+
+
+def test_a_non_quarter_offset_is_rounded_to_the_nearest_quarter_hour(monkeypatch):
+    """+05:31 has to become +05:30, or the day boundary sits 6 minutes out.
+
+    The existing fractional test used +05:30, which is already on the quarter
+    grid -- so it passed with the rounding deleted. This one is deliberately off
+    the grid, and it pins the direction as well as the magnitude.
+    """
+    now = 1_800_000_000.0
+    _tick(monkeypatch, now + (5.0 + 31.0 / 60.0) * 3600.0, now)
+    assert live.measured_server_utc_offset_hours() == pytest.approx(5.5)
+
+
+def test_rounding_goes_to_the_nearest_quarter_and_not_always_down(monkeypatch):
+    """+05:44 rounds UP to +05:45.
+
+    Half the cases go up. A guard that only ever rounds down would pass the
+    test above, and would place the day boundary early on those brokers.
+    """
+    now = 1_800_000_000.0
+    _tick(monkeypatch, now + (5.0 + 44.0 / 60.0) * 3600.0, now)
+    assert live.measured_server_utc_offset_hours() == pytest.approx(5.75)
+
+
+def test_a_stale_tick_is_refused_rather_than_believed(monkeypatch):
+    """A tick from three hours ago measures nothing.
+
+    A quiet session leaves the last tick old, and tick-minus-now would then read
+    as a large NEGATIVE offset -- which is a number, so it would be registered
+    and would move the day boundary by hours. There is no tick here, so there is
+    no measurement, and the honest answer is None.
+    """
+    now = 1_800_000_000.0
+    _tick(monkeypatch, now - 3 * 3600.0, now)
+    assert live.measured_server_utc_offset_hours() is None
+
+
+def test_a_tick_just_inside_the_age_limit_is_still_believed(monkeypatch):
+    """The 60s guard needs its other side, or "reject stale" is satisfied by
+    rejecting everything -- which the neighbouring tests cannot distinguish.
+
+    A PAST tick is what makes the age meaningful: `age = now - tick_time`, so
+    only a past tick can be old. Its measured offset is therefore near zero,
+    which is the correct reading for a broker on UTC with a tick 30s old.
+    """
+    now = 1_800_000_000.0
+    _tick(monkeypatch, now - 30.0, now)
+    assert live.measured_server_utc_offset_hours() == pytest.approx(0.0)
+
+
+def test_a_tick_just_outside_the_age_limit_is_refused(monkeypatch):
+    """61 seconds is over the line, so the boundary is where it is claimed.
+
+    Left alone this would read as roughly -0.017h, which rounds to 0.0 and
+    looks like a perfectly good measurement of a UTC broker. The age guard is
+    the only thing standing between a quiet session and a fabricated offset.
+    """
+    now = 1_800_000_000.0
+    _tick(monkeypatch, now - 61.0, now)
+    assert live.measured_server_utc_offset_hours() is None

@@ -44,18 +44,38 @@ def _isolated(monkeypatch):
     these tests decide whether that file passes -- sixteen failures that exist
     only because of alphabetical ordering.
 
+    Paid product entitlements are restored for the same reason and by the same
+    argument: a purchase left behind outlives its user, and the acting principal
+    of the next file would inherit a service nobody in that file bought.
+
     The service is process-wide too, so it is rebuilt rather than poked at.
     """
     from challenge.service import challenge_service
     from governance.identity import identity
+    from governance.products import products
 
     account = dict(state.account.__dict__)
     users = dict(identity._users)
     subs = dict(identity._subscriptions)
     audit_len = len(identity._audit)
+    bought = dict(products._entitlements)
     monkeypatch.delenv("TRADERAIG_CHALLENGE_PROGRAM", raising=False)
     fresh = ChallengeService(PolicyRegistry())
     held = {k: v for k, v in fresh.__dict__.items()}
+    # The registry OBJECT and its contents, both restored after the attribute
+    # swap below and for the same reason it needs its own snapshot: restoring the
+    # service attributes points `_registry` at the throwaway registry `fresh` was
+    # built with, which happens to be empty -- and an empty registry is not the
+    # state this file started in, so whichever test ran first would silently
+    # decide the starting state for all the others.
+    #
+    # Without this, a policy registered by one test is still there for the next,
+    # and registration is immutable on purpose ("register a new version rather
+    # than replacing one"), so the second test gets a 422 for doing nothing
+    # wrong. The registry was right; the fixture was leaking.
+    live_registry = challenge_service._registry
+    policies = {slot: list(versions)
+                for slot, versions in live_registry._policies.items()}
     try:
         yield
     finally:
@@ -64,6 +84,10 @@ def _isolated(monkeypatch):
                 delattr(challenge_service, key)
         for key, value in held.items():
             setattr(challenge_service, key, value)
+        # After the attribute swap, because it reassigns `_registry` wholesale.
+        challenge_service._registry = live_registry
+        live_registry._policies.clear()
+        live_registry._policies.update(policies)
         for key, value in account.items():
             if hasattr(state.account, key):
                 setattr(state.account, key, value)
@@ -71,6 +95,8 @@ def _isolated(monkeypatch):
         identity._users.update(users)
         identity._subscriptions.clear()
         identity._subscriptions.update(subs)
+        products._entitlements.clear()
+        products._entitlements.update(bought)
         del identity._audit[audit_len:]
 
 
@@ -93,11 +119,22 @@ def _full_policy_payload(**overrides) -> dict:
 
 
 def _operator(client, monkeypatch) -> None:
-    """Give the caller the entitlement every challenge route requires."""
+    """Give the caller everything every challenge route requires.
+
+    Two separate authorities, because §34.15 requires both and they are granted
+    by different subsystems: the institutional plan supplies `can_manage_risk`,
+    and the $9.99 product supplies `challenge_management`. The second one used to
+    be free with the first, which made the commercial half of the feature
+    untestable — every operator passed the gate and nothing exercised the
+    refusal. Buying it here keeps the tests honest about what the product is for.
+    """
+    from governance.products import products
+
     email = f"chal{time.time_ns()}@x.co"
     uid = client.post("/users", json={"email": email}).json()["user_id"]
     monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", email)
     client.post(f"/users/{uid}/subscription/activate", json={"plan": "institutional"})
+    products.grant(uid, "challenge_basic", charge_id="ch_test", actor="test")
 
 
 def _unentitled(client, monkeypatch) -> None:
@@ -117,6 +154,26 @@ def _unentitled(client, monkeypatch) -> None:
     assert SubscriptionPlan.FREE.value == "free"
 
 
+def _purchased_but_no_risk(client, monkeypatch) -> None:
+    """The operator §34.18 exists for: institutional, and paid nothing for the
+    challenge service.
+
+    The gate must still refuse. An institutional subscription buys authority over
+    the platform; it is not a receipt for the $9.99 product, and treating it as
+    one would make the paid tier unbuyable and the free tier unprotected.
+    """
+    from governance.identity import Entitlement, identity
+
+    email = f"unpaid{time.time_ns()}@x.co"
+    uid = client.post("/users", json={"email": email}).json()["user_id"]
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", email)
+    client.post(f"/users/{uid}/subscription/activate",
+                json={"plan": "institutional"})
+
+    assert identity.can(uid, Entitlement.CAN_MANAGE_RISK) is True
+    assert identity.can(uid, Entitlement.CHALLENGE_MANAGEMENT) is False
+
+
 # ---------------------------------------------------------------------------
 # the routes answer, and they answer honestly
 # ---------------------------------------------------------------------------
@@ -127,8 +184,18 @@ def test_the_challenge_routes_are_readable_without_an_entitlement(client):
         assert client.get(path).status_code == 200
 
 
-def test_a_disconnected_account_reports_unconnected_rather_than_failing(client):
-    """A read with no terminal attached must still answer."""
+def test_a_disconnected_account_reports_unconnected_rather_than_failing(client,
+                                                                        monkeypatch):
+    """A read with no terminal attached must still answer.
+
+    The account is unconnected here on purpose rather than by luck. `state` is a
+    process-wide singleton, and the autouse fixture snapshots whatever it finds,
+    so a test in another file that leaves a login behind is faithfully preserved
+    into this one -- and the assertion below then fails on the ambient account
+    rather than on anything about this route. Arranging login 0 tests what the
+    name says: no terminal, still an answer.
+    """
+    monkeypatch.setattr(state.account, "login", 0)
     payload = client.get("/challenge/status").json()
 
     assert payload["ok"] is True
@@ -440,7 +507,13 @@ def test_a_completed_baseline_against_a_real_policy_is_allowed(client, monkeypat
         max_leverage=RuleValue.known(100, source=SOURCE),
         drawdown_type=DrawdownType.STATIC,
         instruments=InstrumentPolicy(default=Restriction.ALLOWED, source=SOURCE),
-        overnight=Restriction.ALLOWED, weekend=Restriction.DENIED)
+        overnight=Restriction.ALLOWED, weekend=Restriction.DENIED,
+        # The broker's day boundary. The daily loss is measured against the
+        # provider's trading day, so an unestablished offset leaves that
+        # dimension unscored and PROTECTs the account. Correct behaviour, and
+        # the reason the endpoint can now be given one at all -- it was
+        # unreachable through registration before this workstream.
+        server_utc_offset_hours=3.0)
 
     svc.observe("acct", equity=100_000, balance=100_000)
     # Watching the account is not knowing how it began. Until the opening
@@ -715,3 +788,161 @@ def test_a_negative_proposed_risk_is_rejected(client):
     response = client.get("/challenge/headroom?proposed_risk=-100")
 
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# 34.2/34.15/34.18: the $9.99 service, and what refuses without it
+# ---------------------------------------------------------------------------
+
+def test_the_challenge_routes_refuse_an_institutional_operator_who_has_not_paid(
+        client, monkeypatch):
+    """§34.18, over the wire.
+
+    The most likely way this feature gets wired up wrong is to treat an
+    institutional subscription as if it included the service. It does not: the
+    plan answers what an operator may do to the platform, the product answers
+    what they have paid for, and only the second one may unblock challenge
+    protection.
+    """
+    _purchased_but_no_risk(client, monkeypatch)
+    payload = _full_policy_payload()
+
+    response = client.post("/challenge/policies", json=payload)
+
+    assert response.status_code == 403
+    assert "challenge_management" in response.json()["detail"]
+
+
+def test_reads_still_answer_when_nobody_has_paid(client, monkeypatch):
+    """The panel must be able to say WHY an account is unprotected.
+
+    Gating the reads would leave the operator with a 403 and no information,
+    which is the worst of both: no service and no diagnosis.
+    """
+    _purchased_but_no_risk(client, monkeypatch)
+
+    payload = client.get("/challenge/status").json()
+
+    assert payload["ok"] is True
+    assert payload["commercial"]["gate"]["active"] is False
+    assert payload["commercial"]["price_usd"] == pytest.approx(9.99)
+
+
+def test_an_expired_entitlement_stops_the_service_and_reports_the_state(
+        client, monkeypatch):
+    """§34.20: expiry is a state, and it takes the service with it.
+
+    Not by deleting anything. The protection is not removed, so an account that
+    was mid-challenge is not suddenly unmanaged by being late on a payment; the
+    governor refuses new entries instead. This test only asserts the record and
+    the refusal.
+    """
+    from governance.products import products
+
+    _purchased_but_no_risk(client, monkeypatch)
+    from governance.identity import identity
+    uid = identity.principal_user_id()
+
+    record = products.get(uid, "challenge_basic")
+    assert record is None
+    products.grant(uid, "challenge_basic", charge_id="ch_expiring", actor="test")
+    record = products.get(uid, "challenge_basic")
+    record.expires_at = time.time() - 1.0
+    record.grace_until = time.time() - 1.0
+
+    assert products.has(uid, "challenge_management") is False
+    assert products.get(uid, "challenge_basic").state == "expired"
+    assert client.post("/challenge/policies",
+                       json=_full_policy_payload()).status_code == 403
+
+
+def test_the_offset_and_the_weekend_terms_survive_registration(client, monkeypatch):
+    """What the operator states must arrive at the stored policy intact."""
+    from challenge.service import challenge_service as svc
+
+    _operator(client, monkeypatch)
+    payload = _full_policy_payload(
+        server_utc_offset_hours={"value": 3.0, "source": "FTTrading-Server clock"},
+        weekend_close_lead_minutes={"value": 120.0, "source": SOURCE},
+        weekend_risk_multiplier={"value": 0.5, "source": SOURCE},
+        margin_level_stop_out={"value": 95.0, "source": SOURCE},
+        symbol_schedules={"BTCUSD": {"observed_close": 1790896131.0,
+                                     "observed_at": 1790896000.0,
+                                     "next_open": 1790934000.0,
+                                     "source": "mt5 sessions document"}},
+    )
+    assert client.post("/challenge/policies", json=payload).status_code == 200
+
+    stored = svc._registry.all_policies()[-1]
+    assert stored.server_utc_offset_hours == 3.0
+    assert stored.weekend_close_lead_minutes == 120.0
+    assert stored.weekend_risk_multiplier == 0.5
+    assert stored.margin_level_stop_out == 95.0
+    assert stored.margin_level_stop_out_source == SOURCE
+    assert stored.symbol_schedules["BTCUSD"]["observed_close"] == 1790896131.0
+    # next_open is what bounds the reduced-risk window; losing it here would
+    # leave a Friday reading that halves risk forever.
+    assert stored.symbol_schedules["BTCUSD"]["next_open"] == 1790934000.0
+
+
+def test_a_bare_offset_is_refused(client, monkeypatch):
+    """A guessed offset is the permissive kind of wrong.
+
+    The daily allowance resets on the provider's day, so an offset nobody
+    recorded hands the account a fresh 3% at the wrong hour, on the one rule
+    that ends accounts. A bare number is refused for the same reason the
+    tournament rules are.
+    """
+    _operator(client, monkeypatch)
+    resp = client.post("/challenge/policies",
+                       json=_full_policy_payload(server_utc_offset_hours=3.0))
+    assert resp.status_code == 400
+    assert "source" in resp.json()["detail"]
+
+
+def test_a_weekend_multiplier_above_one_is_refused(client, monkeypatch):
+    """The reduction window must not be registerable as a risk increase.
+
+    It would raise risk on exactly the days positions are held longest, and it
+    is refused rather than clamped: a value that needs clamping is one the
+    operator did not mean.
+    """
+    _operator(client, monkeypatch)
+    resp = client.post("/challenge/policies", json=_full_policy_payload(
+        weekend_risk_multiplier={"value": 1.5, "source": SOURCE}))
+    assert resp.status_code == 400
+    assert "above 1" in resp.json()["detail"]
+
+
+def test_a_schedule_without_an_observed_close_is_refused(client, monkeypatch):
+    """A close window with no close cannot be placed at all.
+
+    Accepted, it would read as "already shut" for every symbol forever -- safe,
+    but for the wrong reason and indistinguishable from a real holiday.
+    """
+    _operator(client, monkeypatch)
+    resp = client.post("/challenge/policies", json=_full_policy_payload(
+        symbol_schedules={"BTCUSD": {"observed_at": 1790896000.0}}))
+    assert resp.status_code == 400
+    assert "observed_close" in resp.json()["detail"]
+
+
+def test_the_stopout_source_is_what_makes_it_confirmable(client, monkeypatch):
+    """A stopout with no source cannot be source-confirmed, by construction.
+
+    This is the whole reason the source is registered: without it the field
+    exists but the confirmation that treats it as a real limit can never pass,
+    and a limit that can never be confirmed is an internal floor with a
+    broker's number on it.
+    """
+    from challenge.service import challenge_service as svc
+
+    _operator(client, monkeypatch)
+    assert client.post("/challenge/policies", json=_full_policy_payload(
+        margin_level_stop_out={"value": 95.0, "source": SOURCE})).status_code == 200
+    sourced = svc._registry.all_policies()[-1]
+    assert sourced.margin_level_stop_out_source == SOURCE
+
+    assert client.post("/challenge/policies", json=_full_policy_payload(
+        policy_version="2026.10",
+        margin_level_stop_out={"value": 95.0})).status_code == 400

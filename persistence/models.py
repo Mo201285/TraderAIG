@@ -11,6 +11,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -156,6 +157,38 @@ class ChallengeStateDB(Base):
     state: Mapped[str] = mapped_column(String(32), default="onboarding")
     updated_at: Mapped[float] = mapped_column(
         Float, default=lambda: datetime.now(timezone.utc).timestamp())
+
+
+class ChallengePolicyDB(Base):
+    """Persisted challenge policy versions, so a restart forgets no terms.
+
+    A policy held only in memory is a policy an operator has to re-type after
+    every deploy, and re-typing it is how a subtly different set of numbers
+    ends up governing an account that was verified against the first one. The
+    whole `as_dict()` is stored rather than a column per rule: the rule set
+    grows, and a schema that has to be migrated every time a provider publishes
+    another term is a schema that will be wrong on the day it matters.
+
+    Keyed by (provider, program, policy_version) with a monotonic `registered_at`
+    rather than by the registry's own composite key, because `key` embeds the
+    account size and server scope -- and two registrations of the same version at
+    two sizes are two different policies, both of which have to come back.
+    """
+
+    __tablename__ = "challenge_policies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(128), index=True)
+    program: Mapped[str] = mapped_column(String(128), index=True)
+    policy_version: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[str] = mapped_column(Text)
+    registered_at: Mapped[float] = mapped_column(
+        Float, default=lambda: datetime.now(timezone.utc).timestamp())
+
+    __table_args__ = (
+        UniqueConstraint("provider", "program", "policy_version", "payload",
+                         name="uq_challenge_policy_version_payload"),
+    )
 
 
 class ProductEntitlementDB(Base):

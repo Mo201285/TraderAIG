@@ -70,11 +70,30 @@ def configured_provider(account: Any = None) -> str:
     signed up with. Passing the server as the provider would look up a firm
     called `FTTrading-Server` and find nothing, which is indistinguishable from
     having no policy at all.
+
+    The value that came back from the environment was not always a firm name.
+    A deployment had `TRADERAIG_CHALLENGE_PROVIDER=TRADERAIG_CHALLENGE_PROVIDER`
+    -- the variable's own name echoed back as its value -- which "resolved"
+    only because the same string had been typed into the policy. That is a
+    lookup that agrees with itself and tells the operator nothing about which
+    firm's rules are in force, and the registry key read like a mistake. So a
+    value that is merely this variable's own name is treated as unset and falls
+    through, rather than being accepted as an identity.
     """
     configured = str(os.getenv("TRADERAIG_CHALLENGE_PROVIDER", "") or "").strip()
-    if configured:
+    if configured and not _is_placeholder_provider(configured):
         return configured
     return str(getattr(account, "broker", "") or "").strip()
+
+
+#: Values that name no firm: an empty string, or the configuration variable's
+#: own name standing in for a value nobody supplied.
+_PROVIDER_PLACEHOLDERS = frozenset({"TRADERAIG_CHALLENGE_PROVIDER"})
+
+
+def _is_placeholder_provider(value: str) -> bool:
+    """True when `value` is a placeholder rather than a provider identity."""
+    return value.upper() in _PROVIDER_PLACEHOLDERS
 
 
 def live_policy(state_ref: Optional[CanonicalState] = None):
@@ -257,7 +276,9 @@ def verdict(symbol: Optional[str] = None, proposed_risk: float = 0.0,
         account_id, policy,
         equity=inputs["equity"], balance=inputs["balance"],
         margin=inputs["margin"], open_risk=inputs["open_risk"],
-        proposed_risk=float(proposed_risk or 0.0), symbol=symbol)
+        proposed_risk=float(proposed_risk or 0.0), symbol=symbol,
+        server=getattr(getattr(state_ref, "account", None), "server", None)
+        or None)
     result["managed"] = policy is not None
     result["program"] = configured_program()
     return result

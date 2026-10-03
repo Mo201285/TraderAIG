@@ -87,3 +87,27 @@ def _isolate_market_plane():
     _clean()
     yield
     _clean()
+
+
+@pytest.fixture(autouse=True)
+def _clear_leverage_cache():
+    """The measured-margin cache is process-wide, so it has to be emptied
+    around every test.
+
+    It lived in `conftest_leverage.py`, which pytest never loads: only a file
+    named `conftest.py` is collected, so the cache survived between tests and a
+    test that measured margin for one symbol saw the previous test's answer.
+    The margin tests still passed, because each of them happened to use a
+    distinct symbol or volume -- which is luck, not isolation.
+    """
+    def _clean():
+        try:
+            from challenge import leverage
+
+            leverage._default_cache.invalidate()
+        except Exception:  # noqa: BLE001
+            pass
+
+    _clean()
+    yield
+    _clean()

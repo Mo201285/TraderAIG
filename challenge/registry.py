@@ -58,6 +58,19 @@ class PolicyRegistry:
         self._lock = threading.RLock()
 
     @staticmethod
+    def _same_server(a: Optional[str], b: Optional[str]) -> bool:
+        """Whether two policies claim the same broker, for uniqueness only.
+
+    Not `matches_server`: that is deliberately asymmetric (a broker-neutral
+        policy matches every server) because it answers "does this apply here".
+        Uniqueness needs the stricter question "are these the same claim", where
+        `None` and `"FTTrading-Server"` are different claims and may coexist.
+        """
+        if a is None or b is None:
+            return a is None and b is None
+        return str(a).strip().casefold() == str(b).strip().casefold()
+
+    @staticmethod
     def _slot(provider: str, program: str) -> str:
         return f"{(provider or '').strip().lower()}::{(program or '').strip().lower()}"
 
@@ -77,10 +90,21 @@ class PolicyRegistry:
         slot = self._slot(policy.provider, policy.program)
         with self._lock:
             existing = self._policies.setdefault(slot, [])
-            if any(p.policy_version == policy.policy_version for p in existing):
+            # Version-uniqueness is per server, not per slot. Two brokers can
+            # each publish a "2026.10" of the same program with different
+            # numbers, and those are legitimately different documents. Refusing
+            # the second one would push an operator towards `supersede()` on a
+            # version that is not superseded -- which is precisely how one
+            # broker's terms end up replacing another's.
+            if any(p.policy_version == policy.policy_version
+                   and PolicyRegistry._same_server(p.server, policy.server)
+                   for p in existing):
                 raise ValueError(
-                    f"version {policy.policy_version} of {slot} is already "
-                    "registered; register a new version rather than replacing one")
+                    f"version {policy.policy_version} of {slot}"
+                    + (f" on {policy.server}" if policy.server else
+                       " (broker-neutral)")
+                    + " is already registered; register a new version rather "
+                    "than replacing one")
             existing.append(policy)
             # newest effective_from first, so resolve() can stop at the first match
             existing.sort(key=lambda p: (p.effective_from or "", p.policy_version))
@@ -101,7 +125,8 @@ class PolicyRegistry:
 
     def resolve(self, provider: str, program: str, *,
                 on: Optional[str] = None,
-                account_size: Optional[float] = None) -> Optional[ChallengePolicy]:
+                account_size: Optional[float] = None,
+                server: Optional[str] = None) -> Optional[ChallengePolicy]:
         """The policy in force for this account on this date, or None.
 
         None means "no policy applies", and callers must treat that as
@@ -117,6 +142,19 @@ class PolicyRegistry:
                      if abs(float(p.account_size) - float(account_size)) < 1e-6]
             if sized:
                 candidates = sized
+        # Terms verified for one broker's document must not decide another
+        # broker's account. Filtered *before* the version pick, so a tournament
+        # scoped to FTTrading-Server cannot be overtaken by, or overtake, a
+        # policy written for a different server.
+        matching = [p for p in candidates if p.matches_server(server)]
+        if matching:
+            candidates = matching
+        elif candidates:
+            # Policies exist for this provider/program but none is written for
+            # this server. Falling back to the nearest one would be exactly the
+            # inheritance `matches_server` refuses, so this resolves to nothing
+            # and the caller treats it as POLICY_UNKNOWN.
+            return None
         applicable = []
         for policy in candidates:
             start = _parse_iso(policy.effective_from)
@@ -150,6 +188,7 @@ class PolicyRegistry:
                 "effective_until": p.effective_until,
                 "account_size": p.account_size,
                 "is_fully_specified": p.is_fully_specified,
+                "is_fully_resolved": p.is_fully_resolved,
                 "missing_rules": p.missing_rules(),
                 "key": p.key,
             }

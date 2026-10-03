@@ -6,6 +6,7 @@ leaking SQLAlchemy into business logic.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +24,7 @@ from persistence.db import bind_test_session, make_live_session
 from persistence.models import (
     AuditRecordDB,
     ChallengeBaselineDB,
+    ChallengePolicyDB,
     ChallengeStateDB,
     ExperienceRecordDB,
     OpsRunRecordDB,
@@ -339,6 +341,63 @@ class ChallengeRepository:
                 select(ChallengeStateDB)).scalars().all()
         return [{"account_id": r.account_id, "state": r.state or "onboarding"}
                 for r in rows]
+
+    # -- policies --------------------------------------------------------
+
+    def save_policy(self, policy: Dict[str, Any]) -> None:
+        """Persist one policy version.
+
+        The row is keyed by content, not by the registry's composite `key`:
+        `key` folds in account size and server scope, so registering the same
+        version for two account sizes produces two rows with one version label.
+        That is correct -- they are two different policies -- and it means
+        `payload` is part of the uniqueness constraint rather than an
+        afterthought.
+        """
+        payload = json.dumps(policy, sort_keys=True, default=str)
+        with self._db() as session:
+            existing = session.execute(
+                select(ChallengePolicyDB).where(
+                    ChallengePolicyDB.provider
+                    == str(policy.get("provider") or ""),
+                    ChallengePolicyDB.program
+                    == str(policy.get("program") or ""),
+                    ChallengePolicyDB.policy_version
+                    == str(policy.get("policy_version") or ""),
+                    ChallengePolicyDB.payload == payload,
+                )).scalars().first()
+            if existing is not None:
+                return
+            session.add(ChallengePolicyDB(
+                provider=str(policy.get("provider") or ""),
+                program=str(policy.get("program") or ""),
+                policy_version=str(policy.get("policy_version") or ""),
+                payload=payload))
+            session.commit()
+
+    def load_policies(self) -> List[Dict]:
+        with self._db() as session:
+            rows = session.execute(
+                select(ChallengePolicyDB).order_by(
+                    ChallengePolicyDB.registered_at)).scalars().all()
+        out: List[Dict] = []
+        for r in rows:
+            try:
+                decoded = json.loads(r.payload)
+            except (TypeError, ValueError):
+                # A row that will not parse is skipped and named by the caller,
+                # never loaded optimistically: half a policy produces confident
+                # wrong numbers, which is the failure this whole path exists to
+                # prevent.
+                out.append({"provider": r.provider, "program": r.program,
+                            "policy_version": r.policy_version,
+                            "_unreadable": True})
+                continue
+            decoded["provider"] = r.provider
+            decoded["program"] = r.program
+            decoded["policy_version"] = r.policy_version
+            out.append(decoded)
+        return out
 
 
 class ProductRepository:

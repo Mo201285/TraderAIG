@@ -43,6 +43,7 @@ that costs an operator a re-declaration rather than an account its limits.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -176,7 +177,8 @@ class _Baseline:
 
     def observe(self, equity: float, balance: float,
                 margin: float = 0.0, open_risk: float = 0.0,
-                day_epoch: Optional[int] = None) -> None:
+                day_epoch: Optional[int] = None,
+                server_utc_offset_hours: float = 0.0) -> None:
         """Fold one reading in, rolling the day when the epoch changes.
 
         The day roll is what returns a floating account's room. Doing it here
@@ -185,7 +187,12 @@ class _Baseline:
         question with side effects.
         """
         equity = float(equity or 0.0)
-        today = int(day_epoch if day_epoch is not None else time.time() // 86400)
+        # The provider's day, not UTC's. `+ offset` then `// 86400` rather than
+        # the reverse, so a non-integer offset (India +5:30, which several
+        # brokers run) truncates toward the day the broker would name instead of
+        # rolling the day early or late by half an hour.
+        today = int(day_epoch if day_epoch is not None
+                    else (time.time() + float(server_utc_offset_hours) * 3600.0) // 86400)
         if self.start_equity is None:
             # Deliberately recorded as `observed`, not `declared`. This is the
             # current balance of an account that may have been trading for
@@ -421,6 +428,38 @@ class ChallengeService:
                     machine.restore(state)
                 except (ValueError, TransitionRefused) as exc:
                     self._restore_failures.append(f"{account_id}: {exc}")
+            self._restore_policies()
+
+    def _restore_policies(self) -> None:
+        """Reload registered policy versions so a restart forgets no terms.
+
+        A policy that only exists in memory is one the operator has to re-type
+        after every deploy, and re-typing it is how a subtly different set of
+        numbers ends up governing an account that was verified against the
+        first set. Same rule as the baselines: a row that cannot be read back is
+        skipped and named, never loaded optimistically.
+        """
+        from .policy import policy_from_dict
+
+        for record in self._safe(lambda s: s.load_policies(), []):
+            version = str(record.get("policy_version") or "")
+            label = "%s:%s:%s" % (record.get("provider"), record.get("program"),
+                                  version)
+            if record.get("_unreadable"):
+                self._restore_failures.append(
+                    "%s: stored policy is not readable JSON" % label)
+                continue
+            try:
+                policy = policy_from_dict(record)
+            except (TypeError, ValueError, KeyError) as exc:
+                self._restore_failures.append("%s: %s" % (label, exc))
+                continue
+            try:
+                self._registry.register(policy)
+            except (TypeError, ValueError) as exc:
+                self._restore_failures.append("%s: %s" % (label, exc))
+                continue
+            self._restored.append(label)
 
     def _safe(self, call, default):
         """Run a store call, degrading to `default` rather than raising.
@@ -459,6 +498,17 @@ class ChallengeService:
             return
         self._safe(lambda s: s.save_state(account_id, machine.state.value), None)
 
+    def _persist_policy(self, policy: ChallengePolicy) -> None:
+        """Write the policy through, or lose it with the process.
+
+        A `_safe` call rather than a raise: losing the write costs the operator
+        the terms on the next restart, which the response already reports, while
+        raising out of `register` would 500 a request that was itself fine.
+        """
+        if self._store is None:
+            return
+        self._safe(lambda s: s.save_policy(policy.as_dict()), None)
+
     @property
     def durability(self) -> Dict[str, Any]:
         """Whether the histories are actually durable in this process."""
@@ -479,13 +529,25 @@ class ChallengeService:
 
     def observe(self, account_id: str, *, equity: float, balance: float,
                 margin: float = 0.0, open_risk: float = 0.0,
-                day_epoch: Optional[int] = None) -> AccountSnapshot:
+                day_epoch: Optional[int] = None,
+                server_utc_offset_hours: float = 0.0) -> AccountSnapshot:
         """Record one reading of the real account and return the snapshot.
 
         `day_epoch` is injectable so a replay or a backfill can drive the day
-        roll deliberately rather than waiting for UTC midnight -- the roll is
-        what returns a floating account's room, and a control that can only be
-        tested at midnight is a control nobody tests.
+        roll deliberately rather than waiting for midnight -- the roll is what
+        returns a floating account's room, and a control that can only be tested
+        at midnight is a control nobody tests.
+
+        `server_utc_offset_hours` decides which midnight. This defaults to UTC,
+        which is the wrong day for every provider that publishes one: a daily
+        loss limit is measured against *the broker's* trading day, and on a
+        GMT+3 server that day ends at 21:00 UTC, not midnight. Rolling at
+        00:00 UTC hands the account a fresh 3% at a moment the provider still
+        counts as the previous day, so for three hours the engine reports a full
+        daily allowance on a day that is already spent. That is the permissive
+        direction, which is the only direction that gets a rule wrong fatally,
+        so the offset is a required argument at every real call site rather than
+        something a caller can inherit accidentally from a default of zero.
         """
         with self._lock:
             if account_id == UNCONNECTED_ACCOUNT_ID:
@@ -505,7 +567,8 @@ class ChallengeService:
             if baseline is None:
                 baseline = _Baseline(account_id)
                 self._baselines[account_id] = baseline
-            baseline.observe(equity, balance, margin, open_risk, day_epoch=day_epoch)
+            baseline.observe(equity, balance, margin, open_risk, day_epoch=day_epoch,
+                             server_utc_offset_hours=server_utc_offset_hours)
             self._persist_baseline(baseline)
             return baseline.as_snapshot(equity, balance, margin, open_risk)
 
@@ -663,15 +726,83 @@ class ChallengeService:
 
     def policy_for(self, provider: str, program: str, *,
                    account_size: Optional[float] = None,
-                   on: Optional[str] = None) -> Optional[ChallengePolicy]:
+                   on: Optional[str] = None,
+                   server: Optional[str] = None) -> Optional[ChallengePolicy]:
+        """The policy in force for this account, or None if none applies.
+
+        `server` is the account's MT5 server. It is a filter, not a hint: a
+        policy whose terms were read from one broker's document does not apply
+        to an account on another broker, and resolving one for it anyway is how
+        a verified set of tournament numbers ends up deciding an account they
+        were never written for.
+        """
         return self._registry.resolve(provider, program, on=on,
-                                      account_size=account_size)
+                                      account_size=account_size,
+                                      server=server)
+
+    def _baseline_start(self, account_id: str) -> Optional[float]:
+        """The declared opening balance, or None when there is not one."""
+        base = self._baselines.get(account_id)
+        if base is None or base.start_equity is None:
+            return None
+        return float(base.start_equity)
+
+    def resolution_diagnostics(self, provider: str, program: str, *,
+                               account_size: Optional[float] = None,
+                               server: Optional[str] = None
+                               ) -> Dict[str, Any]:
+        """Why a lookup failed, in the terms the lookup was made with.
+
+        "No policy resolves" is true and useless: the operator cannot tell a
+        provider that was never configured from a provider that was
+        configured under a name this deployment does not know, and those two
+        need opposite fixes. So this reports the key that was searched for
+        beside the keys that exist, and names the first dimension that did not
+        match.
+        """
+        registered = sorted(
+            "%s:%s:%s" % (p.provider, p.program, p.policy_version)
+            for p in self._registry.all_policies())
+        wanted_key = "%s:%s:%s" % (provider or "<unset>", program or "<unset>",
+                                   server or "<no-server>")
+        matched: List[str] = []
+        for p in self._registry.all_policies():
+            if p.provider != provider:
+                continue
+            if p.program != program:
+                continue
+            if server and not self._registry._same_server(p.server, server):
+                continue
+            if (account_size is not None
+                    and p.account_size is not None
+                    and abs(float(p.account_size) - float(account_size)) > 0.005):
+                continue
+            matched.append("%s:%s:%s" % (p.provider, p.program,
+                                          p.policy_version))
+        if matched:
+            reason = "resolved"
+        elif registered and not any(k.startswith("%s:" % provider)
+                                    for k in registered):
+            reason = "provider_not_registered"
+        elif registered and not any(":%s:" % program in k for k in registered):
+            reason = "program_not_registered"
+        elif server:
+            reason = "server_mismatch"
+        else:
+            reason = "no_policy_registered"
+        return {"searched_key": wanted_key,
+                "provider": provider, "program": program,
+                "account_size": account_size, "server": server,
+                "registered_keys": registered,
+                "matched_keys": sorted(matched),
+                "reason": reason}
 
     def evaluate(self, account_id: str, policy: Optional[ChallengePolicy], *,
                  equity: float, balance: float, margin: float = 0.0,
                  open_risk: float = 0.0, proposed_risk: float = 0.0,
                  symbol: Optional[str] = None, is_news_window: bool = False,
-                 is_weekend: bool = False) -> Dict[str, Any]:
+                 is_weekend: bool = False,
+                 server: Optional[str] = None) -> Dict[str, Any]:
         """The 34.22 answer: state, headroom, permission -- and whether it counts.
 
         `counts` is the load-bearing field. It is False when the baseline is
@@ -701,19 +832,70 @@ class ChallengeService:
         if not gradeable:
             reasons.append(status.get("reason") or "baseline not trustworthy")
         if policy is None:
-            reasons.append("no challenge policy resolves for this account")
+            from . import live as _live
+            # The broker comes from the caller, not from `core.state` read
+            # here. Reaching for that module global made this diagnostic depend
+            # on an import-time singleton that callers legitimately substitute,
+            # and the two shapes that have been in the tree -- an instance and a
+            # zero-argument factory -- fail in opposite directions. The caller
+            # already holds the account it is asking about; a parameter is the
+            # honest way to receive it, and a caller that omits it simply gets a
+            # diagnostic without the server dimension rather than a wrong one.
+            reasons.append(
+                "no challenge policy resolves for this account: "
+                + json.dumps(
+                    self.resolution_diagnostics(
+                        _live.configured_provider(),
+                        _live.configured_program(),
+                        account_size=self._baseline_start(account_id),
+                        server=server or None),
+                    sort_keys=True, default=str))
         elif not policy.is_fully_specified:
             reasons.append("policy unverified: "
                            + ", ".join(policy.missing_rules()))
-        if reasons and decision["permission"] == Permission.ALLOW.value:
-            decision["permission"] = (Permission.HALT.value if not gradeable
-                                      else Permission.PROTECT.value)
-        if not gradeable:
+        if not gradeable and status.get("has_baseline"):
+            # An *inferred* baseline is HALT: the account has a number and every
+            # dimension is measured against it, so a 4% drawdown silently reads
+            # as 0%. The fix is declaring the real one, and until then nothing
+            # measured from it can be shrunk into a PROTECT.
+            #
+            # Appended before the decision is summarised, because the summary is
+            # what a caller reads. Appending it afterwards left the headline
+            # permission reading `protect` while the check list underneath said
+            # `halt` -- a payload contradicting itself on the one field that
+            # decides whether a trade is placed, and the more permissive of the
+            # two is the one a dashboard renders.
             decision["checks"].append({
                 "check": "baseline",
                 "permission": Permission.HALT.value,
                 "detail": status.get("reason") or "baseline not trustworthy",
             })
+            decision["permission"] = Permission.HALT.value
+        elif (not gradeable
+                and decision["permission"] != Permission.HALT.value):
+            # No baseline at all, and none to distrust -- and the decision is not
+            # already halted for a more fundamental reason. Nothing here is
+            # measured from a number we did not earn, so this is PROTECT: the
+            # account carries no allowance, and the operator is told to declare
+            # one. This is also the unconnected-reading case, where there is no
+            # account to have had a baseline.
+            #
+            # The HALT guard is load-bearing. `permission_for` halts when no
+            # policy resolves at all, and that is the more fundamental defect by
+            # far -- "no rules exist for this account" must not be softened into
+            # "trade smaller" by the observation that a baseline is also missing.
+            decision["checks"].append({
+                "check": "baseline",
+                "permission": Permission.PROTECT.value,
+                "detail": status.get("reason") or "no declared baseline",
+            })
+            decision["permission"] = Permission.PROTECT.value
+        elif reasons and decision["permission"] == Permission.ALLOW.value:
+            # Gradeable but unresolved: PROTECT, never HALT. The operator may fix
+            # an unverified rule; an untrusted baseline is not fixable in the same
+            # way, and the whole reason it is HALT is that every dimension in the
+            # report is measured against a number we did not earn.
+            decision["permission"] = Permission.PROTECT.value
         return {
             "account_id": account_id,
             "snapshot": snapshot.as_dict(),
@@ -735,11 +917,13 @@ class ChallengeService:
         moment a trade is refused days later.
         """
         registered = self._registry.register(policy)
+        self._persist_policy(registered)
         return {
             "registered": True,
             "key": registered.key,
             "policy_version": registered.policy_version,
             "is_fully_specified": registered.is_fully_specified,
+            "is_fully_resolved": registered.is_fully_resolved,
             "missing_rules": registered.missing_rules(),
             "effect": "usable for trading" if registered.is_fully_specified else
                       "registered but RESTRICTING: the account cannot be graded "

@@ -3220,16 +3220,32 @@ def challenge_headroom(proposed_risk: float = 0.0,
 
 
 @app.get("/challenge/policies")
-def challenge_policies(provider: str = "", program: str = "") -> Dict:
+def challenge_policies(provider: str = "", program: str = "",
+                       detail: str = "") -> Dict:
     """Every registered policy version, with what is still unverified.
 
     The registry ships empty, so this returning nothing is the correct state for
     a deployment that has not been given provider terms yet.
+
+    `detail=1` returns each version whole -- instruments, sources, the measured
+    server offset, the provider's own effective dates. The summary is what a
+    dashboard draws; the detail is what an auditor has to be able to read, and
+    an audit that has to ask a second endpoint to learn which symbols were
+    permitted is an audit that can be answered wrongly.
     """
     from challenge.service import challenge_service as svc
 
+    whole = str(detail).strip().lower() in {"1", "true", "yes", "detail"}
     if provider and program:
-        return {"ok": True, "versions": svc._registry.versions(provider, program)}
+        versions = svc._registry.versions(provider, program)
+        if not whole:
+            return {"ok": True, "versions": versions}
+        detail_rows = [p.as_dict() for p in svc._registry.all_policies()
+                       if p.provider == provider and p.program == program]
+        return {"ok": True, "versions": versions, "detail": detail_rows}
+    if whole:
+        return {"ok": True, **svc.as_dict(),
+                "detail": [p.as_dict() for p in svc._registry.all_policies()]}
     return {"ok": True, **svc.as_dict()}
 
 
@@ -3348,7 +3364,23 @@ def challenge_policy_register(payload: Dict) -> Dict:
         return out
 
     instruments_raw = payload.get("instruments") or {}
+    # Sentinel for "the caller did not pass this field at all", which is
+    # different from passing it as null -- one means fall back to the top-level
+    # key, the other means an explicit "unknown".
+    _UNSET = object()
     news_raw = payload.get("news") or {}
+
+    # Nested wins, flat key second, absent means UNKNOWN. Resolving this here
+    # rather than inside `restriction` is what makes the documented fallback
+    # real: passing `instruments_raw.get("default")` unconditionally handed it
+    # None whenever the nested key was absent, and None is an explicit "unknown",
+    # so the top-level `instruments_default` was unreachable.
+    if "default" in instruments_raw:
+        instrument_default_raw = instruments_raw["default"]
+    elif "instruments_default" in payload:
+        instrument_default_raw = payload["instruments_default"]
+    else:
+        instrument_default_raw = _UNSET
 
     # A weekend multiplier above 1 would raise risk inside the very window that
     # exists to lower it, and it would do so on the days positions are held
@@ -3367,15 +3399,16 @@ def challenge_policy_register(payload: Dict) -> Dict:
             status_code=400,
             detail=f"'weekend_close_lead_minutes' cannot be negative; got {weekend_lead}")
 
-    def restriction(name: str, default: Restriction) -> Restriction:
-        raw = payload.get(name)
-        if raw is None:
+    def restriction(name: str, default: Restriction,
+                     raw: Any = _UNSET) -> Restriction:
+        value = payload.get(name) if raw is _UNSET else raw
+        if value is None:
             return default
         try:
-            if isinstance(raw, dict) and "value" in raw:
-                val = str(raw["value"]).strip()
+            if isinstance(value, dict) and "value" in value:
+                val = str(value["value"]).strip()
             else:
-                val = str(raw).strip() if raw is not None else ""
+                val = str(value).strip() if value is not None else ""
             return Restriction(val)
         except ValueError:
             raise HTTPException(
@@ -3397,7 +3430,16 @@ def challenge_policy_register(payload: Dict) -> Dict:
         consistency_rule=payload.get("consistency_rule"),
         instruments=InstrumentPolicy(
             denied_symbols=list(instruments_raw.get("denied_symbols", []) or []),
-            default=restriction("instruments_default", Restriction.UNKNOWN),
+            allowed_symbols=list(
+                instruments_raw.get("allowed_symbols", []) or []),
+            # Read from the nested object first. The three instrument fields
+            # belong together, and `default` was read from a top-level
+            # `instruments_default` while its two siblings were read from
+            # `instruments` -- so a caller who wrote the obvious nested payload
+            # got a silently UNKNOWN default and no error. The flat key stays
+            # readable for the policies already registered that way.
+            default=restriction("instruments.default", Restriction.UNKNOWN,
+                                raw=instrument_default_raw),
             source=instruments_raw.get("source")),
         news=NewsPolicy(
             mode=restriction("news_mode", Restriction.UNKNOWN),
@@ -3448,6 +3490,7 @@ def challenge_policy_register(payload: Dict) -> Dict:
             result["key"], {"version": version, "provider": provider,
                             "program": program,
                             "is_fully_specified": result["is_fully_specified"],
+                            "is_fully_resolved": result["is_fully_resolved"],
                             "missing_rules": result["missing_rules"]})
     except Exception:  # noqa: BLE001
         pass

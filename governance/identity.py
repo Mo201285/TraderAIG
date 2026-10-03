@@ -81,6 +81,16 @@ class Entitlement(str, Enum):
     READ_ONLY = "read_only"
     MULTI_ACCOUNT = "multi_account"
     API_ACCESS = "api_access"
+    # 34.2/34.18: a *product* entitlement, and deliberately the only one that
+    # does not come from a subscription plan. Buying the Challenge Management
+    # service must not be modelled as a plan, because `grant_plan_entitlements`
+    # REPLACES the whole set — so a $9.99 challenge purchase routed through the
+    # plan field would silently strip `can_trade` from the operator, which is the
+    # exact silent-downgrade footgun the runbook documents. This value is
+    # therefore granted by `governance.products` against a charge, lives on its
+    # own record with its own lifecycle, and is checked through a different
+    # accessor. INSTITUTIONAL inherits it via `set(Entitlement)`.
+    CHALLENGE_MANAGEMENT = "challenge_management"
 
 
 # Plan -> set of entitlements
@@ -92,7 +102,16 @@ PLAN_ENTITLEMENTS: Dict[SubscriptionPlan, set[Entitlement]] = {
         Entitlement.CAN_COPY,
         Entitlement.MULTI_ACCOUNT,
     },
-    SubscriptionPlan.INSTITUTIONAL: set(Entitlement),
+    # `set(Entitlement)` MINUS the product entitlement. The exclusion is the
+    # whole point: an entitlement that two subsystems can independently answer
+    # "yes" to is one fact with two sources of truth, and they will eventually
+    # disagree. `identity.can()` and `products.has()` must never both claim to
+    # decide whether challenge management is paid for, so only one of them can.
+    # Bundling it into institutional is a commercial decision the operator can
+    # make by moving the value into this set -- but it has to be made here,
+    # deliberately, rather than arriving as a side effect of a subscription.
+    SubscriptionPlan.INSTITUTIONAL: (set(Entitlement)
+                                     - {Entitlement.CHALLENGE_MANAGEMENT}),
 }
 
 

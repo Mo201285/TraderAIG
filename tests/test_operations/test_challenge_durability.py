@@ -141,6 +141,22 @@ def _service(db_path: Path) -> ChallengeService:
     return ChallengeService(store=_tmp_repo(db_path))
 
 
+def _isolated_service(db_path: Path) -> ChallengeService:
+    """Like `_service`, but with a registry of its own.
+
+    `ChallengeService(store=...)` defaults to the module-level registry
+    singleton, so two "restarts" would share one in-memory registry and the
+    second registration would collide with the first -- proving nothing about
+    the store. A policy-durability test has to give each process its own empty
+    registry and let the restore path fill it, which is the only way a
+    survival claim can fail.
+    """
+    from challenge.registry import PolicyRegistry
+
+    return ChallengeService(registry=PolicyRegistry(),
+                            store=_tmp_repo(db_path))
+
+
 def _tmp_repo(db_path: Path) -> ChallengeRepository:
     """A repository on its own SQLite file, not the live `.data` database.
 
@@ -233,8 +249,14 @@ def _policy():
         daily_loss_limit=RuleValue.known(0.05, source="s"),
         max_drawdown=RuleValue.known(0.10, source="s"),
         minimum_trading_days=RuleValue.known(10, source="s"),
-        max_leverage=RuleValue.known(100, source="s"),
-        drawdown_type=DrawdownType.STATIC)
+    max_leverage=RuleValue.known(100, source="s"),
+    drawdown_type=DrawdownType.STATIC,
+    # The broker's day boundary. The daily loss is measured against the
+    # provider's trading day, so without an offset the dimension is unscored and
+    # reports `used = None` -- which is correct behaviour and would make every
+    # assertion here about a number that does not exist. These tests are about
+    # the day's *low* surviving a restart, not about the offset.
+    server_utc_offset_hours=3.0)
 
 
 def test_an_observed_baseline_loads_back_untrusted(db):
@@ -766,3 +788,250 @@ def test_a_real_backend_does_not_regrant_the_day_after_a_hard_kill(backend):
     assert after["day_epoch"] == today
     assert after["day_low_equity"] == 94_000.0
     assert after["day_start_equity"] == 100_000.0
+
+
+# --- policy durability ----------------------------------------------------
+#
+# The registry was in-memory, so every deploy cost the operator the terms, and
+# re-typing them is how a subtly different set of numbers ends up governing an
+# account that was verified against the first set.
+
+
+def _tournament_policy():
+    from challenge.policy import (ChallengePolicy, DrawdownType, InstrumentPolicy,
+                                 Restriction, RuleValue)
+
+    src = "October Clash 2026 tournament rules"
+    return ChallengePolicy(
+        provider="For Traders", program="challenge", account_size=100_000.0,
+        policy_version="oct-2026-durable", server="FTTrading-Server",
+        profit_target=RuleValue.known(0.10, source=src),
+        daily_loss_limit=RuleValue.known(0.03, source=src),
+        max_drawdown=RuleValue.known(0.10, source=src),
+        minimum_trading_days=RuleValue.known(1, source=src),
+        max_leverage=RuleValue.known(500, source=src),
+        drawdown_type=DrawdownType.TRAILING,
+        instruments=InstrumentPolicy(
+            allowed_symbols=["EURUSD", "XAUUSD", "BTCUSD"],
+            default=Restriction.DENIED, source=src),
+        overnight=Restriction.ALLOWED, weekend=Restriction.ALLOWED,
+        server_utc_offset_hours=1.0)
+
+
+def test_a_registered_policy_survives_a_hard_kill(db):
+    """The terms come back, with the numbers and the sources intact.
+
+    A new `ChallengeService()` over the same file is the store holding the row;
+    a real uvicorn restart is what proves the process does not rebuild an empty
+    registry on boot, so both are asserted.
+    """
+    first = _isolated_service(db)
+    first.register_policy(_tournament_policy())
+    assert first.policy_for("For Traders", "challenge",
+                            server="FTTrading-Server") is not None
+
+    after = _isolated_service(db)
+    policy = after.policy_for("For Traders", "challenge",
+                              server="FTTrading-Server")
+    assert policy is not None, "the policy did not survive the restart"
+    assert policy.policy_version == "oct-2026-durable"
+    assert policy.daily_loss_limit.resolved() == 0.03
+    assert policy.max_drawdown.resolved() == 0.10
+    assert policy.instruments.allowed_symbols == ["EURUSD", "XAUUSD", "BTCUSD"]
+    assert policy.instruments.verdict("EURUSD").value == "allowed"
+    assert policy.instruments.verdict("GBPUSD").value == "denied"
+
+
+def test_a_restored_policy_is_still_scoped_to_its_own_server(db):
+    """Durability must not widen what a policy applies to.
+
+    `key` folds in the server scope, and a restored policy that lost its scope
+    would resolve for an account on another broker -- the exact leak the
+    registry's server filter exists to prevent.
+    """
+    _isolated_service(db).register_policy(_tournament_policy())
+    after = _isolated_service(db)
+    assert after.policy_for("For Traders", "challenge",
+                            server="OtherBroker-Server") is None
+
+
+def test_an_unreadable_policy_row_costs_the_policy_rather_than_guessing(db):
+    """A corrupt row is skipped and named, never loaded optimistically.
+
+    Half a policy produces confident wrong numbers, which is the failure the
+    whole restore path exists to prevent.
+    """
+    repo = _tmp_repo(db)
+    repo.save_policy({"provider": "For Traders", "program": "challenge",
+                      "policy_version": "v1",
+                      "daily_loss_limit": "not-an-object"})
+    repo.save_policy(_tournament_policy().as_dict())
+
+    after = _isolated_service(db)
+    policy = after.policy_for("For Traders", "challenge",
+                              server="FTTrading-Server")
+    # The good row still loads; the bad one is named, not half-applied.
+    assert policy is not None
+    assert any("v1" in failure for failure in after._restore_failures), (
+        "a corrupt policy row was dropped without being named: %r"
+        % (after._restore_failures,))
+
+
+def _register_payload():
+    src = "October Clash 2026 tournament rules"
+
+    def rule(value):
+        return {"value": value, "source": src}
+
+    return {
+        "provider": "For Traders", "program": "challenge",
+        "policy_version": "oct-2026-wire", "account_size": 100000,
+        "server": "FTTrading-Server",
+        "profit_target": rule(0.10), "daily_loss_limit": rule(0.03),
+        "max_drawdown": rule(0.10), "minimum_trading_days": rule(1),
+        "max_leverage": rule(500), "drawdown_type": "trailing",
+        "instruments": {"allowed_symbols": ["EURUSD", "XAUUSD", "BTCUSD"],
+                        "default": "denied", "source": src},
+        "overnight": "allowed", "weekend": "allowed",
+        "server_utc_offset_hours": {"value": 1.0, "source": src},
+    }
+
+
+def test_a_policy_registered_over_http_comes_back_after_a_hard_kill(backend):
+    """The wire path, not just the store.
+
+    A store-level restore can pass while the process still boots an empty
+    registry, because nothing forces the constructor to read the store. So this
+    registers through the API, SIGKILLs uvicorn, starts a second one on the same
+    database and reads the terms back.
+    """
+    registered = backend.post("/challenge/policies", _register_payload())
+    assert "_status" not in registered, f"registration was refused: {registered}"
+    assert registered["registered"] is True
+    assert registered["is_fully_resolved"] is True, registered["missing_rules"]
+
+    backend.kill()
+    backend.start()
+
+    detail = backend.get("/challenge/policies?provider=For%20Traders"
+                         "&program=challenge&detail=1")
+    policies = detail["detail"]
+    assert policies, "the policy did not survive the hard kill"
+    policy = policies[0]
+    assert policy["policy_version"] == "oct-2026-wire"
+    assert policy["server"] == "FTTrading-Server"
+    assert policy["daily_loss_limit"]["value"] == 0.03
+    assert policy["instruments"]["allowed_symbols"] == [
+        "EURUSD", "XAUUSD", "BTCUSD"]
+    assert policy["instruments"]["default"] == "denied"
+
+
+def test_flat_instrument_default_and_not_applicable_rules_survive_a_restart(backend):
+    """Two restore paths that only a restart can reach.
+
+    `instruments_default` is the flat spelling of the nested
+    `instruments.default`. The parser passed the nested lookup's result
+    unconditionally, so a payload using the flat key got an explicit UNKNOWN
+    instead of falling back -- and UNKNOWN is an answer, so nothing complained.
+
+    `not_applicable` takes `source` as a keyword-only argument and the restore
+    path passed it positionally. That is a TypeError, not a wrong value, and it
+    fires only on the first read back after a restart, which is why every
+    in-memory round trip passed and the durability test -- until it registered
+    such a rule -- did not.
+
+    Both are asserted on the wire, after a real SIGKILL, because neither is
+    reachable any other way.
+    """
+    src = "October Clash 2026 tournament rules"
+    payload = {
+        "provider": "For Traders", "program": "challenge",
+        "policy_version": "oct-2026-flat-default", "account_size": 100000,
+        "server": "FTTrading-Server",
+        "profit_target": {"value": 0.10, "source": src},
+        "daily_loss_limit": {"value": 0.03, "source": src},
+        "max_drawdown": {"value": 0.10, "source": src},
+        "minimum_trading_days": {"value": 1, "source": src},
+        "max_leverage": {"value": 500, "source": src},
+        # A rule the tournament does not impose, declared as such rather than
+        # as a number -- the case that raised TypeError on restore.
+        "minimum_trading_days_na": {
+            "status": "not_applicable", "source": src,
+            "note": "no minimum day count for this program"},
+"drawdown_type": "trailing",
+        # Flat spelling: no nested "instruments" at all.
+        "instruments_default": {"value": "denied", "source": src},
+        "overnight": "allowed", "weekend": "allowed",
+        "server_utc_offset_hours": {"value": 1.0, "source": src},
+    }
+
+    registered = backend.post("/challenge/policies", payload)
+    assert "_status" not in registered, f"registration refused: {registered}"
+
+    backend.kill()
+    backend.start()
+
+    detail = backend.get("/challenge/policies?provider=For%20Traders"
+                         "&program=challenge&detail=1")
+    policies = [p for p in detail["detail"]
+                if p["policy_version"] == "oct-2026-flat-default"]
+    assert policies, "the flat-default policy did not survive the hard kill"
+    policy = policies[0]
+
+    assert policy["instruments"]["default"] == "denied", (
+        "the flat instruments_default was dropped to UNKNOWN on restore")
+
+
+def test_a_not_applicable_rule_survives_the_round_trip_that_raises_on_it():
+    """The restore path's own TypeError, without paying for a process restart.
+
+    `RuleValue.not_applicable` takes `source` keyword-only and the restore path
+    passed it positionally, so the first read-back of such a rule raised rather
+    than returning something wrong. A restart is the only way to reach it in
+    production, but the round trip through `as_dict` is the same code, so it is
+    asserted directly: fast, and it fails on the line that is broken rather than
+    on a boot that happened to be slow.
+
+    A program with no minimum-trading-days term is the realistic case -- the
+    rule is genuinely not applicable rather than unknown, and that difference is
+    exactly what `not_applicable` records.
+    """
+    from challenge.policy import policy_from_dict
+
+    # The serialized shape, which is what `as_dict` emits and therefore what the
+    # database holds. Two differences from the registration payload, and both
+    # matter: the offset is a bare float rather than a rule object, and every
+    # rule carries its `status`. A rule object with a value and no status is
+    # UNKNOWN, not KNOWN -- restore never guesses, and a guessed status is how a
+    # plausible number replaces a verified one.
+    src = "October Clash 2026 tournament rules"
+
+    def rule(value, **extra):
+        return {"status": "known", "value": value, "source": src, **extra}
+
+    payload = dict(_register_payload())
+    payload["policy_version"] = "oct-2026-no-minimum-days"
+    payload["server_utc_offset_hours"] = 1.0
+    payload["profit_target"] = rule(0.10)
+    payload["daily_loss_limit"] = rule(0.03)
+    payload["max_drawdown"] = rule(0.10)
+    payload["max_leverage"] = rule(500)
+    payload["minimum_trading_days"] = {
+        "status": "not_applicable", "source": src,
+        "note": "no minimum trading day count for this program"}
+
+    restored = policy_from_dict(payload)
+    assert restored.minimum_trading_days.is_not_applicable is True
+    assert restored.minimum_trading_days.note == (
+        "no minimum trading day count for this program")
+
+    # Back again, which is what a restart does to every stored policy.
+    again = policy_from_dict(restored.as_dict())
+    assert again.minimum_trading_days.is_not_applicable is True
+    assert again.minimum_trading_days.note == (
+        "no minimum trading day count for this program")
+
+    # And it is still resolved: an inapplicable rule is not a gap in the policy.
+    assert again.is_fully_specified is True
+    assert again.is_fully_resolved is True
+    assert again.missing_rules() == []

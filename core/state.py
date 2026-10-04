@@ -59,6 +59,21 @@ class OrderState:
     commission: float = 0.0
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    # Account and venue attribution, added with the durable trade schema. Every
+    # one of these has a default and none of them is first, because a field
+    # inserted ahead of an existing default-valued field would silently shift
+    # every positional construction site in the tree -- and a position that
+    # migrated to a different account would fail exactly the check that was
+    # supposed to catch it.
+    #
+    # `account_id` is the registry's opaque key. `venue_order_ref` is the
+    # broker/exchange ticket and is kept separate from `order_id` because an MT5
+    # ticket is unique per server, so it cannot be the system's primary key
+    # without merging accounts on two brokers that both issued ticket #1.
+    account_id: str = ""
+    venue: str = ""
+    venue_order_ref: str = ""
+    risk_decision_id: str = ""
 
     def as_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in self.__dict__.items()}
@@ -83,6 +98,16 @@ class PositionState:
     realized_pnl: float = 0.0
     swap: float = 0.0
     last_update: float = field(default_factory=time.time)
+    # Same additive-attribution rule as `OrderState`: trailing, defaulted, and
+    # never first.
+    #
+    # `position_id` is overloaded in this codebase -- a system uuid in the
+    # simulator and the CEX engine, the broker's own ticket in
+    # `execution/mt5_adapter.py` -- which is why the venue's own identifier gets
+    # its own field here instead of being read back out of `position_id`.
+    account_id: str = ""
+    venue: str = ""
+    venue_position_ref: str = ""
 
     @property
     def risk(self) -> float:

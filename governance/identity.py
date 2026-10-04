@@ -206,6 +206,11 @@ class AuditEntry:
     object_id: str
     details: Dict[str, Any] = field(default_factory=dict)
     success: bool = True
+    # The account an action concerned, when it concerned one. Defaults to empty
+    # rather than being required, because most audited things are not accounts:
+    # a policy registration, a promotion, a veto. Making it mandatory would mean
+    # either inventing an account for those or refusing to audit them.
+    account_id: str = ""
 
     def as_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in self.__dict__.items()}
@@ -501,7 +506,7 @@ class IdentityService:
     # -- Audit ----------------------------------------------------------
     def _log(self, actor: str, action: str, object_type: str,
              object_id: str, details: Optional[Dict[str, Any]] = None,
-             success: bool = True) -> None:
+             success: bool = True, account_id: str = "") -> None:
         entry = AuditEntry(
             entry_id=str(uuid.uuid4()),
             timestamp=time.time(),
@@ -511,15 +516,24 @@ class IdentityService:
             object_id=object_id,
             details=details or {},
             success=success,
+            account_id=str(account_id or ""),
         )
         self._audit.append(entry)
         self._persist_audit(entry)
 
     def record_audit(self, actor: str, action: str, object_type: str,
                      object_id: str, details: Optional[Dict[str, Any]] = None,
-                     success: bool = True) -> None:
-        """Public append-only audit hook (used by lab endpoints)."""
-        self._log(actor, action, object_type, object_id, details, success)
+                     success: bool = True, account_id: str = "") -> None:
+        """Public append-only audit hook (used by lab endpoints).
+
+        `account_id` is optional so callers that audited something which is not
+        an account keep working unchanged; the ones that do concern an account
+        have to name it, because an audit row that cannot be scoped to an
+        account is an audit row that cannot answer "what did we do to this
+        account", which is the question the column exists for.
+        """
+        self._log(actor, action, object_type, object_id, details, success,
+                  account_id)
 
     def _persist_audit(self, entry: AuditEntry) -> None:
         try:

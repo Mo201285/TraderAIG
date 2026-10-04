@@ -271,6 +271,13 @@ class AuditRecordDB(Base):
     action: Mapped[str] = mapped_column(String(128), index=True)
     object_type: Mapped[str] = mapped_column(String(64), default="")
     object_id: Mapped[str] = mapped_column(String(64), default="")
+    # Which account the audited action concerned, when it concerned one. Nullable
+    # and additive: rows written before the account registry existed have no
+    # account to name, and leaving that NULL is the honest record. It is separate
+    # from `object_id` because most audited objects (a policy, a promotion, a
+    # veto) are identified by their own id, and overloading that column would make
+    # "what was acted on" and "whose account was affected" the same field.
+    account_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     details_json: Mapped[str] = mapped_column(Text, default="{}")
     success: Mapped[bool] = mapped_column(Boolean, default=True)
 

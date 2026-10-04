@@ -96,6 +96,11 @@ def _required_schema() -> dict[str, dict[str, str]]:
         # no peak, and inventing one here would be a fabricated limit wearing a
         # column name.
         "challenge_baselines": {"equity_peak": "FLOAT"},
+        # Account-scoped audit trail. Nullable and additive so existing rows are
+        # untouched; a row written before accounts existed has no account to name,
+        # and inventing one from `object_type` would attribute a historical
+        # decision to a login it never touched.
+        "audit": {"account_id": "TEXT"},
     }
 
 
@@ -134,6 +139,22 @@ def _assert_non_sqlite_schema_compatible() -> None:
         )
 
 
+def _register_models() -> None:
+    """Import every model module so `Base.metadata` knows about its tables.
+
+    `create_all` only creates tables whose classes have been imported, so a model
+    module that nobody imports at startup is a table that does not exist in the
+    live database while every repository still queries it -- a repository that
+    raises `no such table` on first call and looks like a wiring bug rather than
+    a missing registration.
+
+    Account and trade models live in their own modules rather than in `models.py`
+    so this list is the single place that says which schema modules exist.
+    """
+    from . import models  # noqa: F401  (register models)
+    from . import models_accounts  # noqa: F401  (register models)
+
+
 def ensure_schema() -> None:
     """Idempotent create-if-missing for the live engine.
 
@@ -147,7 +168,7 @@ def ensure_schema() -> None:
     with _schema_lock:
         if _schema_ready:
             return
-        from . import models  # noqa: F401  (register models)
+        _register_models()
 
         Base.metadata.create_all(bind=engine)
         if _is_sqlite_engine():
@@ -174,7 +195,7 @@ def session_scope() -> Session:
 
 def bind_test_session() -> Session:
     """Return a session bound to an in-memory SQLite DB (for tests)."""
-    from . import models  # noqa: F401
+    _register_models()
 
     Base.metadata.create_all(bind=_test_engine)
     s = sessionmaker(bind=_test_engine, autoflush=False, expire_on_commit=False)()

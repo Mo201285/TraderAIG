@@ -54,7 +54,19 @@ class UserRepository:
         row.subscription_status = user.subscription_status.value
         row.entitlements_json = dumps(sorted(e.value for e in user.entitlements))
         row.risk_policy_json = dumps(user.risk_policy.as_dict())
-        row.account_ids_json = dumps(user.account_ids)
+        # Deliberately NOT written from `user.account_ids`.
+        #
+        # That field is the reason this stage needed an account registry: it is a
+        # JSON list on `users` that nothing in `operations/`, `risk/`,
+        # `execution/` or `challenge/` has ever read, so an account added to it
+        # was invisible to every control that would have to act on it. The
+        # registry is the readable record now.
+        #
+        # It is still persisted, as a mirror, so an older build reading this row
+        # does not find an empty list. It is a compatibility copy, not a source of
+        # truth, and nothing may read it back.
+        row.account_ids_json = dumps(
+            self._registered_account_ids(user.user_id))
         row.password_hash = user.password_hash
         if user.password_set_at is not None:
             row.password_set_at = user.password_set_at
@@ -83,6 +95,23 @@ class UserRepository:
         self._session.delete(row)
         self._session.commit()
         return True
+
+    def _registered_account_ids(self, user_id: str) -> List[str]:
+        """Account ids owned by `user_id`, for the legacy `account_ids_json` mirror.
+
+        Swallows its own errors on purpose. This runs inside `save()` on the user
+        hot path, and the mirrored column is a compatibility copy that no code in
+        this build reads. A store that cannot be reached should degrade this
+        mirror to an empty list and leave the user row correct; raising would turn
+        a cosmetic write into a failed login.
+        """
+        try:
+            from persistence.repositories_accounts import AccountRegistryRepository
+
+            rows = AccountRegistryRepository(self._session).list_for_owner(user_id)
+            return [r["account_id"] for r in rows]
+        except Exception:
+            return []
 
     def get_by_email(self, email: str) -> Optional[User]:
         row = self._session.execute(
@@ -582,6 +611,10 @@ class AuditRepository:
             action=entry.action,
             object_type=entry.object_type,
             object_id=entry.object_id,
+            # An empty string is stored as NULL so "this action concerned no
+            # account" stays distinguishable in SQL from a lookup that filtered
+            # on the column and found nothing.
+            account_id=entry.account_id or None,
             details_json=dumps(entry.details),
             success=entry.success,
         )
@@ -606,6 +639,7 @@ class AuditRepository:
             object_id=row.object_id,
             details=loads(row.details_json),
             success=row.success,
+            account_id=row.account_id or "",
         )
 
 

@@ -1,0 +1,180 @@
+﻿INTEGRATION GAP REGISTER — TraderAIG (D:\One)
+Generated 2026-10-04 · Supersedes the truncated first pass of this file.
+Status legend: [VERIFIED] = confirmed by reading code / live DB this session.
+               [UNVERIFIED] = plausible, needs runtime payload or log inspection.
+
+====================================================================
+A. HARD EVIDENCE (verified this session)
+====================================================================
+
+A1. Persistence has exactly 10 tables, and none of them are trading records.
+    [VERIFIED] ORM __tablename__ count == live sqlite table count == 10:
+      audit, challenge_baselines, challenge_policies, challenge_program_bindings,
+      challenge_states, experiences, ops_runs, product_entitlements, risk_vetoes, users
+    [VERIFIED] Substring search over live table names for
+      order / position / trade / round_trip / cycle / ledger / account / strategy / decision
+      => ZERO hits on every term.
+    [VERIFIED] No raw production SQL exists. `INSERT INTO|UPDATE ... SET|DELETE FROM`
+      appears only in tests/. So the ORM and the live schema agree — the gap is
+      missing tables, not a shadow SQL layer.
+
+A2. The dashboard never calls the challenge subsystem.
+    [VERIFIED] Walked every .ts/.tsx under "TAIG Dash/src" for API paths:
+      dashboard /challenge* calls: 0
+      dashboard /mt5*      calls: 0
+    The 124-route API has a complete challenge surface (status, headroom,
+    policies, programs/bind, accounts/{id}/baseline|state|recover). The operator
+    UI renders none of it. The entire Phase-1 program-resolution work is invisible
+    to the people who run it.
+
+A3. Dashboard mutations report success when nothing was sent.
+    [VERIFIED - FIXED 2026-10-04] TAIG Dash/src/lib/api.ts
+      - postJson() (line 95) returned `{ ok: true, data: {} }` whenever
+        `health.live` was false. A governed promote/quarantine/revalidate
+        therefore reported success with the backend unreachable and no request
+        issued. Now returns ok:false with an explicit "was not sent" error.
+    [VERIFIED - STILL OPEN] postJson() sends no Authorization header. Neither
+      does authorizedFetch() at 15 of its 16 call sites (only one passes a token).
+      [UNVERIFIED] Whether this is exploitable is NOT established: the three
+      postJson routes (/research/promote, /research/quarantine,
+      /research/revalidate) are gated by _guard(Entitlement.CAN_MANAGE_RISK),
+      which reads the global principal rather than a bearer token, so a missing
+      header does not by itself fail the call. The backend does have a real token
+      system (/auth/login returns a Bearer token, and tests/test_auth.py asserts
+      403 on another user's token), so the open question is which routes REQUIRE
+      the header. Needs a per-route audit before being called a hole.
+
+A4. 19 mutating routes have no entitlement guard (report said 14).
+    [VERIFIED] Per-route body scan of operations/api.py, 49 mutating routes:
+      api.py:561  POST   /auth/password            (auth path — acceptable)
+      api.py:611  POST   /auth/login               (auth path — acceptable)
+      api.py:637  POST   /auth/logout              (auth path — acceptable)
+      api.py:649  POST   /users
+      api.py:688  POST   /users/{user_id}/subscription/activate
+      api.py:750  POST   /users/{user_id}/subscription/revoke
+      api.py:792  DELETE /users/{user_id}
+      api.py:1253 POST  /ops/exercise
+      api.py:1441 POST  /system/expire-check
+      api.py:1479 POST  /alerts/test
+      api.py:1701 POST  /payments/product
+      api.py:1753 POST  /payments/charge
+      api.py:1811 POST  /payments/refund
+      api.py:1831 POST  /payments/webhook           (signature-verified? needs check)
+      api.py:2190 POST  /research/run
+      api.py:2213 POST  /research/live-feed
+      api.py:2297 POST  /strategies/intake
+      api.py:2334 POST  /strategies/intake/{entry_id}/vet
+      api.py:2704 POST  /governance/change-requests
+    Strategy intake (2297) and vet (2334) ARE guarded, but test (2357) and
+    promote (2416) are — so the user-strategy lifecycle has a broken guard chain:
+    an entry can be created and vetted unguarded, then gated later.
+    NOTE: AGENTS.md mandates "Engine-safety guard ... under the ReviewLoop guard —
+    a running engine means HTTP 409". /research/run and /research/live-feed have
+    no guard in body; that contract may be enforced inside a helper instead.
+
+A5. P0 — the tournament clock is naive local time.
+    [VERIFIED] challenge/registry.py:137
+        moment = _parse_iso(on) or datetime.now()
+    effective_from is inclusive, effective_until exclusive (lines 162-165).
+    There is no broker/server UTC offset anywhere in this comparison. Policy
+    windows registered from provider documents are broker-time; they are being
+    compared against the server's local wall clock.
+
+A6. P0 — outside the window the account silently loses its challenge controls.
+    [VERIFIED] the fail-open chain, end to end:
+      challenge/registry.py:167-168  no applicable policy -> return None
+      challenge/live.py:322          result["managed"] = policy is not None
+      risk/governor.py:412, 504, 683  `if not is_managed(...): return/skip`
+    The caps that switch off this way are the daily-loss cap and the 2%
+    book-wide risk cap. So a window that ends early, or a clock that is simply
+    wrong, turns enforcement OFF rather than halting. There is also no
+    tournament-permission gate that would refuse new entries outside the window.
+    Confirmed by intent in tests/test_risk/test_total_risk_cap.py:378
+    ("the cap is inactive on an unmanaged account") — correct as designed for a
+    demo account, unsafe as the accidental state of a tournament account.
+
+====================================================================
+B. PRIORITISED GAPS
+====================================================================
+
+P0 — CORRECTNESS / MONEY
+ 1. Tournament window closes -> enforcement fails open, not closed.   (A6)
+ 2. Window evaluated on naive local time, not broker time.             (A5)
+ 3. No typed tables for orders/positions/trades/round-trips, so the
+    decision->execution->reconciliation chain cannot be reconstructed
+    after a restart.                                                  (A1)
+ 4. DR does not cover the stores that hold live trading state;
+    SQLite backup reads the db file directly while it is being written,
+    so a torn archive can pass verification.
+
+P1 — CONTROL PLANE / OPERABILITY
+ 5. Dashboard shows no challenge or MT5 surface at all.                (A2)
+ 6. Dashboard mutations unauthenticated + fake success when offline.  (A3)
+ 7. 16 unguarded mutating routes incl. payments, users, intake.        (A4)
+ 8. No persistent account registry: CanonicalState holds one connected
+    account; there is no durable (login, server) -> provider/program record,
+    so tournament identity must be re-supplied by hand on every boot.
+ 9. No tournament lifecycle events (bound / started / ended / settled).
+
+P2 — LEARNING / ANALYTICS
+10. No account <-> strategy binding, so no per-account strategy attribution.
+11. No trade-cycle analytics (win rate, expectancy, profit factor, streaks,
+    per-strategy and per-account). There is no round_trip concept anywhere.
+12. strategyScore() is recomputed in dashboard adapters.ts from backend
+    validation fields; the formula can drift from the backend's.
+13. Learning records outcomes (experiences) but nothing closes the loop from
+    outcome back into a strategy decision.
+
+====================================================================
+C. WHAT IS *NOT* BROKEN (do not re-audit)
+====================================================================
+ - Console -> API: all 28 normalized console endpoints exist; no direct DB or
+   file mutation found in tools/tradraig.py. Single-authority holds.
+ - Dashboard -> API: no call targets a nonexistent route.
+ - ORM vs live schema: exactly in sync (10/10).
+ - Broker-scope isolation in the policy registry is correct and deliberate:
+   version-uniqueness is per-server, server filtering happens before the
+   version pick, and a policy written for another broker resolves to None
+   rather than being inherited.
+ - Tests: 1355 passing; live DB untouched by the suite (baselines 1,
+   policies 2, schema objects 34 before and after).
+
+====================================================================
+D. OPEN DECISIONS (block implementation)
+====================================================================
+ D1. [RESOLVED 2026-10-04] Broker clock = a UTC offset registered per program;
+     an unregistered offset on a bounded window is CLOCK_UNKNOWN and refuses
+     entries rather than assuming the host clock. Implemented.
+ D2. [RESOLVED 2026-10-04] Durable account registry, one CanonicalState per
+     connected login. NOT YET BUILT.
+ D3. [OPEN] Whether /research/run and /research/live-feed rely on an in-body
+     helper for the ReviewLoop 409 contract, or are a genuine guard hole.
+ D4. [RESOLVED 2026-10-04] First migration = orders + deals + round-trips +
+     cycles, in one migration. NOT YET BUILT.
+ D5. [RESOLVED 2026-10-04] Closed window => halt new entries, keep evaluation
+     and enforcement running. Implemented.
+ D6. [OPEN] Which API routes genuinely require a bearer token, so the
+     dashboard's missing Authorization header can be sized correctly.
+
+====================================================================
+E. WHAT LANDED 2026-10-04
+====================================================================
+ P0-1/P0-2 (A5/A6) tournament clock + fail-open. challenge/registry.py gained
+   `broker_local_now`, `PolicyResolution`, `resolve_ex(ignore_window=)` and the
+   reasons resolved/window_closed/clock_unknown/no_candidates. A deliberately
+   named program keeps its governing terms across a closed window, so the caps
+   stay active; only entries stop. `challenge/live.py` gained TournamentStatus
+   with applies / managed / window_open / clock_known / can_open_new_position /
+   refusal_reason. risk/governor.py refuses on `applies and not
+   can_open_new_position` BEFORE the managed check, and the 2% book cap now keys
+   on is_managed rather than on a verdict having been computed.
+   New endpoint GET /challenge/window.
+ P1-6 partial (A3) dashboard postJson no longer fakes success when offline.
+
+ Suite: 1375 passed (1355 before + 20 new in
+ tests/test_challenge_tournament_window.py), ruff clean, tsc clean, vite build
+ ok. Live DB untouched by the run (baselines 1, policies 2, schema 34).
+ Live account 1400167 verified unaffected BEFORE restart: both registered
+ policies are open-ended with offset 1.0, so window_open=true, clock_known=true,
+ can_open_new_position=true. Backend restarted to pid 532 and /challenge/window
+ confirms it over HTTP.

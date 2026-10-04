@@ -14,12 +14,88 @@ they both depend on.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from core.logging import get_logger
 from core.state import CanonicalState, state
 
 log = get_logger("challenge.live")
+
+#: Program-resolution reasons where an operator deliberately named the program.
+#: A binding is a per-account claim carrying a required `source`; the deployment
+#: default is configuration somebody wrote. Both outrank any inference.
+_BINDING_REASONS = frozenset({"binding", "binding_without_policy"})
+_DEFAULT_REASONS = frozenset({"deployment_default", "default_without_policy"})
+_EXPLICIT_REASONS = _BINDING_REASONS | _DEFAULT_REASONS
+
+
+@dataclass(frozen=True)
+class TournamentStatus:
+    """Whether a tournament governs this account, and whether it is open.
+
+    Three questions that used to be collapsed into one boolean, and which have to
+    stay apart:
+
+    - `applies` -- is this a tournament account at all?
+    - `policy is not None` -- are its terms known well enough to grade it?
+    - `window_open` -- is the tournament itself currently running?
+
+    Collapsing them is what made a tournament that had ended read as an ordinary
+    account with no rules, which silently switched the daily-loss and book-risk
+    caps OFF at the moment they were still the reason the account existed.
+    """
+
+    applies: bool
+    policy: Optional[Any] = None
+    program: str = ""
+    reason: str = ""
+    detail: str = ""
+    window_open: bool = True
+    clock_known: bool = True
+    opens_at: Optional[str] = None
+    closes_at: Optional[str] = None
+
+    @property
+    def managed(self) -> bool:
+        """True when terms are known, so the caps can actually run."""
+        return self.applies and self.policy is not None
+
+    @property
+    def can_open_new_position(self) -> bool:
+        """Whether a new entry is permitted right now.
+
+        Three independent refusals, each for its own reason:
+        a declared tournament with no registered terms (§34.6 restricts), a
+        tournament whose window is shut, and a window whose broker clock was
+        never registered so its state cannot be known.
+        """
+        if not self.applies:
+            return True
+        if self.policy is None:
+            return False
+        if not self.clock_known:
+            return False
+        return bool(self.window_open)
+
+    def refusal_reason(self) -> Optional[str]:
+        """The machine-readable block, or None when entries are permitted."""
+        if self.can_open_new_position:
+            return None
+        if self.policy is None:
+            return "policy_unknown"
+        if not self.clock_known:
+            return "window_clock_unknown"
+        return "tournament_window_closed"
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {"applies": self.applies, "managed": self.managed,
+                "program": self.program, "reason": self.reason,
+                "detail": self.detail, "window_open": self.window_open,
+                "clock_known": self.clock_known, "opens_at": self.opens_at,
+                "closes_at": self.closes_at,
+                "can_open_new_position": self.can_open_new_position,
+                "refusal_reason": self.refusal_reason()}
 
 
 def _state(state_ref: Optional[CanonicalState] = None) -> CanonicalState:
@@ -96,10 +172,112 @@ def _is_placeholder_provider(value: str) -> bool:
     return value.upper() in _PROVIDER_PLACEHOLDERS
 
 
-def live_policy(state_ref: Optional[CanonicalState] = None):
-    """The registered policy for the connected account, or None.
+def tournament_status(state_ref: Optional[CanonicalState] = None) -> TournamentStatus:
+    """Everything the decision path needs to know about this account's tournament.
 
-    None means "no policy resolves", which the callers must distinguish from
+    The one thing this module exists to get right: a program that was named on
+    purpose keeps governing the account even when its window is shut. Enforcement
+    does not expire because a schedule ran out -- what the schedule decides is
+    whether a *new entry* is allowed, and that is answered separately.
+    """
+    account = _state(state_ref).account
+    provider = configured_provider(account)
+    server = str(getattr(account, "server", "") or "").strip() or None
+    login = getattr(account, "login", None)
+    if not provider:
+        return TournamentStatus(
+            applies=False, reason="no_provider",
+            detail="no provider is configured for this account, so no tournament "
+                   "terms govern it")
+
+    try:
+        from challenge.service import challenge_service as svc
+
+        decision = svc.resolve_account_program(provider, login=login, server=server)
+    except Exception:  # noqa: BLE001
+        log.exception("challenge program resolution failed")
+        # An exception while working out whether this account is a tournament
+        # account is not evidence that it is not one. Refusing entries is the
+        # only reading of "I could not find out" that keeps the money safe.
+        return TournamentStatus(
+            applies=True, reason="error",
+            detail="program resolution raised, so whether a tournament governs "
+                   "this account is unknown; entries are refused")
+
+    if decision.reason not in _EXPLICIT_REASONS:
+        # window / ambiguous / unresolved / binding_without_program: either the
+        # window is open (and the registry already proved it), or nothing names
+        # this account deliberately.
+        try:
+            from challenge.service import challenge_service as svc
+
+            policy = (svc.policy_for(provider, decision.program, server=server)
+                      if decision.resolved else None)
+        except Exception:  # noqa: BLE001
+            log.exception("challenge policy resolution failed")
+            policy = None
+        return TournamentStatus(
+            applies=bool(decision.resolved and policy is not None),
+            policy=policy, program=decision.program or "",
+            reason=decision.reason, detail=decision.detail, window_open=True)
+
+    # Deliberately named. Grade it against the terms it was entered under,
+    # whatever the window says, and answer the window separately.
+    try:
+        from challenge.service import challenge_service as svc
+
+        governing = svc.resolve_ex(provider, decision.program, server=server,
+                                   ignore_window=True)
+        window = svc.resolve_ex(provider, decision.program, server=server)
+    except Exception:  # noqa: BLE001
+        log.exception("challenge window resolution failed")
+        return TournamentStatus(
+            applies=True, program=decision.program, reason="error",
+            detail="window resolution raised, so it is unknown whether this "
+                   "tournament is open; entries are refused", clock_known=False,
+            window_open=False)
+
+    if governing.policy is None:
+        # A binding with no registered terms is a tournament account nobody has
+        # written the rules for, and §34.6 resolves that in the restrictive
+        # direction: refuse the entry.
+        #
+        # The deployment default is NOT the same claim. It is a fallback string,
+        # and a deployment that sets it while registering no policies at all is
+        # not running tournaments -- it is running ordinary accounts with a stale
+        # default lying around. Reading that as "every account here is an ungraded
+        # tournament" would halt an entire demo/paper deployment over a value
+        # nobody was claiming anything specific about.
+        if decision.reason in _DEFAULT_REASONS:
+            return TournamentStatus(
+                applies=False, program=decision.program,
+                reason="program_not_registered",
+                detail="no policy is registered for %r, so this deployment has no "
+                       "tournament terms to enforce and the account is treated as "
+                       "unmanaged" % decision.program)
+        return TournamentStatus(
+            applies=True, policy=None, program=decision.program,
+            reason="program_without_terms", detail=governing.detail,
+            window_open=window.window_open, clock_known=window.clock_known,
+            opens_at=window.opens_at, closes_at=window.closes_at)
+
+    detail = governing.detail
+    if window.reason == "clock_unknown":
+        detail = window.detail
+    elif not window.window_open:
+        detail = ("%s; the tournament window is shut, so new entries are "
+                  "refused while its terms keep being enforced" % window.detail)
+    return TournamentStatus(
+        applies=True, policy=governing.policy, program=decision.program,
+        reason=decision.reason, detail=detail,
+        window_open=window.window_open, clock_known=window.clock_known,
+        opens_at=window.opens_at, closes_at=window.closes_at)
+
+
+def live_policy(state_ref: Optional[CanonicalState] = None):
+    """The registered terms for the connected account, or None.
+
+    None means "no terms are known", which the callers must distinguish from
     "everything is fine". It is the correct state for a deployment that trades
     its own money and has never registered challenge terms.
 
@@ -110,29 +288,26 @@ def live_policy(state_ref: Optional[CanonicalState] = None):
     survives as the last-resort default inside that resolution and nothing else;
     it is what an unbound account falls back to, never what a bound one is
     governed by.
-    """
-    account = _state(state_ref).account
-    provider = configured_provider(account)
-    if not provider:
-        return None
-    # The server scopes the policy; it never identifies the firm. A tournament
-    # written from one broker's document must not decide an account on another,
-    # and `resolve` returns nothing rather than inheriting across that gap.
-    server = str(getattr(account, "server", "") or "").strip() or None
-    login = getattr(account, "login", None)
-    try:
-        from challenge.service import challenge_service as svc
 
-        decision = svc.resolve_account_program(provider, login=login,
-                                               server=server)
-        if not decision.resolved:
-            log.info("no challenge program resolves for this account: %s",
-                     decision.detail)
-            return None
-        return svc.policy_for(provider, decision.program, server=server)
-    except Exception:  # noqa: BLE001
-        log.exception("challenge policy resolution failed")
-        return None
+    Terms come back for any deliberately named program even when its window is
+    shut. See `tournament_status` for why that is the safe order of operations.
+    """
+    return tournament_status(state_ref).policy
+
+
+def window_status(state_ref: Optional[CanonicalState] = None) -> Dict[str, Any]:
+    """The tournament window's state, for the console and the API."""
+    return tournament_status(state_ref).as_dict()
+
+
+def trading_permission(state_ref: Optional[CanonicalState] = None) -> Dict[str, Any]:
+    """Whether this account may open a new position right now, and why not."""
+    return tournament_status(state_ref).as_dict()
+
+
+def can_open_new_position(state_ref: Optional[CanonicalState] = None) -> bool:
+    """The narrow question the execution gate asks before admitting an entry."""
+    return tournament_status(state_ref).can_open_new_position
 
 
 def live_program_decision(state_ref: Optional[CanonicalState] = None):
@@ -162,13 +337,18 @@ def live_program_decision(state_ref: Optional[CanonicalState] = None):
 
 
 def is_managed(state_ref: Optional[CanonicalState] = None) -> bool:
-    """True when a challenge policy actually governs the connected account.
+    """True when terms are known well enough to actually grade this account.
 
     This is the switch that keeps §34.15 out of ordinary trading: an account with
-    no registered policy is not a challenge account, and the gate does not
-    pretend otherwise by guessing rules for it.
+    no registered terms is not a challenge account, and the gate does not pretend
+    otherwise by guessing rules for it.
+
+    Distinct from `tournament_status().applies`, which asks whether a tournament
+    governs the account at all. An account that declares a program nobody has
+    registered terms for is *governed* (and therefore refuses entries) without
+    being *managed* (because there is nothing to grade it against).
     """
-    return live_policy(state_ref) is not None
+    return tournament_status(state_ref).managed
 
 
 def account_inputs(state_ref: Optional[CanonicalState] = None) -> Dict[str, float]:
@@ -304,8 +484,9 @@ def verdict(symbol: Optional[str] = None, proposed_risk: float = 0.0,
     """
     from challenge.service import challenge_service as svc
 
+    status = tournament_status(state_ref)
     account_id = connected_account_id(state_ref)
-    policy = live_policy(state_ref)
+    policy = status.policy
     inputs = account_inputs(state_ref)
     if observe:
         svc.observe(account_id, equity=inputs["equity"],
@@ -319,8 +500,10 @@ def verdict(symbol: Optional[str] = None, proposed_risk: float = 0.0,
         proposed_risk=float(proposed_risk or 0.0), symbol=symbol,
         server=getattr(getattr(state_ref, "account", None), "server", None)
         or None)
-    result["managed"] = policy is not None
-    result["program"] = configured_program()
+    result["managed"] = status.managed
+    result["applies"] = status.applies
+    result["program"] = status.program
+    result.update(status.as_dict())
     return result
 
 

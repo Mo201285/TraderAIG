@@ -744,6 +744,23 @@ class ChallengeService:
                                       account_size=account_size,
                                       server=server)
 
+    def resolve_ex(self, provider: str, program: str, *,
+                   account_size: Optional[float] = None,
+                   on: Optional[str] = None,
+                   server: Optional[str] = None,
+                   ignore_window: bool = False):
+        """The same answer as `policy_for`, with the reason and window state.
+
+        `ignore_window` answers a different question on purpose: not "what is
+        running right now" but "what terms govern this account". Those diverge
+        for the length of a tournament's whole schedule, and the account is
+        graded under the second one the entire time.
+        """
+        return self._registry.resolve_ex(provider, program, on=on,
+                                         account_size=account_size,
+                                         server=server,
+                                         ignore_window=ignore_window)
+
     # -- per-account program binding --------------------------------------
     #
     # A provider runs a catalogue of programs and every one of them arrives as an

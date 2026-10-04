@@ -403,12 +403,16 @@ class RiskGovernor:
         inactive = {"name": "total_risk_cap", "passed": True,
                     "detail": {"active": False,
                                "note": "no challenge policy governs this account"}}
-        if self._challenge_verdict is None:
-            return inactive
         try:
             from challenge.live import is_managed
         except Exception:  # noqa: BLE001
             return inactive
+        # Keyed on `is_managed` rather than on a verdict having been computed.
+        # The cap is a term attached to the account, so it stays active for a
+        # challenge account even when evaluation stopped early -- a closed
+        # tournament window refuses the entry, and the book it refused against
+        # still has a risk limit. Gating on `_challenge_verdict` instead made the
+        # cap go inactive on exactly the path that needed it reported.
         if not is_managed(self._state):
             return inactive
         try:
@@ -497,11 +501,27 @@ class RiskGovernor:
         try:
             from challenge.entitlement import challenge_gate
             from challenge.headroom import Permission
-            from challenge.live import is_managed, verdict
+            from challenge.live import tournament_status, verdict
         except Exception:  # noqa: BLE001
             return check
 
-        if not is_managed(self._state):
+        # Asked before `managed`, because the two refusals are different and the
+        # more dangerous one is on the `managed == False` side. An account that
+        # declares a tournament program nobody registered terms for has nothing
+        # to grade it against, so the honest answer is to refuse the entry -- but
+        # refusing it is only possible if we ask about `applies` first, since
+        # `is_managed` is False there and this function used to return early.
+        status = tournament_status(self._state)
+        if status.applies and not status.can_open_new_position:
+            reason = status.refusal_reason()
+            detail = status.as_dict()
+            detail["refusal"] = reason
+            reasons.append(
+                "challenge tournament window: %s" % (status.detail or reason))
+            check.update(passed=False, permission="halt", detail=detail)
+            return check
+
+        if not status.managed:
             return check
         check["active"] = True
 

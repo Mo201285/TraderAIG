@@ -98,10 +98,15 @@ def test_the_server_is_passed_through_as_a_scope(monkeypatch):
     Registering terms against one broker and resolving without the server filter
     would let them govern an account on another, which is the inheritance
     `matches_server` exists to refuse.
+
+    Asserted across both resolutions now made for a deliberately-named program:
+    the one that picks the governing terms and the one that reads the window.
+    Dropping the scope from either would let terms verified for one broker's
+    document decide another broker's account.
     """
     monkeypatch.setenv("TRADERAIG_CHALLENGE_PROVIDER", "For Traders")
     monkeypatch.setenv("TRADERAIG_CHALLENGE_PROGRAM", "Tournaments")
-    seen = {}
+    seen = []
 
     class _Service:
         def resolve_account_program(self, provider, *, login=None, server=None,
@@ -110,16 +115,22 @@ def test_the_server_is_passed_through_as_a_scope(monkeypatch):
             return ProgramDecision("Tournaments", "deployment_default",
                                    "test double", provider, server or "", "", [])
 
-        def policy_for(self, provider, program, **kwargs):
-            seen.update({"provider": provider, "program": program, **kwargs})
-            return "policy"
+        def resolve_ex(self, provider, program, **kwargs):
+            from challenge.registry import PolicyResolution
+            from challenge.policy import ChallengePolicy
+            seen.append({"provider": provider, "program": program, **kwargs})
+            return PolicyResolution(ChallengePolicy(), "resolved", "test double")
 
     import challenge.service as service_module
     monkeypatch.setattr(service_module, "challenge_service", _Service())
 
-    assert live.live_policy(_state()) == "policy"
-    assert seen["provider"] == "For Traders"
-    assert seen["server"] == "FTTrading-Server"
+    assert live.live_policy(_state()) is not None
+    # Governing terms and window state: two calls, both scoped.
+    assert len(seen) == 2
+    assert {call["provider"] for call in seen} == {"For Traders"}
+    assert {call["server"] for call in seen} == {"FTTrading-Server"}
+    # The window read relies on the default, so it carries no explicit flag.
+    assert {call.get("ignore_window", False) for call in seen} == {True, False}
 
 
 def test_a_blank_server_is_passed_as_absent_not_as_empty_string(monkeypatch):
@@ -131,7 +142,7 @@ def test_a_blank_server_is_passed_as_absent_not_as_empty_string(monkeypatch):
     """
     monkeypatch.setenv("TRADERAIG_CHALLENGE_PROVIDER", "For Traders")
     monkeypatch.setenv("TRADERAIG_CHALLENGE_PROGRAM", "Tournaments")
-    seen = {}
+    seen = []
 
     class _Service:
         def resolve_account_program(self, provider, *, login=None, server=None,
@@ -140,15 +151,18 @@ def test_a_blank_server_is_passed_as_absent_not_as_empty_string(monkeypatch):
             return ProgramDecision("Tournaments", "deployment_default",
                                    "test double", provider, server or "", "", [])
 
-        def policy_for(self, provider, program, **kwargs):
-            seen.update(kwargs)
-            return "policy"
+        def resolve_ex(self, provider, program, **kwargs):
+            from challenge.registry import PolicyResolution
+            from challenge.policy import ChallengePolicy
+            seen.append(kwargs)
+            return PolicyResolution(ChallengePolicy(), "resolved", "test double")
 
     import challenge.service as service_module
     monkeypatch.setattr(service_module, "challenge_service", _Service())
 
     live.live_policy(_state(server=""))
-    assert seen["server"] is None
+    assert seen
+    assert {call["server"] for call in seen} == {None}
 
 
 def test_the_configured_providers_own_name_is_not_a_provider(monkeypatch):

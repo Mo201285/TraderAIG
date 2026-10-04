@@ -3245,7 +3245,28 @@ def challenge_programs(provider: str = "") -> Dict:
         "catalog": svc.provider_catalog(provider_name) if provider_name else [],
         "bindings": svc.program_bindings(),
         "connected": decision.as_dict() if decision is not None else None,
+        "window": challenge_window(),
     }
+
+
+@app.get("/challenge/window")
+def challenge_window() -> Dict:
+    """Whether a tournament governs the connected account, and whether it is open.
+
+    Four questions that used to be one boolean and are indistinguishable in it:
+    is this a tournament account, are its terms registered, is the window open,
+    and may a new position be opened. The last one is the only one the decision
+    path acts on, and the first three are the only way an operator can tell a
+    finished tournament from a misconfigured one.
+
+    The clock is part of the answer rather than an assumption behind it. A window
+    is stated in the broker's time, so an unregistered offset is reported as
+    `clock_known: false` and entries are refused -- not treated as open because
+    the host's wall clock happened to agree.
+    """
+    from challenge.live import tournament_status
+
+    return {"ok": True, **tournament_status().as_dict()}
 
 
 @app.post("/challenge/programs/bind")

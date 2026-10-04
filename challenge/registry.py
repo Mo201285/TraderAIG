@@ -24,7 +24,8 @@ restrict, and sample data is unverifiable by definition.
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from .policy import ChallengePolicy
@@ -41,6 +42,91 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
             return datetime.fromisoformat(text + "T00:00:00")
         except ValueError:
             return None
+
+
+def broker_local_now(offset_hours: float) -> datetime:
+    """The broker's wall clock right now, as a naive local datetime.
+
+    A provider's tournament window is written in the broker's own time: "starts
+    13:00 server time" means 13:00 on the server, and comparing that to the host's
+    wall clock is a bug that only shows up in the hours around a boundary -- and a
+    tournament boundary is precisely where being an hour out decides whether the
+    account may trade at all.
+
+    Naive on purpose, so it compares against the same naive wall-clock values
+    `effective_from`/`effective_until` are parsed into. Converting one side to UTC
+    instead would be equally correct and would make every stored window wrong by
+    the offset, which is a much worse place to keep a mistake.
+    """
+    return (datetime.now(timezone.utc)
+            + timedelta(hours=float(offset_hours))).replace(tzinfo=None)
+
+
+#: Why a resolve landed where it did. The console and the operator need to tell
+#: "the tournament ended" from "you never registered its clock", which are the
+#: same None from the outside and opposite problems at the keyboard.
+RESOLVED = "resolved"
+NO_CANDIDATES = "no_candidates"
+WINDOW_CLOSED = "window_closed"
+CLOCK_UNKNOWN = "clock_unknown"
+
+
+def _window_open(policy: Any, moment: Optional[datetime],
+                 offset_hours: Optional[float]) -> tuple:
+    """Whether `policy` is open at `moment`, and whether that was knowable.
+
+    Start is inclusive and end exclusive: a tournament that ends at 13:00 is not
+    in force at 13:00, so the last tradable instant is the one before. An account
+    that is refused entry in the minute it would have completed is the correct
+    reading of a closed window, not an off-by-one.
+
+    `(False, False)` means "cannot be evaluated": the window is bounded and no
+    broker offset is registered. Callers must treat that as not-open, never as
+    open-by-default.
+    """
+    start = _parse_iso(getattr(policy, "effective_from", None))
+    end = _parse_iso(getattr(policy, "effective_until", None))
+    bounded = start is not None or end is not None
+    if moment is None:
+        if bounded and offset_hours is None:
+            return False, False
+        moment = broker_local_now(0.0 if offset_hours is None else offset_hours)
+    if start is not None and moment < start:
+        return False, True
+    if end is not None and moment >= end:
+        return False, True
+    return True, True
+
+
+@dataclass(frozen=True)
+class PolicyResolution:
+    """A resolution and the sentence explaining it.
+
+    Carries the window state as well as the policy, because "which terms govern
+    this account" and "is the tournament open right now" are two different
+    questions that happen to be answerable from the same record. Collapsing them
+    is what made a closed window read as an unmanaged account.
+    """
+
+    policy: Optional[ChallengePolicy]
+    reason: str
+    detail: str
+    clock_known: bool = True
+    window_open: bool = True
+    opens_at: Optional[str] = None
+    closes_at: Optional[str] = None
+    candidates: List[str] = field(default_factory=list)
+
+    @property
+    def resolved(self) -> bool:
+        return self.policy is not None
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {"policy_version": getattr(self.policy, "policy_version", None),
+                "reason": self.reason, "detail": self.detail,
+                "resolved": self.resolved, "clock_known": self.clock_known,
+                "window_open": self.window_open, "opens_at": self.opens_at,
+                "closes_at": self.closes_at, "candidates": list(self.candidates)}
 
 
 class PolicyRegistry:
@@ -123,20 +209,33 @@ class PolicyRegistry:
                     return True
             return False
 
-    def resolve(self, provider: str, program: str, *,
-                on: Optional[str] = None,
-                account_size: Optional[float] = None,
-                server: Optional[str] = None) -> Optional[ChallengePolicy]:
-        """The policy in force for this account on this date, or None.
+    def resolve_ex(self, provider: str, program: str, *,
+                   on: Optional[str] = None,
+                   account_size: Optional[float] = None,
+                   server: Optional[str] = None,
+                   ignore_window: bool = False,
+                   now_offset_hours: Optional[float] = None
+                   ) -> PolicyResolution:
+        """Resolve, and say why -- including when the window is the reason.
 
-        None means "no policy applies", and callers must treat that as
-        POLICY_UNKNOWN. It is not a default policy and it is not an error to be
-        swallowed -- 34.6's chain starts there.
+        `on` is a *broker-local* moment. Passing one means the caller has already
+        decided which clock it is asking about (a test, or an operator replaying a
+        past date), so no offset is needed. Omitting it means "now", and "now" on
+        a broker's tournament is only knowable with that broker's offset; a
+        window-bounded policy with no offset registered is therefore NOT in force
+        here, and says so with `clock_unknown`.
+
+        That is the restrictive direction on purpose. The alternative -- assuming
+        the host's wall clock is the broker's -- is a coin flip whose losing side
+        is an account judged against a window it never entered, or worse, an
+        account that stops being judged at all the moment the assumption goes the
+        wrong way near a boundary.
         """
         slot = self._slot(provider, program)
-        moment = _parse_iso(on) or datetime.now()
+        explicit_moment = _parse_iso(on)
         with self._lock:
             candidates = list(self._policies.get(slot, []))
+        names = sorted({p.policy_version for p in candidates})
         if account_size is not None:
             sized = [p for p in candidates
                      if abs(float(p.account_size) - float(account_size)) < 1e-6]
@@ -154,20 +253,108 @@ class PolicyRegistry:
             # this server. Falling back to the nearest one would be exactly the
             # inheritance `matches_server` refuses, so this resolves to nothing
             # and the caller treats it as POLICY_UNKNOWN.
-            return None
-        applicable = []
+            return PolicyResolution(
+                None, NO_CANDIDATES,
+                "policies exist for %s but none is written for %s, so none of "
+                "their terms may decide this account"
+                % (slot, server or "this server"),
+                candidates=names)
+
+        def _newest(rows: List[ChallengePolicy]) -> ChallengePolicy:
+            return sorted(rows,
+                          key=lambda p: (p.effective_from or "", p.policy_version))[-1]
+
+        # Governing terms ignore the clock entirely. An account is judged against
+        # the rules it was entered under, so a tournament that ends on schedule
+        # must not stop being graded on the rules it was entered under -- that is
+        # how enforcement disappears at exactly the moment it is still needed.
+        if ignore_window:
+            if not candidates:
+                return PolicyResolution(
+                    None, NO_CANDIDATES,
+                    "no policy is registered for %s, so this account is governed "
+                    "by no terms at all" % slot, candidates=names)
+            chosen = _newest(candidates)
+            return PolicyResolution(
+                chosen, RESOLVED,
+                "%s governs this account from its recorded terms; its window is "
+                "not consulted for enforcement" % chosen.policy_version,
+                window_open=_window_open(chosen, explicit_moment, now_offset_hours)[0],
+                opens_at=chosen.effective_from, closes_at=chosen.effective_until,
+                candidates=names)
+
+        if not candidates:
+            return PolicyResolution(
+                None, NO_CANDIDATES,
+                "no policy is registered for %s" % slot, candidates=names)
+
+        applicable: List[ChallengePolicy] = []
+        clock_unknown: List[ChallengePolicy] = []
         for policy in candidates:
             start = _parse_iso(policy.effective_from)
             end = _parse_iso(policy.effective_until)
-            if start and moment < start:
+            bounded = start is not None or end is not None
+            offset = now_offset_hours
+            if offset is None:
+                offset = getattr(policy, "server_utc_offset_hours", None)
+            moment = explicit_moment
+            if moment is None:
+                if bounded and offset is None:
+                    clock_unknown.append(policy)
+                    continue
+                moment = broker_local_now(0.0 if offset is None else offset)
+            is_open, known = _window_open(policy, moment, offset)
+            if not known:
+                clock_unknown.append(policy)
                 continue
-            if end and moment >= end:
-                continue
-            applicable.append(policy)
-        if not applicable:
-            return None
-        return sorted(applicable,
-                      key=lambda p: (p.effective_from or "", p.policy_version))[-1]
+            if is_open:
+                applicable.append(policy)
+
+        if applicable:
+            chosen = _newest(applicable)
+            return PolicyResolution(
+                chosen, RESOLVED,
+                "%s is in force for %s" % (chosen.policy_version, slot),
+                window_open=True, opens_at=chosen.effective_from,
+                closes_at=chosen.effective_until, candidates=names)
+
+        if clock_unknown:
+            listed = ", ".join(p.policy_version for p in clock_unknown)
+            return PolicyResolution(
+                None, CLOCK_UNKNOWN,
+                "%s carries a start/end window but no broker UTC offset is "
+                "registered for it, so this system cannot tell whether it is "
+                "open and is refusing to assume; register "
+                "server_utc_offset_hours and the question becomes answerable"
+                % listed,
+                clock_known=False, window_open=False,
+                opens_at=clock_unknown[0].effective_from,
+                closes_at=clock_unknown[0].effective_until, candidates=names)
+
+        newest = _newest(candidates)
+        return PolicyResolution(
+            None, WINDOW_CLOSED,
+            "no version of %s is open right now (%s opens %s, closes %s)"
+            % (slot, newest.policy_version, newest.effective_from or "open-ended",
+               newest.effective_until or "open-ended"),
+            window_open=False, opens_at=newest.effective_from,
+            closes_at=newest.effective_until, candidates=names)
+
+    def resolve(self, provider: str, program: str, *,
+                on: Optional[str] = None,
+                account_size: Optional[float] = None,
+                server: Optional[str] = None) -> Optional[ChallengePolicy]:
+        """The policy in force for this account on this date, or None.
+
+        None means "no policy applies", and callers must treat that as
+        POLICY_UNKNOWN. It is not a default policy and it is not an error to be
+        swallowed -- 34.6's chain starts there.
+
+        `resolve_ex` is the same answer with the reason attached; use it wherever
+        an operator or the console will read the outcome.
+        """
+        return self.resolve_ex(provider, program, on=on,
+                               account_size=account_size, server=server).policy
 
     def versions(self, provider: str, program: str) -> List[Dict[str, Any]]:
         """Every registered version, newest first, with its verification state.

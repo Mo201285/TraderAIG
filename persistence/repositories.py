@@ -113,6 +113,31 @@ class UserRepository:
         except Exception:
             return []
 
+    def refresh_account_mirror(self, user_id: str) -> Optional[List[str]]:
+        """Rewrite `account_ids_json` for one user from the registry, now.
+
+        The mirror is otherwise only refreshed as a side effect of `save()`, which
+        means any writer that touches the registry without touching the user row
+        leaves the mirror stale. That is exactly what adopting an account does, and
+        a stale mirror is worse than a missing one: the column exists so that an
+        older build reading the row finds the accounts rather than an empty list,
+        and an empty list there reads as "this user owns nothing".
+
+        Returns the ids written, or None when there is no such user row -- an owner
+        that is not in `users` is a registry inconsistency, and inventing a user
+        here would hide it behind a plausible-looking mirror.
+        """
+        user_id = str(user_id or "").strip()
+        if not user_id:
+            return None
+        row = self._session.get(UserRecord, user_id)
+        if row is None:
+            return None
+        ids = self._registered_account_ids(user_id)
+        row.account_ids_json = dumps(ids)
+        self._session.commit()
+        return ids
+
     def get_by_email(self, email: str) -> Optional[User]:
         row = self._session.execute(
             select(UserRecord).where(UserRecord.email == email)

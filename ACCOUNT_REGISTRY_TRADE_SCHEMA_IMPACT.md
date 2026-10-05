@@ -278,16 +278,69 @@ Three refusals, each of which is a decision rather than an error to report:
 
 | Case | Why it refuses |
 |---|---|
-| login with **no** program binding | `challenge_baselines` records no server, so adoption would have to invent one. The same login on two brokers is two accounts, and picking one is a guess about somebody's money. Reported in `needs_operator_decision`. |
+| login with **no** recorded server | `challenge_baselines` stores the login alone. Adopting it server-empty would mean inventing a broker, and the same login on two brokers is two accounts. Reported in `needs_operator_decision`. |
+| supplied identity **disagrees** with a binding | Two answers to "which broker is this?" Picking the one that lets the run finish would be choosing a side in a disagreement nobody has looked at. Reported in `ownership_conflicts`. |
 | login already registered to **another** user | An ownership dispute, not a migration detail. Reported in `ownership_conflicts` — deliberately *not* as `already_registered`, or an operator would read "done" for an account that was declined. |
 | `register()` refuses for any other reason | Captured per-login in `failed`; one bad login cannot abort the rest or vanish from the report. |
 
-**Live dry run, 2026-10-05** (`plan` only, nothing written): login `1400167` →
-`needs_operator_decision`, 0 adopted. `challenge_program_bindings` has 0 rows, so
-there is no server to adopt it against. This is the refusal working, not a bug —
-adopting it as a server-empty account would be the guess the module exists to
-avoid. Unblocking it needs an explicit owner *and* a server for `1400167`; the
-first-created user (`drsauce85@gmail.com`) is *not* evidence of ownership.
+**Where identity may come from — and the coupling that had to be removed.**
+The first version read the server from `challenge_program_bindings` only, which
+made the module unusable for exactly the accounts that needed it. That table is
+also the *grading* authority: a row there names a program, an account bound to a
+program with no registered policy resolves **fail-closed**, and
+`challenge/live.py:240` refuses its entries. So writing a binding row as a side
+effect of recording ownership would **halt the account being migrated**.
+
+Adoption now takes the server as an operator-supplied fact — verified out of
+band, since a connected MT5 terminal answers `account_info().server` — and
+records it on the `accounts` row as descriptive metadata. It **never writes a
+binding**. A supplied identity and a binding that name different brokers stop the
+run.
+
+**Live adoption, 2026-10-05.** Server read from the running terminal: `1400167` →
+**`FTTrading-Server`**, company `FT Trading Ltd.`, currency USD, **leverage 1**,
+hedging mode. (A second terminal on this host holds `1997454` on the same server;
+it has no challenge rows, so nothing adopts it.)
+
+Owner confirmed by the operator as `drsauce85@gmail.com` → `0f90e696-…`, which is
+also what `IDENTITY_PRIMARY_EMAIL` resolves to on this host, so the acting
+principal and the recorded owner are the same party. `apply()` then wrote:
+
+- `accounts`: 1 row — `5bd99e44bced439389a27fe4c333717b`, `mt5`, login `1400167`,
+  server `FTTrading-Server`, owner `0f90e696-…`, provider `FT Trading Ltd.`,
+  program `tournaments October Clash`, status `active`.
+- `account_identity`: 1 row — the login→`account_id` indirection, so
+  `resolve_legacy_login("1400167", "FTTrading-Server")` resolves.
+- `challenge_baselines` / `challenge_states` / `challenge_program_bindings`:
+  **fingerprinted before and after, byte-identical.** Baseline still
+  `(1400167, 100000.0, declared)`, state still `(1400167, active)`, bindings
+  still 0 — so the account was not halted by naming it.
+
+Re-running `plan()` reports `already_registered: 1`, and
+`AccountConsistencyChecker.report()` is clean (0 orphaned connections, 0 identity
+conflicts, 0 unowned accounts).
+
+**Legacy mirror.** `users.account_ids_json` for `0f90e696-…` was `[]` immediately
+after the adoption: the mirror is written inside `UserRepository.save()`, and
+adoption writes the registry rather than the user row. Nothing in this build reads
+the column, but its stated purpose is that an older build reading the row finds
+the accounts rather than an empty list — and an empty list there reads as "this
+user owns nothing", the exact opposite of what was just recorded. `apply()` now
+rewrites it after a successful adoption (`UserRepository.refresh_account_mirror`),
+reports whether it did, and lets a mirror failure stand rather than rolling back
+an ownership record. Live value is now
+`["5bd99e44bced439389a27fe4c333717b"]`.
+
+Two traps found while doing it, both of which produce a *false all-clear* rather
+than an error:
+
+- `UserRepository()` with no session defaults to `bind_test_session()` — an
+  in-memory database, not the live one. Resolving the mirror through that default
+  finds no user, reports "no users row", and leaves the live column empty, which
+  looks like a correct refusal. The session is now resolved explicitly.
+- The mirror is refreshed only when `apply()` actually adopted something, so a run
+  that adopted nothing cannot overwrite a correct list with a registry read taken
+  mid-failure.
 
 ### 5.2 Two ownership checks, and why both exist
 
@@ -399,19 +452,21 @@ The live account must behave identically before and after. Tests to add:
   `isolation_report()` is the one to read.*
 - **D6 — Credential slots.** Extend `SecretsVault` slot names per account
   (`cex.okx.<label>.api_key`), or one credential set per exchange for now?
-- **D7 — Who owns `1400167`, and on which server?** Blocks `apply()` on the live
-  database. Needs an explicit `owner_user_id` and a `challenge_program_bindings`
-  row (or an equivalent server fact). The adoption module refuses both unknowns
-  rather than defaulting them; this is the only thing standing between the current
-  code and a live registry row.
+- **D7 — Who owns `1400167`, and on which server?** **Resolved 2026-10-05:**
+  operator confirmed the owner as `drsauce85@gmail.com` (`0f90e696-…`) and the
+  server was read from the live terminal as `FTTrading-Server`. `apply()` ran; see
+  §5.1. Still worth a policy answer for the *next* account: today adoption needs a
+  hand-supplied identity, and nothing in the system knows the broker until someone
+  supplies it.
 
 ---
 
 ## 9. What this document does not claim
 
-- No account has been adopted. The live registry is still 0 rows, and the dry run
-  against `1400167` refuses for want of an owner and a server (D7). Code that can
-  write a row is not a row that has been written.
+- One account has been adopted (`1400167`, verified against the live MT5 terminal
+  and fingerprinted to prove no challenge row moved). No re-keying has happened and
+  no program binding exists — grading still resolves by policy, exactly as before.
+- `users.account_ids_json` is refreshed after adoption; see §5.1.
 - Nothing here is implemented. `INTEGRATION_GAPS_REPORT.txt` D2 and D4 remain
   recorded-but-not-built.
 - The CEX side has **no** reconciliation path today. MT5 is the only venue with

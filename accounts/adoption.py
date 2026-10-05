@@ -30,6 +30,30 @@ Note what is *not* a conflict: the same login on two different servers. That is 
 accounts by design, and only `challenge_program_bindings` can say which broker a
 login belongs to.
 
+**Where the identity facts come from.** Two sources, and the distinction matters
+more than it looks. `challenge_program_bindings` is the authority on *how an
+account is graded*: a row there makes an account a deliberately named tournament
+account, and if no policy is registered for that program the account resolves
+fail-closed and stops trading (`challenge/live.py:240`). That table is therefore
+not an input an ownership migration may write, and coupling adoption to it made
+this module useless exactly when it was needed -- the binding table is empty for
+any account nobody has yet bound.
+
+So identity arrives from two places, and neither is inferred:
+
+- `identities` -- facts the operator supplies, having verified them (the MT5
+  terminal answers `account_info().server` for a connected account). Recorded on
+  the `accounts` row as descriptive metadata only. **Writing one does not make it
+  true for grading**, and this module never writes a binding.
+- `challenge_program_bindings` -- read-only, used when the operator supplied
+  nothing, because a binding that already exists is better evidence than a
+  hand-typed string.
+
+When both exist and disagree, the run stops and reports the disagreement rather
+than silently preferring one: the two sources answer the same question
+("which account is this?") and a migration that picked the convenient one would be
+choosing a side in a disagreement nobody has looked at.
+
 **Dry run first.** `apply()` takes `owner_user_id` and writes;
 `plan()` reports what `apply()` would do and touches nothing. Run `plan()` against
 the live database and read it before writing, because the one thing this module
@@ -88,8 +112,35 @@ def _live_login_account_ids(session: Optional[Any] = None) -> List[str]:
     return sorted(logins)
 
 
-def plan(owner_user_id: str, *, venue: str = _MT5,
-         challenge_repo: Optional[ChallengeRepository] = None,
+def _supplied_identities(identities: Optional[Any]) -> Dict[str, Dict[str, str]]:
+    """Normalise the operator-supplied identity map.
+
+    Keyed by venue login. Accepts either `{login: {...}}` or a list of rows with
+    `venue_login`, so a caller can pass what it already has without reshaping it
+    first. A login with no `venue_server` is dropped here rather than later: a
+    server-empty account is the exact thing this module refuses to invent, and
+    letting it through the normaliser would turn a typo into an adoption.
+    """
+    out: Dict[str, Dict[str, str]] = {}
+    if not identities:
+        return out
+    items = identities.items() if isinstance(identities, dict) else (
+        (row.get("venue_login"), row) for row in identities)
+    for raw_login, row in items:
+        login = str(raw_login or "").strip()
+        row = row or {}
+        server = str(row.get("venue_server") or row.get("server") or "").strip()
+        if not login or not server:
+            continue
+        out[login] = {"venue_server": server,
+                      "provider": str(row.get("provider") or ""),
+                      "program": str(row.get("program") or ""),
+                      "source": str(row.get("source") or "")}
+    return out
+
+
+def plan(owner_user_id: str, *, identities: Optional[Any] = None,
+         venue: str = _MT5, challenge_repo: Optional[ChallengeRepository] = None,
          registry: Optional[AccountRegistryRepository] = None,
          session: Optional[Any] = None,
          ) -> Dict[str, Any]:
@@ -98,6 +149,11 @@ def plan(owner_user_id: str, *, venue: str = _MT5,
     `owner_user_id` is validated here too, so a dry run fails for the same
     reason the real run would. A dry run that cannot fail is a dry run nobody
     reads.
+
+    `identities` carries the venue server (and optionally provider/program) that
+    the operator has verified -- from the MT5 terminal, typically. It is required
+    for any login with no program binding, because `challenge_baselines` records
+    no server beside the login and this module will not invent one.
 
     `session` selects the database being planned against, which is what makes
     this safe to point at a restored copy of production instead of the live file.
@@ -116,17 +172,36 @@ def plan(owner_user_id: str, *, venue: str = _MT5,
     session = session or getattr(challenge, "_injected", None)
     bindings = {str(b.get("account_login") or "").strip(): b
                 for b in challenge.load_program_bindings()}
+    supplied = _supplied_identities(identities)
     reg = registry or AccountRegistryRepository()
 
     adopt, already, unresolved, conflicts = [], [], [], []
     for login in _live_login_account_ids(session):
         binding = bindings.get(login)
-        # The server the binding names is the only recorded one. Checking for an
-        # existing account under the *same* server matters: a login already
-        # registered against this broker is `already_registered`, and re-adopting
-        # it under a different server would create the second account for one
-        # login that this whole migration exists to keep distinct.
-        server = str((binding or {}).get("server") or "")
+        given = supplied.get(login)
+        # Operator-supplied facts and a binding that disagree mean the account is
+        # described two ways. Report it rather than choosing: silently preferring
+        # the one that makes the run succeed is how a migration ends up recording
+        # an account nobody has checked.
+        if binding is not None and given is not None:
+            bound_server = str(binding.get("server") or "").strip()
+            if bound_server and bound_server != given["venue_server"]:
+                conflicts.append({
+                    "venue_login": login,
+                    "reason": "identity_sources_disagree",
+                    "bound_server": bound_server,
+                    "supplied_server": given["venue_server"],
+                    "detail": "a program binding and the supplied identity name "
+                              "different brokers for this login; one of them is "
+                              "wrong and the migration will not pick",
+                })
+                continue
+        source = given or {"venue_server": str((binding or {}).get("server")
+                                               or "").strip(),
+                           "provider": str((binding or {}).get("provider") or ""),
+                           "program": str((binding or {}).get("program") or ""),
+                           "source": str((binding or {}).get("source") or "")}
+        server = source["venue_server"]
         existing = reg.get_by_identity(venue, login, server)
         if existing is not None:
             # Already registered under somebody else is not "done" -- reporting it
@@ -150,23 +225,28 @@ def plan(owner_user_id: str, *, venue: str = _MT5,
                                 "account_id": existing["account_id"],
                                 "owner_user_id": existing["owner_user_id"]})
             continue
-        if binding is not None:
+        if server:
             adopt.append({
                 "venue_login": login,
                 "venue": venue,
                 "venue_server": server,
-                "provider": binding.get("provider") or "",
-                "program": binding.get("program") or "",
-                "binding_source": binding.get("source") or "",
+                "provider": source["provider"],
+                "program": source["program"],
+                "binding_source": source["source"],
+                "identity_source": "operator" if given else "binding",
             })
         else:
             unresolved.append({
                 "venue_login": login,
                 "venue_server": "",
-                "reason": "no program binding states a server for this login, so "
-                          "the registry would adopt it as a server-empty account; "
-                          "if the same login is in use on two brokers that is two "
-                          "accounts and one of them would be unreachable",
+                "reason": ("no venue server is recorded for this login: "
+                           "challenge_baselines stores the login alone, "
+                           "challenge_program_bindings has no row for it, and no "
+                           "identity was supplied. Adopting it server-empty would "
+                           "mean inventing a broker, and if the same login is in "
+                           "use on two brokers that is two accounts -- one of them "
+                           "unreachable. Supply the server from the MT5 terminal "
+                           "(account_info().server) via `identities=`"),
             })
 
     return {
@@ -184,7 +264,50 @@ def plan(owner_user_id: str, *, venue: str = _MT5,
     }
 
 
-def apply(owner_user_id: str, *, venue: str = _MT5,
+def _refresh_legacy_mirror(owner_user_id: str, *,
+                           repo: Optional[Any] = None) -> Dict[str, Any]:
+    """Rewrite the owner's legacy `account_ids_json` from the registry.
+
+    The mirror is refreshed inside `UserRepository.save()` and nowhere else, so
+    adopting an account -- which writes the registry and not the user row -- leaves
+    it saying `[]`. That is not cosmetic-only: the column exists so an older build
+    reading the row finds the accounts, and an empty list there reads as "this user
+    owns nothing", which is the opposite of what was just recorded.
+
+    Never raises. The mirror is a compatibility copy that nothing in this build
+    reads, so a failure is reported and the adoption stands -- the alternative is a
+    cosmetic write rolling back an ownership record.
+
+    The session is resolved explicitly rather than left to `UserRepository()`,
+    whose constructor defaults `session=None` to `bind_test_session()` -- an
+    in-memory database. Relying on that default here would report a refreshed
+    mirror for a user who does not exist in the live database, which is exactly
+    the false all-clear this function exists to avoid.
+    """
+    from persistence.db import make_live_session
+    from persistence.repositories import UserRepository
+
+    injected = getattr(repo, "_injected", None) if repo is not None else None
+    session = injected if injected is not None else make_live_session()
+    try:
+        ids = UserRepository(session).refresh_account_mirror(owner_user_id)
+    except Exception as exc:  # noqa: BLE001
+        return {"refreshed": False, "account_ids": [],
+                "reason": f"the legacy mirror could not be rewritten: {exc}"}
+    finally:
+        if injected is None:
+            session.close()
+    if ids is None:
+        return {"refreshed": False, "account_ids": [],
+                "reason": (f"no users row for {owner_user_id!r}, so there is no "
+                           "mirror to rewrite; the registry records the owner and "
+                           "the user row is missing, which is an inconsistency "
+                           "worth reporting")}
+    return {"refreshed": True, "account_ids": ids, "reason": ""}
+
+
+def apply(owner_user_id: str, *, identities: Optional[Any] = None,
+          venue: str = _MT5,
           challenge_repo: Optional[ChallengeRepository] = None,
           registry: Optional[AccountRegistryRepository] = None,
           session: Optional[Any] = None,
@@ -196,9 +319,18 @@ def apply(owner_user_id: str, *, venue: str = _MT5,
     that a partial run happened -- a migration that quietly adopted three of four
     accounts and returned success is worse than one that refuses all four and
     says why.
+
+    Never writes `challenge_program_bindings`. A binding decides how an account
+    is graded and can halt it, so it is not this module's to write; the `program`
+    recorded here is descriptive metadata about the account and nothing more.
+
+    Rewrites the owner's legacy `users.account_ids_json` mirror after a successful
+    adoption, because that column is otherwise only refreshed by saving the user
+    row. The rewrite is reported and never allowed to fail the run.
     """
-    report = plan(owner_user_id, venue=venue, challenge_repo=challenge_repo,
-                  registry=registry, session=session)
+    report = plan(owner_user_id, identities=identities, venue=venue,
+                  challenge_repo=challenge_repo, registry=registry,
+                  session=session)
     reg = registry or AccountRegistryRepository()
     owner_user_id = report["owner_user_id"]
 
@@ -222,6 +354,14 @@ def apply(owner_user_id: str, *, venue: str = _MT5,
             failed.append({"venue_login": item["venue_login"],
                            "error": str(exc)})
 
+    # Only when something was actually adopted: a run that adopted nothing and
+    # still rewrote the mirror would overwrite a correct list with a registry read
+    # taken mid-failure, which is a way of publishing a wrong answer.
+    mirror = ({"refreshed": False, "account_ids": [],
+               "reason": "nothing was adopted, so the mirror was left alone"}
+              if not adopted
+              else _refresh_legacy_mirror(owner_user_id, repo=reg))
+
     return {
         "ok": not (failed or report["needs_operator_decision"]
                    or report["ownership_conflicts"]),
@@ -232,12 +372,14 @@ def apply(owner_user_id: str, *, venue: str = _MT5,
         "skipped": report["needs_operator_decision"],
         "ownership_conflicts": report["ownership_conflicts"],
         "failed": failed,
+        "legacy_mirror": mirror,
+        "note": ("challenge_baselines, challenge_states and "
+                 "challenge_program_bindings were read only; no challenge row was "
+                 "written, and no program binding was created -- a binding "
+                 "decides how an account is graded and can halt it"),
         "counts": {"adopted": len(adopted),
                    "already_registered": len(report["already_registered"]),
                    "skipped": len(report["needs_operator_decision"]),
                    "ownership_conflicts": len(report["ownership_conflicts"]),
                    "failed": len(failed)},
-        "note": ("challenge_baselines, challenge_states and "
-                 "challenge_program_bindings were read only; no challenge row was "
-                 "written"),
     }

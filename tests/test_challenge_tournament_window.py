@@ -185,11 +185,10 @@ def bound(monkeypatch):
               version="test-v1"):
         svc = service_mod.challenge_service
         saved = list(svc._program_bindings)
-        saved_pol = list(svc._registry.all_policies())
+        saved_slots = {slot: list(policies)
+                       for slot, policies in svc._registry._policies.items()}
         svc._program_bindings.clear()
-        for p in svc._registry.all_policies():
-            svc._registry._policies.get(
-                svc._registry._slot(p.provider, p.program), []).remove(p)
+        svc._registry._policies.clear()
         svc.bind_program("4242", provider=PROVIDER, program=PROGRAM,
                          server=SERVER, source="test operator claim")
         if effective_from is not None or effective_until is not None:
@@ -202,11 +201,28 @@ def bound(monkeypatch):
                                      balance=100_000.0, equity=100_000.0)
 
         def restore():
+            """Put the process-wide registry back exactly as it was found.
+
+            `challenge_service` is a module-level singleton, so a policy
+            registered here outlives the test that wanted it unless it is
+            explicitly taken back out. Restoring what was saved is only half of
+            that: this used to put the saved policies back and leave the test's
+            own policy in place, so every later test in the session inherited
+            invented provider terms. Nothing was graded wrongly --
+            `test_the_process_wide_registry_starts_empty` caught it -- but the
+            leak was one assertion away from doing so, and it reached CI as an
+            order-dependent failure while passing whenever the two files ran
+            separately.
+
+            Restore is therefore the exact inverse of `build`: clear, then put
+            back what was there. That also makes it idempotent, so a second call
+            cannot duplicate the saved policies.
+            """
             svc._program_bindings.clear()
             svc._program_bindings.extend(saved)
-            for p in saved_pol:
-                svc._registry._policies.setdefault(
-                    svc._registry._slot(p.provider, p.program), []).append(p)
+            svc._registry._policies.clear()
+            for slot, policies in saved_slots.items():
+                svc._registry._policies[slot] = list(policies)
 
         return store, restore
 

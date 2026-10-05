@@ -481,7 +481,10 @@ def _tenancy_report() -> Dict:
             "GET /payments/wallet/{user_id}",
             "POST /payments/charge (user_id in body)",
             "POST /payments/refund (owner resolved from charge_id)",
+            "GET /accounts (filtered to the acting principal's own rows)",
+            "GET /accounts/{account_id} (403 unless the acting principal owns it)",
         ],
+        "guard_account_called_by_any_route": False,
         "still_open_by_design": [
             "POST /payments/webhook — provider-signed; a public endpoint by "
             "design, and the only one that must stay reachable without a session",
@@ -492,7 +495,10 @@ def _tenancy_report() -> Dict:
                  "authentication every caller already acts with the operator's "
                  "authority — ownership here stops a caller from redirecting "
                  "that authority at another user's record, it does not "
-                 "establish who the caller is. Real multi-tenancy (per-user "
+                 "establish who the caller is. GET /accounts is the same kind of "
+                 "check: it proves the row is the acting principal's, and says "
+                 "caller_authenticated:false beside it. Real multi-tenancy "
+                 "(per-user "
                  "canonical state, ledgers, engines, and an authenticated "
                  "caller) is an open ORPHAN, not a feature of this build."),
     }
@@ -516,6 +522,102 @@ def get_positions() -> List[Dict]:
 @app.get("/account/orders")
 def get_orders() -> List[Dict]:
     return [o.as_dict() for o in state.orders.values()]
+
+
+# ---------------------------------------------------------------------------
+# Account registry (P1): WHO OWNS WHICH ACCOUNT
+# ---------------------------------------------------------------------------
+#
+# These are the first routes in the file to consult account ownership. Every
+# other `/account*` route above reads the one process-wide canonical state, which
+# belongs to the single operator; these read the registry, whose rows have
+# `owner_user_id`, so returning one without checking would be handing a record to
+# whoever asked.
+#
+# What they check is `own_record_access()` -- the acting principal must be the
+# recorded owner -- and what they explicitly do NOT check is whether the caller
+# is authenticated, because on this deployment (`TRADERAIG_AUTH` off) that is not
+# knowable. Every response below therefore carries `caller_authenticated` and the
+# unscoped list is filtered rather than returned: an endpoint that filtered
+# nothing would be the one that publishes the whole registry.
+
+
+@app.get("/accounts/isolation")
+def accounts_isolation() -> Dict:
+    """What isolation is actually in force here, as opposed to planned.
+
+    Read before `/accounts` because the answer changes what the list means: with
+    `auth_enforced: false` the list below is "the accounts this caller is acting
+    as", not "the accounts this caller has proved it may see".
+    """
+    from accounts import isolation
+
+    return {"ok": True, **isolation.isolation_report()}
+
+
+@app.get("/accounts")
+def list_accounts() -> Dict:
+    """The accounts the acting principal owns.
+
+    Filtered by `visible_accounts()` before serialisation. Returning the full
+    registry and letting the caller filter would make this the one route where
+    every other user's account is visible, which is the failure the whole
+    registry exists to prevent.
+    """
+    from accounts import isolation
+    from persistence.repositories_accounts import AccountRegistryRepository
+
+    principal = identity.principal_user_id()
+    registry = AccountRegistryRepository()
+    owned = isolation.visible_accounts(principal, registry.list_all())
+    return {"ok": True, "accounts": owned,
+            "owner_user_id": principal,
+            "principal_resolved": bool(principal),
+            "no_principal_note": (
+                "" if principal else
+                "no acting principal could be resolved, so this list is empty "
+                "because nobody could be shown to own anything -- not because "
+                "the registry is empty. Identity rehydrates in main.py, so a "
+                "host booted as `uvicorn operations.api:app` reaches this route "
+                "with an empty user map."),
+            "isolation": {"caller_authenticated": isolation.enforced(),
+                          "checked": "account is owned by the acting principal",
+                          "not_checked": "who the caller is"}}
+
+
+@app.get("/accounts/{account_id}")
+def get_account_record(account_id: str) -> Dict:
+    """One account, if the acting principal owns it.
+
+    403 rather than a lying 404 when the account exists but belongs to somebody
+    else: on this deployment the caller is already acting with the operator's
+    authority, so "this is not yours" is the useful answer and inventing a
+    non-existent account to hide the difference would only mislead the operator
+    into hunting an id that was never wrong.
+    """
+    from accounts import isolation
+
+    principal = identity.principal_user_id()
+    access = isolation.own_record_access(principal, account_id)
+    if access["reason"] == "unknown_account":
+        return JSONResponse(status_code=404,
+                            content={"ok": False, "account_id": account_id,
+                                     "reason": "unknown_account",
+                                     "detail": "no such account in the registry"})
+    if not access["allowed"]:
+        return JSONResponse(status_code=403,
+                            content={"ok": False, "account_id": account_id,
+                                     "reason": access["reason"],
+                                     "detail": access["detail"],
+                                     "caller_authenticated":
+                                         access["caller_authenticated"]})
+
+    from persistence.repositories_accounts import AccountRegistryRepository
+
+    account = AccountRegistryRepository().get(account_id)
+    return {"ok": True, "account": account,
+            "isolation": {"caller_authenticated": access["caller_authenticated"],
+                          "ownership_verified": access["ownership_verified"]}}
 
 
 # ---------------------------------------------------------------------------

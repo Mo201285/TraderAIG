@@ -253,6 +253,67 @@ backfill is trivially small and the risk is entirely in the schema change.
 - **M5 — deprecate.** `users.account_ids_json` becomes a compatibility mirror,
   then retired.
 
+### 5.1 M2 as built — adoption without re-keying
+
+M2 is the step the rest of the plan depends on, and it is deliberately **not** the
+re-keying the original plan implied. `challenge_baselines.account_id` and
+`challenge_states.account_id` are bare login strings and stay that way: the
+tables that decide a drawdown verdict are not the place to take a data-migration
+risk, and re-keying them before any account is registered would silently orphan
+the one live baseline and reset that account to `ONBOARDING`.
+
+What landed instead is `accounts/adoption.py`, which adds the indirection from
+the outside:
+
+- `plan(owner_user_id)` — reads `challenge_baselines` + `challenge_states` +
+  `challenge_program_bindings`, writes nothing. **The owner is required, not
+  defaulted**: an unowned account has no tenancy boundary, so adopting one
+  without an owner would create a row `register()` itself refuses to create.
+- `apply(owner_user_id)` — writes **only** `accounts` and `account_identity`. The
+  three challenge tables are read and never written, which is what makes this safe
+  to point at the live database.
+- Idempotent: a second run reports `already_registered` and adopts nothing.
+
+Three refusals, each of which is a decision rather than an error to report:
+
+| Case | Why it refuses |
+|---|---|
+| login with **no** program binding | `challenge_baselines` records no server, so adoption would have to invent one. The same login on two brokers is two accounts, and picking one is a guess about somebody's money. Reported in `needs_operator_decision`. |
+| login already registered to **another** user | An ownership dispute, not a migration detail. Reported in `ownership_conflicts` — deliberately *not* as `already_registered`, or an operator would read "done" for an account that was declined. |
+| `register()` refuses for any other reason | Captured per-login in `failed`; one bad login cannot abort the rest or vanish from the report. |
+
+**Live dry run, 2026-10-05** (`plan` only, nothing written): login `1400167` →
+`needs_operator_decision`, 0 adopted. `challenge_program_bindings` has 0 rows, so
+there is no server to adopt it against. This is the refusal working, not a bug —
+adopting it as a server-empty account would be the guess the module exists to
+avoid. Unblocking it needs an explicit owner *and* a server for `1400167`; the
+first-created user (`drsauce85@gmail.com`) is *not* evidence of ownership.
+
+### 5.2 Two ownership checks, and why both exist
+
+`accounts/isolation.py` holds two functions that look redundant and are not:
+
+- `guard_account()` — asks "is this caller **proven** to be somebody?" Denies
+  outright while `TRADERAIG_AUTH` is off. **Still called by no route**, and
+  `isolation_report()` publishes `guard_account_called_by_any_route: False` so a
+  reader cannot conclude that isolation is active here.
+- `own_record_access()` / `visible_accounts()` — ask the narrower question that
+  *is* answerable without authentication: "is this record the acting principal's
+  own?" Wired into `GET /accounts`, `GET /accounts/{account_id}`.
+
+The narrow check is never weaker about *whose data* is returned: another user's
+account is denied either way, and both agree for the owner once authentication is
+on. What differs is the reason, and every response carries
+`caller_authenticated` so "allowed" cannot be misread as "identified".
+
+**Known limitation, found on a real boot:** `principal_user_id()` returns `None`
+on a host started as `uvicorn operations.api:app`, because identity rehydrates in
+`main.py` only — which is how `scripts/smoke_live.ps1` boots. The routes then
+deny everything (fail-closed, no leak), but `GET /accounts` would return an empty
+list for a reason unrelated to the registry. It now says so in
+`principal_resolved` / `no_principal_note` rather than reporting `[]` and letting
+the operator hunt for accounts that exist.
+
 ---
 
 ## 6. Files to modify
@@ -327,14 +388,30 @@ The live account must behave identically before and after. Tests to add:
 - **D5 — Auth enforcement.** Does the Account Registry ship with
   `TRADERAIG_AUTH=1` and real per-user scoping, or land first with the honest
   "registered but not enforced" label? **This is the one that determines whether
-  P1 delivers isolation or only a data model.**
+  P1 delivers isolation or only a data model.** *Partly answered in M2: the
+  `/accounts` routes now consult ownership (`own_record_access`) and publish
+  `caller_authenticated: false`, so the data model is enforced for cross-user
+  reads while caller identity remains unproven. What is still open is whether
+  `guard_account()` — which denies everything until a principal is proven — gets
+  wired to the existing `/account*` and `/challenge*` routes. That is rejected for
+  now: with authentication off it would 403 every live challenge route. It becomes
+  viable the day `TRADERAIG_AUTH=1` is real, and until then the honest label in
+  `isolation_report()` is the one to read.*
 - **D6 — Credential slots.** Extend `SecretsVault` slot names per account
   (`cex.okx.<label>.api_key`), or one credential set per exchange for now?
+- **D7 — Who owns `1400167`, and on which server?** Blocks `apply()` on the live
+  database. Needs an explicit `owner_user_id` and a `challenge_program_bindings`
+  row (or an equivalent server fact). The adoption module refuses both unknowns
+  rather than defaulting them; this is the only thing standing between the current
+  code and a live registry row.
 
 ---
 
 ## 9. What this document does not claim
 
+- No account has been adopted. The live registry is still 0 rows, and the dry run
+  against `1400167` refuses for want of an owner and a server (D7). Code that can
+  write a row is not a row that has been written.
 - Nothing here is implemented. `INTEGRATION_GAPS_REPORT.txt` D2 and D4 remain
   recorded-but-not-built.
 - The CEX side has **no** reconciliation path today. MT5 is the only venue with

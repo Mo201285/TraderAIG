@@ -458,10 +458,20 @@ def test_guard_never_reports_allowed_while_unenforced(repo):
 
 
 def test_isolation_report_does_not_claim_wiring(repo, monkeypatch):
-    """A status endpoint must not read as though routes are guarded."""
+    """A status endpoint must not read as though isolation is active.
+
+    This started as `wired_into_api is False` -- true when no route consulted
+    ownership at all. `/accounts` now calls `own_record_access()`, so the field
+    reports that wiring instead, and the assertion moved with it: what must stay
+    false is the stronger claim, that any route runs `guard_account()` and so has
+    identified its caller. A reader who saw `wired_into_api: true` and stopped
+    there would believe an unauthenticated deployment had proven who is asking.
+    """
     monkeypatch.setattr("accounts.isolation.enforced", lambda: False)
     report = isolation_report(repo)
-    assert report["wired_into_api"] is False
+    assert report["wired_into_api"] is True
+    assert report["ownership_checked_on"]
+    assert report["guard_account_called_by_any_route"] is False
     assert report["auth_enforced"] is False
     assert report["note"]
 

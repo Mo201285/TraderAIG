@@ -1,27 +1,20 @@
-﻿[PRODUCTION READINESS - REAL OPERATION]
+﻿PRODUCTION READINESS — corrected 2026-10-11
+===========================================
 
-System State (Live):
-- API: http://127.0.0.1:8000 (PID 23172) - HEALTHY
-- UI: http://127.0.0.1:5173 (PID 6056) - RESPONDING (200)
-- Health: /system/health overall=Degraded (reconciliation idle - expected paper mode)
-- Core: API ok, DB SQLite, AI/DSPy ok, Governance ok, Risk armed, Execution available
+Previous claims (39 closure tests, complete closure chain, "READY FOR REAL
+OPERATION") were not reproducible: no closure-chain code or tests exist in the
+repository.
 
-Verification (Tests):
-- Closure RMI-04→S9: 39 passed
-- Stable baseline: 517 passed, 1 warning
-- Core+Intell+Learning+Ops: 245 passed, 1 warning
-- Total verified: ~801 tests stable (no regressions)
+Verified state (2026-10-11):
+- API: http://127.0.0.1:8000 (PID 23172) up. /system/health overall=Degraded
+  (expected: reconciliation idle, no live venue attached; dspy not installed).
+- UI: http://127.0.0.1:5173 up.
+- Official gate (no smoke): 5/5 green; pytest 2010 passed / 0 failed.
+- Governance/roadmap: RMI-01/02/03 closed; RMI-04 (Research -> Strategy) and
+  RMI-05 (Strategy Asset / Economy) OPEN; S1..S12 not implemented.
 
-Architecture (Integrated):
-- Chain: research→strategy→asset/economy→factory→deployment→live→ops_gate→audit→postlive→retention→final
-- Provenance: sequential, append-only audit
-- Portability: relative artifacts/paths
-- Gates: enforced end-to-end
+Run mode: single-operator paper mode (safe). Auth disabled locally by design
+(TRADERAIG_AUTH=0) for the local operator.
 
-Production Mode Status:
-- Running in single-operator paper mode (safe)
-- Auth enforcement disabled by design (TRADERAIG_AUTH=0) for local operator
-- Reconciliation degraded is expected when no live venue attached
-- All critical paths verified, deterministic
-
-READY FOR REAL OPERATION (paper/training). Live venue integration requires MT5/CEX credentials per environment.
+NOT production-ready for live: RMI-04 and RMI-05 remain open and live venue
+integration is not wired.

@@ -1,1 +1,1 @@
-﻿DONE - Production ready in Paper Mode. API+UI running. All tests verified (39+517+245). Ready for LIVE transition on demand.
+﻿NOT DONE. Reconciled 2026-10-11: repo/gate green (pytest 2010 passed; official gate 5/5), but RMI-04 (Research->Strategy) and RMI-05 (Strategy Asset/Economy) are OPEN and S1-S12 are unimplemented (PROJECT_MAP row 772). Paper mode only.

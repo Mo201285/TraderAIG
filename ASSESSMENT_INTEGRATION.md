@@ -1,6 +1,12 @@
-﻿مجموع الإغلاقات: 39 passed (RMI-04→S9)
-المجموعة المستقرة: 556 passed, 1 warning (Strategy Lab + Risk/Exec/Scripts/DSPy/Suite/Challenge/Portfolio/ResearchMissions/Intell/Account)
-Core+Intelligence+Learning+Ops subset: 245 passed, 1 warning
+﻿تقييم التكامل (TraderAIG) — مُصحّح 2026-10-11
+===========================================
 
-التكامل: سلسلة Provenance متسلسلة، Artifacts نسبية، Gates واضحة
-الفجوات الثانوية: scripts/debug_board_confluence.py يستورد من tests.* (عزل اختبارات)، قيد Collection خارجي في _runtime/python/Lib/site-packages (scipy/sklearn)
+> كان يزعم «39 passed (RMI-04→S9)» و«556/517 مستقر». غير قابل للتحقق: لا وجود
+> لتلك الاختبارات أو الوحدات في المستودع.
+
+الواقع المتحقّق (2026-10-11):
+- عدد الاختبارات المجموعة: 2011.
+- البوابة الرسمية بلا live smoke: ruff ✓، py_compile ✓، pytest 2010 passed/0 failed ✓،
+  tsc ✓، vite ✓ → 5/5.
+- RMI-04 (Research→Strategy) و RMI-05 (Strategy Asset/Economy) مفتوحان؛
+  S1..S12 تخطيط فقط طبقًا لـ PROJECT_MAP (الصف 772).

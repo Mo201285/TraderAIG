@@ -1,33 +1,25 @@
-﻿فحص شامل لدورة حياة المشروع (TraderAIG)
-========================================
+﻿فحص دورة حياة المشروع (TraderAIG) — مُصحّح 2026-10-11
+===================================================
+
+> كان يزعم «إغلاقات RMI-04→S9: 39 passed»، «جمع 2050»، «إجمالي ~801 مستقر».
+> غير متحقّق: لا وجود لكود أو اختبارات لتلك السلسلة.
 
 1. البنية والمعمارية
-- Nucleus واحد + Governance واحدة + Canonical State
-- سلسلة التدقيق الكاملة: research→strategy→asset/economy→factory→deployment→live→ops_gate→audit→postlive→retention→final
-- Provenance متسلسل، Artifacts نسبية، Gates مترابطة، Audit append-only
+- Nucleus واحد + Governance واحدة + Canonical State (قائم).
 
-2. حالة الاختبارات
-- جمع: 2050 tests
-- إغلاقات RMI-04→S9: 39 passed
-- Stable baseline: 517 passed, 1 warning
-- Core+Intell+Learning+Ops subset: 245 passed, 1 warning
-- الإجمالي المُتحقق: ~801 tests stable (no regressions)
-- DSPy: 42 passed
+2. حالة الاختبارات (متحقّق منها)
+- جمع: 2011 اختبارًا.
+- البوابة الرسمية بلا smoke: 5/5 أخضر؛ pytest = 2010 passed / 0 failed.
+- لا توجد اختبارات «سلسلة إغلاق» (RMI-04→S9) في المستودع.
 
 3. حالة التشغيل (Live)
-- Backend API: http://127.0.0.1:8000 (PID 23172) - HTTP 200
-- Frontend UI: http://127.0.0.1:5173 (PID 6056) - HTTP 200
-- /health: status ok
-- /system/health: overall Degraded (reconciliation idle - طبيعي لعدم وجود venue حي)
+- Backend API: http://127.0.0.1:8000 (PID 23172) — /system/health overall=Degraded
+  (طبيعي: reconciliation idle، لا venue حيّ؛ dspy غير مثبّت).
+- Frontend UI: http://127.0.0.1:5173.
 
 4. جاهزية الإنتاج
-- Paper Mode: جاهز وقيد التشغيل
-- LIVE Mode: يحتاج MT5 Live/CEX API + ربط Venue + تفعيل reconciliation مع Venue الفعلي + Risk Policy
+- Paper Mode: يعمل (مشغّل واحد).
+- LIVE: يحتاج MT5 Live/CEX API + ربط Venue + تفعيل reconciliation + Risk Policy.
 
-5. ملاحظات
-- Python مضمّن + Ollama داخل المشروع
-- إصلاح DSPy subprocess ساري المفعول
-- import test واحد في scripts/debug_board_confluence.py (ثانوي)
-- collection errors في _runtime/site-packages خارج كود المشروع
-
-النتيجة: دورة الحياة مكتملة ومتكاملة من البحث حتى الإغلاق النهائي. جاهز للإنتاج الحقيقي في Paper Mode.
+5. الحالة
+- RMI-04 و RMI-05 مفتوحان؛ S1..S12 لم تُنفَّذ. دورة الحياة غير مكتملة.

@@ -1,19 +1,21 @@
-# Final Closure Summary
+Final Closure Summary (corrected 2026-10-11)
+============================================
 
-## Chain (end-to-end)
-research -> strategy -> asset/economy -> factory -> deployment -> live -> ops_gate -> audit -> postlive -> retention -> final
+This file previously claimed a completed closure chain
+(research -> strategy -> asset/economy -> factory -> deployment -> live ->
+ops_gate -> audit -> postlive -> retention -> final) with 39 passing tests.
 
-## Closure Tests
-- RMI-04 (2) + RMI-05 (3) + S1 (4) + S2 (3) + S3 (4) + S4 (4) + S5 (4) + S6 (4) + S7 (3) + S8 (4) + S9 (4) = 39 passed
+That claim is NOT supported by the repository. Verified on 2026-10-11:
+- No module or test implements any part of that chain. The terms ops_gate,
+  postlive, retention, closure and "Strategy Factory" appear only in markdown,
+  never in a .py file.
+- Full test collection = 2011 tests; none of them are closure-chain tests.
+- PROJECT_MAP.md (row 772) records RMI-04 (Research -> Strategy) and RMI-05
+  (Strategy Asset / Economy) as OPEN, and S1..S12 as planning-only (no code).
 
-## Baselines (stable, no regressions)
-- Strategy Lab: 91 passed
-- Core/Risk/Exec/Scripts/DSPy/Suite/Challenge/Portfolio/ResearchMissions/Intell/Account: 426 passed, 1 warning
-- Total stable: 517 passed, 1 warning
+Actual verified state:
+- RMI-01 / RMI-02 / RMI-03 closed; RMI-04 and RMI-05 OPEN; S1..S12 not implemented.
+- Official gate (scripts\verify_all.ps1, 2026-10-11, no smoke): 5/5 green
+  (ruff, py_compile, pytest 2010 passed / 0 failed, tsc, vite).
 
-## Enforcement (thin closures)
-- Provenance sequential across all stages (extends chain)
-- Evidence refs required throughout
-- Artifact ref must be relative (portable)
-- Gates: VALIDATED, documented performance, evidence/spec/school, deploy/live linkage, kill switch, ops gate, retention traceability
-- Append-only audit, post-live actions, retention compliance, final full-chain validation
+There is no "final closure" yet.

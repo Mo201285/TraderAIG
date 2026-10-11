@@ -229,7 +229,7 @@ export const ARCHITECTURE_PLANES: ArchitecturePlane[] = [
           "/research/promotions",
           "/research/promote",
         ],
-        tests: ["tests/test_strategy_lab", "tests/test_research"],
+        tests: ["tests/test_strategy_lab", "tests/test_operations/test_research_routes.py"],
         security: {
           en: "Failure yields an explicit REJECTED / QUARANTINED / NEEDS_REVISION, never a silent deletion.",
           ar: "الفشل يُنتج REJECTED / QUARANTINED / NEEDS_REVISION صريحة، ولا حذفًا صامتًا أبدًا.",

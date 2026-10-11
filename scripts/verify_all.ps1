@@ -64,7 +64,19 @@ if ($selected -contains "compile") {
         $pyFiles = Get-ChildItem $ROOT -Recurse -Filter *.py |
             Where-Object { $_.FullName -notmatch '\\mt5-dev\\|\\mt5-portable\\|\\TAIG Dash\\|node_modules|\.pytest_cache|__pycache__|\\logs\\|\\\.data\\' } |
             Select-Object -ExpandProperty FullName
-        & $PY -m py_compile $pyFiles; if ($LASTEXITCODE -ne 0) { throw "py_compile exit code $LASTEXITCODE" }
+        # Windows caps the command line at ~32k chars, so compile in batches
+        # instead of passing every path in one argv.
+        $failed = $false
+        $batch = @()
+        foreach ($f in $pyFiles) {
+            $batch += $f
+            if ($batch.Count -ge 150) {
+                & $PY -m py_compile @batch; if ($LASTEXITCODE -ne 0) { $failed = $true }
+                $batch = @()
+            }
+        }
+        if ($batch.Count -gt 0) { & $PY -m py_compile @batch; if ($LASTEXITCODE -ne 0) { $failed = $true } }
+        if ($failed) { throw "py_compile failed" }
     }
 }
 

@@ -1,2 +1,4 @@
-﻿export { EmptyState, ErrorState, LoadingState, StatusChip } from './states';
+﻿export function StatusChip({ status }: { status: string }) {
+  return <span>{status}</span>;
+}
 export default StatusChip;

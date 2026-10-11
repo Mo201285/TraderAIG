@@ -1,18 +1,97 @@
 import { useState } from "react";
 import type { Language } from "../../types";
-import { Card, PageHeader, SectionLabel, StateChip, Btn, Tab, ff, fd, isRtl } from "../ui/shared";
+import { Card, PageHeader, SectionLabel, StateChip, Btn, Tab, ff, isRtl } from "../ui/shared";
+import { EmptyState, ErrorState, LoadingState } from "../../design";
 import { api, useData } from "../../lib/useData";
+
+const UI: Record<string, Record<string, string>> = {
+  en: {
+    statusBandLabel: "Risk Status",
+    riskStatusLabel: "Risk Status",
+    riskStatusLow: "LOW",
+    riskStatusElevated: "ELEVATED",
+    dailyLossLabel: "Daily Loss",
+    maxDrawdownLabel: "Max Drawdown",
+    exposureLabel: "Exposure",
+    concentrationLabel: "Concentration",
+    challengeLabel: "Challenge",
+    governorLabel: "Governor",
+    gatesSuffix: "gates enforced",
+    challengeOpen: "OPEN",
+    challengeBlockedVal: "BLOCKED",
+    notManaged: "UNMANAGED",
+    topLabel: "top",
+    tradeBlocked: "TRADE BLOCKED",
+    blockedReason: "Reason",
+    blockedSource: "Source",
+    blockedAction: "Action",
+    governorSource: "Risk Governor",
+    noOverride: "No override available",
+    loadingRisk: "Reading the risk governor…",
+    emptyTitle: "Nothing to report",
+    emptyHint:
+      "The risk governor reports only what the live server holds; no invented warning, exposure or limit is shown.",
+    errorTitle: "Risk governor unreachable",
+    errorHint:
+      "The risk read could not be reached; nothing is rendered in its place.",
+    updatedLabel: "Read",
+    sourceLabel: "SOURCE",
+    authority:
+      "Read-only surface of the risk governor; every figure derives from a registered route and it is not a trade authority.",
+  },
+  ar: {
+    statusBandLabel: "حالة المخاطر",
+    riskStatusLabel: "حالة المخاطر",
+    riskStatusLow: "منخفض",
+    riskStatusElevated: "مرتفع",
+    dailyLossLabel: "الخسارة اليومية",
+    maxDrawdownLabel: "أقصى سحب",
+    exposureLabel: "التعرض",
+    concentrationLabel: "التركّز",
+    challengeLabel: "التحدّي",
+    governorLabel: "الحاكم",
+    gatesSuffix: "بوابة مطبّقة",
+    challengeOpen: "مفتوح",
+    challengeBlockedVal: "محظور",
+    notManaged: "غير مُدار",
+    topLabel: "الأعلى",
+    tradeBlocked: "الصفقة محظورة",
+    blockedReason: "السبب",
+    blockedSource: "المصدر",
+    blockedAction: "الإجراء",
+    governorSource: "حاكم المخاطر",
+    noOverride: "لا يوجد تجاوز متاح",
+    loadingRisk: "جارٍ قراءة حاكم المخاطر…",
+    emptyTitle: "لا شيء يُبلَّغ عنه",
+    emptyHint:
+      "حاكم المخاطر لا يبلّغ إلا بما يحمله الخادم الحي؛ ولا يُعرض أي تحذير أو تعرض أو حدّ مُختلق.",
+    errorTitle: "تعذّر الوصول إلى حاكم المخاطر",
+    errorHint: "تعذّر بلوغ قراءة المخاطر؛ ولا يُعرض شيء بدلًا منها.",
+    updatedLabel: "قراءة",
+    sourceLabel: "المصدر",
+    authority:
+      "سطح للقراءة فقط لحاكم المخاطر؛ كل رقم مشتق من مسار مسجَّل وليس سلطة تداول.",
+  },
+};
+
+const readSource = (source: string) =>
+  source === "live" ? "/risk/state · /portfolio/state · /challenge/status" : source;
 
 export default function RiskCenterPage({ lang }: { lang: Language }) {
   const [tab, setTab] = useState("overview");
   const [version, setVersion] = useState(0);
   const rtl = isRtl(lang);
+  const t = UI[lang];
   const { data: vetoes, source: vetoSource } = useData(() => api.getVetoes(), version);
   const vetoesLive = vetoSource === "live";
   const { data: riskState, source: riskSource } = useData(() => api.getRiskState(), version);
   const riskLive = riskSource === "live";
   const { data: riskLimits, source: limitsSource } = useData(() => api.getRiskLimits(), version);
   const limitsLive = limitsSource === "live";
+  const { data: portfolio, source: portfolioSource } = useData(() => api.getPortfolioState(), version);
+  const portfolioLive = portfolioSource === "live";
+  const { data: challenge, source: challengeSource } = useData(() => api.getChallengeStatus(), version);
+  const challengeLive = challengeSource === "live";
   const gates = limitsLive ? (riskLimits?.gates ?? []) : [];
   const gateFailures = limitsLive ? (riskLimits?.window.failure_counts ?? {}) : {};
   const windowVetoes = limitsLive ? (riskLimits?.window.vetoes ?? 0) : 0;
@@ -44,20 +123,6 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
         { id: "explainer", label: "سبب الحظر" },
       ];
 
-  const mockWarnings = [
-    { msg: rtl ? "NVDA يتجاوز حد التوزيع 8%" : "NVDA exceeds 8% allocation cap", sev: "critical", color: "#ef4444" },
-    { msg: rtl ? "ارتباط AAPL ↔ MSFT > 0.85" : "AAPL ↔ MSFT correlation > 0.85", sev: "warning", color: "#f59e0b" },
-    { msg: rtl ? "تقلب المحفظة مرتفع 12% فوق النظير 30 يوماً" : "Portfolio vol 12% above 30-day peer", sev: "info", color: "#3b82f6" },
-  ];
-
-  const mockExposures = [
-    { symbol: "AAPL", pct: 7.2, limit: 10, color: "#22c55e" },
-    { symbol: "NVDA", pct: 8.8, limit: 8, color: "#ef4444" },
-    { symbol: "XLK", pct: 5.1, limit: 15, color: "#22c55e" },
-    { symbol: "SPY", pct: 4.3, limit: 20, color: "#22c55e" },
-    { symbol: "MSFT", pct: 6.9, limit: 10, color: "#f59e0b" },
-  ];
-
   const liveExposures = (riskLive ? Object.entries(riskState?.exposure_by_symbol ?? {}) : [])
     .map(([symbol, pct]) => ({
       symbol,
@@ -65,18 +130,10 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
       limit: symCap,
       color: symCap > 0 && Number(pct) > symCap ? "#f59e0b" : "#22c55e",
     }));
-  const exposureList = riskLive ? liveExposures : mockExposures;
+  const exposureList = liveExposures;
   const exposureMax = Math.max(1, ...exposureList.map((e) => e.pct));
   const expBarScale = riskLive && symCap > 0 ? Math.max(exposureMax, symCap) : exposureMax;
   const liveBreaches = riskLive ? (riskState?.breaches ?? []) : [];
-
-  const mockConstraints = [
-    { id: "C-01", rule: rtl ? "حد تخصيص الرمز" : "Symbol Allocation Cap", value: "≤10% per symbol", status: rtl ? "خرق جزئي" : "Partial Breach", color: "#f59e0b" },
-    { id: "C-02", rule: rtl ? "حد الارتباط" : "Correlation Limit", value: "≤0.80 between any two positions", status: rtl ? "خرق" : "Breached", color: "#ef4444" },
-    { id: "C-03", rule: rtl ? "حجم التقلب" : "Vol-Adjusted Sizing", value: "ATR × 1.5 max risk/trade", status: rtl ? "ممتثل" : "Compliant", color: "#22c55e" },
-    { id: "C-04", rule: rtl ? "نسبة المخاطرة/العائد" : "Min Risk/Reward", value: "≥1:2 required for promotion", status: rtl ? "ممتثل" : "Compliant", color: "#22c55e" },
-    { id: "C-05", rule: rtl ? "حد الرافعة المالية" : "Leverage Cap", value: "1× only in paper mode", status: rtl ? "ممتثل" : "Compliant", color: "#22c55e" },
-  ];
 
   const gateMeta: Record<string, { en: string; ar: string }> = {
     stop_loss: { en: "Stop Loss Required", ar: "إلزام وقف الخسارة" },
@@ -143,11 +200,7 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
       : `${n} gate${n === 1 ? "" : "s"} failed — ${explainerVeto.id} automatically vetoed by the risk governor`;
   })();
 
-  const vetoesFallback = [
-    { id: "VTO-012", ticket: "TKT-035", strategy: rtl ? "تحوّط SPY بفروق الخيارات" : "SPY Put Spread Hedge", reason: rtl ? "خرق الارتباط بين SPY و AAPL" : "Correlation breach between SPY and AAPL", date: rtl ? "5 سبتمبر" : "Sep 5", actor: rtl ? "نظام المخاطر" : "Risk Engine", color: "#ef4444" },
-    { id: "VTO-011", ticket: "TKT-029", strategy: rtl ? "MSFT كسر" : "MSFT Breakout", reason: rtl ? "حجم المركز يتجاوز حد ATR" : "Position size exceeded ATR cap", date: rtl ? "31 أغسطس" : "Aug 31", actor: rtl ? "نظام المخاطر" : "Risk Engine", color: "#ef4444" },
-  ];
-  const vetoRowsShown = vetoesLive ? vetoRows : vetoesFallback;
+  const vetoRowsShown = vetoRows;
   const byKind = { vetoed: 0, blocked: 0, other: 0 };
   const reasonCount = new Map<string, number>();
   for (const v of liveVetoes) {
@@ -159,6 +212,65 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
   const topReasons = [...reasonCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
   const vetoTotal = liveVetoes.length;
   const activeRuleCount = new Set(liveVetoes.map((v) => v.rule).filter(Boolean)).size;
+
+  // §7 status band — every tile derives from a live registered payload.
+  const dailyLossGate = gates.find((g) => g.name === "daily_loss");
+  const ddGate = gates.find((g) => g.name === "drawdown");
+  const topSymbol = portfolio?.concentration?.top_symbol ?? "";
+  const topShare = portfolio?.concentration?.top_share ?? 0;
+  const challengeBlocked = challengeLive && challenge?.can_open_new_position === false;
+  const blockedVeto = [...liveVetoes].reverse().find((v) => v.blockedAction === "blocked") ?? null;
+  const blockedNow = Boolean(blockedVeto) || challengeBlocked;
+  const blockedReason = challengeBlocked
+    ? (challenge?.refusal_reason ?? "")
+    : (blockedVeto?.reason ?? "");
+  const band: { label: string; value: string; sub: string; color: string }[] = [
+    {
+      label: t.riskStatusLabel,
+      value: riskLive ? (liveBreaches.length > 0 ? t.riskStatusElevated : t.riskStatusLow) : "—",
+      sub: riskLive ? `risk_score ${num1(riskState?.risk_score ?? 0)}` : t.sourceLabel,
+      color: riskLive ? (liveBreaches.length > 0 ? "#ef4444" : "#22c55e") : "var(--muted-foreground)",
+    },
+    {
+      label: t.dailyLossLabel,
+      value: riskLive ? num1(riskState?.daily_pnl ?? 0) : "—",
+      sub: dailyLossGate ? fmtGateValue(dailyLossGate) : t.sourceLabel,
+      color: riskLive ? (Number(riskState?.daily_pnl ?? 0) < 0 ? "#f59e0b" : "#22c55e") : "var(--muted-foreground)",
+    },
+    {
+      label: t.maxDrawdownLabel,
+      value: riskLive ? pct0(riskState?.current_drawdown ?? 0) : "—",
+      sub: ddGate ? fmtGateValue(ddGate) : t.sourceLabel,
+      color: riskLive ? "#f59e0b" : "var(--muted-foreground)",
+    },
+    {
+      label: t.exposureLabel,
+      value: portfolioLive ? num1(portfolio?.gross_exposure ?? 0) : "—",
+      sub: "/portfolio/state",
+      color: portfolioLive ? "#22c55e" : "var(--muted-foreground)",
+    },
+    {
+      label: t.concentrationLabel,
+      value: portfolioLive ? pct0(topShare) : "—",
+      sub: topSymbol ? `${t.topLabel} ${topSymbol}` : "/portfolio/state",
+      color: portfolioLive ? (topShare >= 0.5 ? "#f59e0b" : "#22c55e") : "var(--muted-foreground)",
+    },
+    {
+      label: t.challengeLabel,
+      value: challengeLive
+        ? challenge?.managed === false ? t.notManaged
+        : challengeBlocked ? t.challengeBlockedVal : t.challengeOpen
+        : "—",
+      sub: challenge?.program || challenge?.headroom?.policy_key || challenge?.decision?.permission || "/challenge/status",
+      color: challengeLive ? (challengeBlocked ? "#ef4444" : challenge?.managed === false ? "#6b7280" : "#22c55e") : "var(--muted-foreground)",
+    },
+    {
+      label: t.governorLabel,
+      value: limitsLive ? String(gates.length) : "—",
+      sub: limitsLive ? `${riskLimits?.policy_source ?? ""} · ${t.gatesSuffix}` : t.sourceLabel,
+      color: limitsLive ? "#22c55e" : "var(--muted-foreground)",
+    },
+  ];
 
   return (
     <div>
@@ -172,9 +284,60 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
 
       {tab === "overview" && (
         <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          {/* §7 risk status band */}
+          <Card>
+            <SectionLabel lang={lang}>{t.statusBandLabel}</SectionLabel>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "0.6rem", marginTop: 10 }}>
+              {band.map((b) => (
+                <div
+                  key={b.label}
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    padding: "0.7rem",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                  }}
+                >
+                  <div style={{ fontSize: "0.6rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                    {b.label}
+                  </div>
+                  <div style={{ fontFamily: "var(--font-mono)", fontSize: "1.15rem", fontWeight: 600, color: b.color }}>
+                    {b.value}
+                  </div>
+                  <div style={{ fontSize: "0.66rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+                    {b.sub}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* TRADE BLOCKED affordance (spec §7) */}
+          {blockedNow && (
+            <Card style={{ border: "1px solid rgba(239,68,68,0.4)", background: "rgba(239,68,68,0.06)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#ef4444", flexShrink: 0 }} />
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.9rem", fontWeight: 700, color: "#ef4444", letterSpacing: "0.04em" }}>
+                  {t.tradeBlocked}
+                </span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: "0.78rem", fontFamily: ff(lang) }}>
+                <div><strong>{t.blockedReason}:</strong> {blockedReason || "—"}</div>
+                <div><strong>{t.blockedSource}:</strong> {t.governorSource}</div>
+                <div><strong>{t.blockedAction}:</strong> {t.noOverride}</div>
+              </div>
+            </Card>
+          )}
+
           {/* Warning / breach stack */}
           <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-            {riskLive && liveBreaches.length === 0 ? (
+            {riskSource === "loading" ? (
+              <LoadingState label={t.loadingRisk} lang={lang} />
+            ) : riskSource !== "live" ? (
+              <ErrorState title={t.errorTitle} hint={t.errorHint} lang={lang} />
+            ) : liveBreaches.length === 0 ? (
               <div
                 style={{
                   display: "flex",
@@ -192,7 +355,7 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
                 </span>
                 <StateChip label={rtl ? "مباشر" : "LIVE"} color="#22c55e" />
               </div>
-            ) : riskLive ? (
+            ) : (
               liveBreaches.map((b, i) => (
                 <div
                   key={i}
@@ -213,28 +376,6 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
                   <StateChip label={rtl ? "حرج" : "CRITICAL"} color="#ef4444" />
                 </div>
               ))
-            ) : (
-              mockWarnings.map((w, i) => (
-                <div
-                  key={i}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    padding: "10px 14px",
-                    borderRadius: 6,
-                    background: `${w.color}08`,
-                    border: `1px solid ${w.color}22`,
-                  }}
-                >
-                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: w.color, flexShrink: 0 }} />
-                  <span style={{ fontSize: "0.82rem", fontFamily: ff(lang), flex: 1 }}>{w.msg}</span>
-                  <StateChip
-                    label={w.sev === "critical" ? (rtl ? "حرج" : "CRITICAL") : w.sev === "warning" ? (rtl ? "تحذير" : "WARNING") : (rtl ? "معلومة" : "INFO")}
-                    color={w.color}
-                  />
-                </div>
-              ))
             )}
           </div>
 
@@ -242,15 +383,23 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
           <Card>
             <SectionLabel lang={lang}>{rtl ? "تعرض المحفظة" : "Portfolio Exposure"}</SectionLabel>
             <div style={{ marginTop: 4, fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
-              {riskLive ? "exposure_by_symbol · /risk/state" : (rtl ? "معاينة توضيحية (الواجهة متوقفة)" : "illustrative (API down)")}
+              {riskLive ? `exposure_by_symbol · /risk/state` : readSource(riskSource)}
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 10 }}>
-              {exposureList.length === 0 ? (
-                <div style={{ fontSize: "0.78rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
-                  {rtl ? "لا رموز متعقَّبة بعد" : "No tracked symbols yet"}
-                </div>
-              ) : (
-                exposureList.map((e) => (
+            {riskSource === "loading" ? (
+              <div style={{ marginTop: 10 }}>
+                <LoadingState label={t.loadingRisk} lang={lang} />
+              </div>
+            ) : riskSource !== "live" ? (
+              <div style={{ marginTop: 10 }}>
+                <ErrorState title={t.errorTitle} hint={t.errorHint} lang={lang} />
+              </div>
+            ) : exposureList.length === 0 ? (
+              <div style={{ marginTop: 10 }}>
+                <EmptyState title={t.emptyTitle} hint={t.emptyHint} lang={lang} />
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 10 }}>
+                {exposureList.map((e) => (
                   <div key={e.symbol}>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.78rem", fontWeight: 600 }}>{e.symbol}</span>
@@ -258,28 +407,28 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
                         <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.72rem", color: e.color, fontWeight: 600 }}>
                           {e.pct}%
                         </span>
-                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.65rem", color: riskLive && symCap > 0 && e.pct > symCap ? "#f59e0b" : "var(--muted-foreground)" }}>
-                          {riskLive && symCap > 0
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.65rem", color: symCap > 0 && e.pct > symCap ? "#f59e0b" : "var(--muted-foreground)" }}>
+                          {symCap > 0
                             ? (rtl ? `سقف ${symCap}%` : `cap ${symCap}%`)
-                            : riskLive ? (rtl ? "حيّ" : "live")
-                            : `${e.limit}%`}
+                            : (rtl ? "حيّ" : "live")}
                         </span>
                       </div>
                     </div>
                     <div style={{ height: 6, background: "var(--muted)", borderRadius: 3, overflow: "hidden" }}>
                       <div
                         style={{
-                          width: `${riskLive ? (e.pct / expBarScale) * 100 : (e.pct / e.limit) * 100}%`,
-                        height: "100%",
-                        background: e.color,
-                        borderRadius: 3,
-                        transition: "width 0.4s",
-                      }}
-                    />
+                          width: `${symCap > 0 ? (e.pct / expBarScale) * 100 : e.pct}%`,
+                          height: "100%",
+                          background: e.color,
+                          borderRadius: 3,
+                          transition: "width 0.4s",
+                        }}
+                      />
+                    </div>
                   </div>
-                </div>
-              )))}
-            </div>
+                ))}
+              </div>
+            )}
           </Card>
 
           {/* Risk policy summary */}
@@ -305,10 +454,10 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
             <span style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
               {limitsLive
                 ? (rtl ? "الحدود الفعلية التي يطبّقها حاكم المخاطر" : "limits the risk governor actually enforces")
-                : (rtl ? "معاينة توضيحية (الواجهة متوقفة)" : "illustrative (API down)")}
+                : readSource(limitsSource)}
             </span>
             <StateChip
-              label={limitsLive ? (rtl ? "مباشر" : "LIVE") : (rtl ? "محاكاة" : "MOCK")}
+              label={limitsLive ? (rtl ? "مباشر" : "LIVE") : limitsSource === "loading" ? (rtl ? "جارٍ" : "LOADING") : (rtl ? "متوقف" : "DOWN")}
               color={limitsLive ? "#22c55e" : "#f59e0b"}
             />
           </div>
@@ -319,20 +468,12 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
                 : "Each gate's status = how often it failed inside the recent veto window (approvals aren't persisted)."}
             </div>
           )}
-          {gates.length === 0 ? (
-            mockConstraints.map((c) => (
-              <Card key={c.id} style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                <div style={{ width: 4, alignSelf: "stretch", background: c.color, borderRadius: 2, flexShrink: 0 }} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 5 }}>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.65rem", color: "var(--muted-foreground)" }}>{c.id}</span>
-                    <StateChip label={c.status} color={c.color} />
-                  </div>
-                  <div style={{ fontSize: "0.875rem", fontFamily: ff(lang), fontWeight: 500, marginBottom: 3 }}>{c.rule}</div>
-                  <div style={{ fontSize: "0.75rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>{c.value}</div>
-                </div>
-              </Card>
-            ))
+          {limitsSource === "loading" ? (
+            <LoadingState label={t.loadingRisk} lang={lang} />
+          ) : limitsSource !== "live" ? (
+            <ErrorState title={t.errorTitle} hint={t.errorHint} lang={lang} />
+          ) : gates.length === 0 ? (
+            <EmptyState title={t.emptyTitle} hint={t.emptyHint} lang={lang} />
           ) : (
             gates.map((g) => {
               const fails = gateFailures[g.name] ?? 0;
@@ -372,27 +513,31 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
             <span style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
               {vetoesLive
                 ? `${vetoTotal} ${rtl ? "سجل حيّ" : "live records"} · /risk/vetoes`
-                : rtl ? "محاكاة (الواجهة متوقفة)" : "mock (API down)"}
+                : readSource(vetoSource)}
             </span>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <StateChip
-                label={vetoesLive ? (rtl ? "مباشر" : "LIVE") : (rtl ? "محاكاة" : "MOCK")}
+                label={vetoesLive ? (rtl ? "مباشر" : "LIVE") : vetoSource === "loading" ? (rtl ? "جارٍ" : "LOADING") : (rtl ? "متوقف" : "DOWN")}
                 color={vetoesLive ? "#22c55e" : "#f59e0b"}
               />
-              <Btn variant="ghost" onClick={() => setVersion((v) => v + 1)}>↻ {rtl ? "تحديث" : "Refresh"}</Btn>
+              <Btn variant="ghost" onClick={() => setVersion((v) => v + 1)}>↻ {t.updatedLabel}</Btn>
             </div>
           </div>
-          {vetoesLive && vetoTotal === 0 ? (
+          {vetoSource === "loading" ? (
+            <LoadingState label={t.loadingRisk} lang={lang} />
+          ) : vetoSource !== "live" ? (
+            <ErrorState title={t.errorTitle} hint={t.errorHint} lang={lang} />
+          ) : vetoTotal === 0 ? (
             <Card style={{ padding: "1rem" }}>
               <div style={{ fontSize: "0.82rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
                 {rtl
-                  ? "لا رفضات مسجّلة بعد — نفّذ تمريناً سوقياً: python tools\tradraig.py exercise"
+                  ? "لا رفضات مسجّلة بعد — نفّذ تمريناً سوقياً: python tools\\tradraig.py exercise"
                   : "No vetoes recorded yet — run a market exercise: python tools\\tradraig.py exercise"}
               </div>
             </Card>
           ) : (
             <>
-              {vetoesLive && vetoTotal > 0 && (
+              {vetoTotal > 0 && (
                 <Card>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
                     <SectionLabel lang={lang}>{rtl ? "ملخص الرّفض (نافذة حيّة)" : "Veto Digest (live window)"}</SectionLabel>
@@ -411,32 +556,32 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
                         </div>
                         <div style={{ height: 4, background: "var(--muted)", borderRadius: 2, overflow: "hidden" }}>
                           <div style={{ width: `${(count / vetoTotal) * 100}%`, height: "100%", background: "#f59e0b", borderRadius: 2 }} />
-</div>
-                </div>
-              ))}
-            </div>
-          </Card>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
               )}
               {vetoRowsShown.map((v) => (
-              <Card key={v.id}>
-                <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
-                  <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.68rem", color: "var(--muted-foreground)" }}>{v.id}</span>
-                  <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.68rem", color: v.color }}>{v.ticket}</span>
-                  <StateChip
-                    label={v.color === "#ef4444" ? (rtl ? "حظر" : "BLOCKED") : (rtl ? "مرفوض" : "VETOED")}
-                    color={v.color}
-                  />
-                  <span style={{ marginInlineStart: "auto", fontFamily: "var(--font-mono)", fontSize: "0.65rem", color: "var(--muted-foreground)" }}>{v.date}</span>
-                </div>
-                <div style={{ fontSize: "0.875rem", fontFamily: ff(lang), fontWeight: 500, marginBottom: 6 }}>{v.strategy}</div>
-                <div style={{ padding: "8px 12px", borderRadius: 5, background: "rgba(245,158,11,0.05)", border: "1px solid rgba(245,158,11,0.18)", fontSize: "0.78rem", fontFamily: ff(lang), color: "#fbbf24", lineHeight: 1.6 }}>
-                  <strong>{rtl ? "السبب: " : "Reason: "}</strong>{v.reason}
-                </div>
-                <div style={{ marginTop: 8, fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
-                  {rtl ? "الجهة المنفِّذة:" : "Actor:"} {v.actor}
-                </div>
-              </Card>
-            ))}
+                <Card key={v.id}>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.68rem", color: "var(--muted-foreground)" }}>{v.id}</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.68rem", color: v.color }}>{v.ticket}</span>
+                    <StateChip
+                      label={v.color === "#ef4444" ? (rtl ? "حظر" : "BLOCKED") : (rtl ? "مرفوض" : "VETOED")}
+                      color={v.color}
+                    />
+                    <span style={{ marginInlineStart: "auto", fontFamily: "var(--font-mono)", fontSize: "0.65rem", color: "var(--muted-foreground)" }}>{v.date}</span>
+                  </div>
+                  <div style={{ fontSize: "0.875rem", fontFamily: ff(lang), fontWeight: 500, marginBottom: 6 }}>{v.strategy}</div>
+                  <div style={{ padding: "8px 12px", borderRadius: 5, background: "rgba(245,158,11,0.05)", border: "1px solid rgba(245,158,11,0.18)", fontSize: "0.78rem", fontFamily: ff(lang), color: "#fbbf24", lineHeight: 1.6 }}>
+                    <strong>{rtl ? "السبب: " : "Reason: "}</strong>{v.reason}
+                  </div>
+                  <div style={{ marginTop: 8, fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                    {rtl ? "الجهة المنفِّذة:" : "Actor:"} {v.actor}
+                  </div>
+                </Card>
+              ))}
             </>
           )}
         </div>
@@ -447,16 +592,20 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
             <span style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
               {vetoesLive
-                ? (rtl ? "مشتق من آخر سجل رفض حيّ (/risk/vetoes)" : "derived from the most recent live veto record")
-                : (rtl ? "المفسّر يحتاج سجل رفض حيّ" : "explainer needs the live veto log (API down)")}
+                ? (rtl ? "مشتق من آخر سجل رفض حيّ (/risk/vetoes)" : "derived from the most recent live veto record (/risk/vetoes)")
+                : readSource(vetoSource)}
             </span>
             <StateChip
-              label={vetoesLive && explainerVeto ? (rtl ? "مباشر" : "LIVE") : (rtl ? "محاكاة" : "MOCK")}
+              label={vetoesLive && explainerVeto ? (rtl ? "مباشر" : "LIVE") : vetoSource === "loading" ? (rtl ? "جارٍ" : "LOADING") : (rtl ? "متوقف" : "DOWN")}
               color={vetoesLive && explainerVeto ? "#22c55e" : "#f59e0b"}
             />
           </div>
 
-          {explainerVeto ? (
+          {vetoSource === "loading" ? (
+            <LoadingState label={t.loadingRisk} lang={lang} />
+          ) : vetoSource !== "live" ? (
+            <ErrorState title={t.errorTitle} hint={t.errorHint} lang={lang} />
+          ) : explainerVeto ? (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
               <Card>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
@@ -504,18 +653,18 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
           ) : (
             <Card style={{ padding: "1rem" }}>
               <div style={{ fontSize: "0.82rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
-                {vetoesLive
-                  ? rtl
-                    ? "لا سجلات رفض لفحصها بعد — نفّذ تمريناً سوقياً ثم عد هنا: python tools\tradraig.py exercise"
-                    : "No veto records to inspect yet — run a market exercise first: python tools\\tradraig.py exercise"
-                  : rtl
-                    ? "الواجهة المتوقفة لا توفر سجل الرفض الحيّ — هذا التبويب مشتق من سجلات حقيقية ولا يُزوّر."
-                    : "The dashboard API is down so no live veto log is available — this tab derives from real records and never fabricates a walkthrough."}
+                {rtl
+                  ? "لا سجلات رفض لفحصها بعد — نفّذ تمريناً سوقياً ثم عد هنا: python tools\\tradraig.py exercise"
+                  : "No veto records to inspect yet — run a market exercise first: python tools\\tradraig.py exercise"}
               </div>
             </Card>
           )}
         </div>
       )}
+
+      <p style={{ margin: "0.75rem 0 0", fontFamily: "var(--font-mono)", fontSize: "0.66rem", color: "var(--muted-foreground)", textAlign: rtl ? "right" : "left", opacity: 0.6 }}>
+        {t.sourceLabel}: {riskSource}/{portfolioSource}/{challengeSource} · {t.authority}
+      </p>
     </div>
   );
 }

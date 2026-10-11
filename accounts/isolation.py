@@ -263,6 +263,7 @@ def isolation_report(repo: Optional[AccountRegistryRepository] = None
         "ownership_checked_on": [
             "GET /accounts",
             "GET /accounts/{account_id}",
+            "GET /accounts/{account_id}/bindings",
         ],
         "guard_account_called_by_any_route": False,
         "registry_consistent": bool(report.get("ok")),

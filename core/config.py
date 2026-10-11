@@ -37,6 +37,23 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _resolve_log_dir() -> Path:
+    raw = os.getenv("LOG_DIR", "logs")
+    p = Path(raw)
+    return p if p.is_absolute() else (ROOT_DIR / p)
+
+
+def _resolve_terminal_path() -> str:
+    raw = os.getenv("MT5_TERMINAL_PATH", "").strip()
+    if raw:
+        return raw
+    for terminal in ("mt5-dev", "mt5-portable"):
+        candidate = ROOT_DIR / terminal / "terminal64.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return ""
+
+
 @dataclass(frozen=True)
 class DatabaseConfig:
     host: str
@@ -175,7 +192,7 @@ def load_settings() -> Settings:
             login=_env_int("MT5_LOGIN", 0),
             password=os.getenv("MT5_PASSWORD", ""),
             server=os.getenv("MT5_SERVER", ""),
-            terminal_path=os.getenv("MT5_TERMINAL_PATH", ""),
+            terminal_path=_resolve_terminal_path(),
             symbols=os.getenv("MT5_SYMBOLS", "XAUUSD"),
         ),
         cex=CexConfig(
@@ -221,7 +238,7 @@ def load_settings() -> Settings:
         ),
         logging=LoggingConfig(
             level=os.getenv("LOG_LEVEL", "INFO").upper(),
-            directory=Path(os.getenv("LOG_DIR", "logs")),
+            directory=_resolve_log_dir(),
         ),
     )
 

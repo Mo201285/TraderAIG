@@ -13,9 +13,13 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 WORKER_MODULE = "ai.dspy.worker"
+# The worker is always launched from the repo root so `ai` (and its deps) stay
+# importable no matter what CWD the caller is in — required on a USB copy.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkerError(Exception):
@@ -38,7 +42,8 @@ def run_worker(worker_args: List[str], timeout: float = 30.0) -> Dict[str, Any]:
     The worker re-checks the gate itself, so a disabled env yields a
     controlled ``ok: false`` payload instead of a silent no-op.
     """
-    cmd = [sys.executable, "-m", WORKER_MODULE, *worker_args]
+    worker_script = REPO_ROOT / "ai" / "dspy" / "worker.py"
+    cmd = [sys.executable, str(worker_script), *worker_args]
     started = time.time()
     try:
         proc = subprocess.run(
@@ -46,7 +51,8 @@ def run_worker(worker_args: List[str], timeout: float = 30.0) -> Dict[str, Any]:
             capture_output=True,
             text=True,
             timeout=timeout,
-            env=_prep_env(),
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            cwd=str(REPO_ROOT),
         )
     except subprocess.TimeoutExpired:
         return {
@@ -57,11 +63,13 @@ def run_worker(worker_args: List[str], timeout: float = 30.0) -> Dict[str, Any]:
             ),
             "elapsed_seconds": round(time.time() - started, 2),
         }
-    if proc.stdout:
+    stdout = proc.stdout or ""
+    if stdout:
         try:
-            payload = json.loads(proc.stdout.strip().splitlines()[-1])
+            lines = [line for line in stdout.strip().splitlines() if line.strip()]
+            payload = json.loads(lines[-1]) if lines else {"ok": False, "reason": "worker produced no parseable stdout"}
         except ValueError:
-            payload = {"ok": False, "reason": "worker stdout not JSON", "stdout": proc.stdout[-500:]}
+            payload = {"ok": False, "reason": "worker stdout not JSON", "stdout": stdout[-500:]}
         if not isinstance(payload, dict):
             payload = {"ok": False, "reason": "worker returned non-dict payload"}
     else:

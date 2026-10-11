@@ -1,29 +1,78 @@
 # Impact Analysis — Tenant/Account Registry + Unified Trade Schema
 
 Stage P1 of the agreed sequence, after `39ff300` (P0 fail-closed tournament
-lifecycle). Prepared before any code, per instruction. Read-only audit: nothing in
-this document has been implemented yet.
+lifecycle).
+
+> **CORRECTION 2026-10-06 — read this before using §0 or §2.**
+>
+> This document was written as a read-only pre-implementation audit. The
+> implementation then landed and **§0, §2 and §9 were never updated**, so the
+> document contradicted itself: §0 declared the Account Registry, Connection
+> Registry and Trade Schema "does not exist" while §4–§8 described them as built,
+> tested and — in §5.1 — as adopted against the live database.
+>
+> The false claim was then acted on: a later session read §0, concluded the layer
+> was missing, and began re-creating `TenantRecord`, `AccountConnectionDB` and a
+> second `account_identity` contract. That work was reverted the moment
+> `tests/test_persistence_schema.py` failed with
+> `Table 'account_connections' is already defined for this MetaData instance` —
+> which is the useful outcome: the collision was caught by an existing test, not
+> shipped.
+>
+> Corrected status is in §0 below. `accounts/`, `persistence/models_accounts.py`,
+> `persistence/models_trades.py`, `persistence/repositories_accounts.py`,
+> `persistence/repositories_trades.py` and `execution/normalize.py` **exist and
+> are tested**; `tests/test_account_registry.py` and `tests/test_trade_schema.py`
+> cover them. The genuine remaining gap is recorded in §0.1.
 
 ---
 
-## 0. The honest headline
+## 0. The corrected headline
 
-Two of the eight requested components are **already built and correct**. Three
-more exist in a form that needs extending rather than replacing. Only two are
-genuinely greenfield. Building all eight from scratch would duplicate working,
-tested, documented mechanisms — which is what "لا تعِد بناء مكونات موجودة" rules
-out.
+**All eight components exist except one.** The audit below is preserved as the
+record of *how* they were designed; the pre-implementation status claims are
+marked stale in place rather than deleted, because "we thought this was missing
+and it wasn't" is exactly the failure mode worth keeping legible.
 
-| Requested component | Reality | Action |
+| Requested component | Reality (verified 2026-10-06) | Where |
 |---|---|---|
-| Tenant Registry | **Does not exist.** Zero `tenant_id` anywhere; deployment self-reports `"model": "single-tenant"` | New, but see D1 |
-| Account Registry | **Partially exists**: `challenge_program_bindings` is already a durable `(login, server) → provider/program` record | Extend + promote |
-| Account Identity | Partially exists: account key = MT5 login string, **unique per server only** | Fix the key |
-| Connection Registry | **Does not exist.** One global credential set in `core/config.py:66-68` | New |
-| Trade Schema | **Does not exist.** 10 tables, zero trading records, zero foreign keys | New |
-| Account Policy Binding | **Exists**: `challenge_program_bindings` + `challenge_policies` | Add owner FK |
-| Account Isolation | **Does not exist**; `CanonicalState.account` is a scalar | New (scoped by D2) |
-| Audit Trail | **Exists**: `audit` table, append-only, `AuditRepository` | Add `account_id` |
+| Tenant Registry | **Deliberately not built as a table.** `owner_user_id` = existing `users.user_id`; see D1 in §8 | `persistence/models_accounts.py:87` |
+| Account Registry | **Built.** `accounts` with opaque `account_id`, `UNIQUE (venue, venue_login, venue_server)` | `persistence/models_accounts.py:87` |
+| Account Identity | **Built.** `account_identity` indirection, login→account_id, function both ways | `persistence/models_accounts.py:132` |
+| Connection Registry | **Built.** `account_connections`, `credential_slot` (a vault slot name, never a secret) | `persistence/models_accounts.py:162` |
+| Trade Schema | **Built.** `orders`, `deals`, `positions`, `round_trips`, `trade_cycles` | `persistence/models_trades.py:79,133,177,230,271` |
+| Account Policy Binding | **Exists** (challenge layer) + owner column on `accounts` | `challenge/program_bindings` + `accounts.owner_user_id` |
+| Account Isolation | **Partially built.** `own_record_access()` / `visible_accounts()` / `guard_account()`; `guard_account()` is **still called by no route** | `accounts/isolation.py` |
+| Audit Trail | **Built.** Append-only, `audit.account_id` added | `persistence/models.py` + `governance/identity.py` |
+| Referential integrity | **No FKs, by decision** — enforced in the repository layer + `AccountConsistencyChecker` | §4.5 |
+
+The live schema is **18 tables**, not 10:
+
+```
+account_connections  account_identity  accounts  audit  challenge_baselines
+challenge_policies   challenge_program_bindings  challenge_states  deals
+experiences         ops_runs  orders  positions  product_entitlements
+risk_vetoes         round_trips  trade_cycles  users
+```
+
+### 0.1 The one real gap
+
+**`account_strategy_bindings` does not exist.** Nothing in the repo maps a
+validated research-strategy version to a specific account.
+
+> **Resolved 2026-10-06 (row 741):** this table now exists — 19th in the schema,
+> keyed `(account_id, strategy_id, variant_hash)`, with
+> `AccountStrategyBindingRepository` and `accounts/strategy_bindings.py`. The rest
+> of §0.1 below describes the seam it fills; read it as the *design* this slice
+> implemented. It is a record layer, not execution: no route or engine consults it
+> yet.
+
+This is the seam the Research Plane / Account Plane split needs: a strategy is a
+research asset that no account owns, and the *binding* is what carries the
+per-account permission, risk override and governance state. Without it, "which
+strategies may this account run, under whose risk policy" is answerable only by
+reading process-wide state — which is the same single-tenant assumption the
+account registry was built to remove.
 
 ---
 
@@ -56,21 +105,37 @@ Verified by reading the code this session:
 
 ---
 
-## 2. Five structural blockers (verified)
+## 2. Five structural blockers (as believed on 2026-10-05)
+
+> **All five are stale.** Kept verbatim as the record of the pre-implementation
+> reading, with the correction beside each one. Verified 2026-10-06.
 
 1. **No tenant entity.** Grep for `tenant|org_id|workspace_id` across all `*.py`
    returns only the literal `"single-tenant"` and test names.
+   **→ Still true, and now a decision rather than a gap:** `accounts.owner_user_id`
+   *is* the tenancy seam. See D1 in §8 for why a `tenants` table was refused.
 2. **No account registry.** `User.account_ids` (`governance/identity.py:145`)
    appears in exactly 4 files — the dataclass, its serializer, the ORM column,
    the repository, and one test. **Nothing in `operations/`, `risk/`,
    `execution/` or `challenge/` ever reads it.** It is a dead field.
+   **→ Wrong.** `accounts/` exists (`registry.py`, `isolation.py`, `adoption.py`,
+   `connections.py`) and `GET /accounts`, `GET /accounts/{account_id}` are
+   ownership-checked. The column is still a *mirror*, now written by
+   `UserRepository.refresh_account_mirror` after adoption.
 3. **One `CanonicalState` with a scalar `self.account`** and one scalar
    `RiskState` (`core/state.py:170-175`), singleton at `:381`. The deployment
    says so itself at `operations/api.py:474-475`.
+   **→ Still true, and deliberately so:** D2 (one process, one account) is the
+   accepted decision, not an oversight.
 4. **Zero referential integrity.** No `ForeignKey` or `relationship` import
    exists in `persistence/models.py`. Every relationship is by convention string.
+   **→ Still true by decision (§4.5)**, and enforced by
+   `AccountConsistencyChecker`, which *reports* orphans instead of the engine
+   failing a write invisibly.
 5. **No round-trip or trade-cycle concept.** Grep: 20 hits, all English "round
    trip" in test names or `as_dict()` serialization tests.
+   **→ Wrong.** `RoundTripRecord` (`models_trades.py:208`) and `TradeCycleRecord`
+   (`:256`) both exist.
 
 ---
 
@@ -467,8 +532,27 @@ The live account must behave identically before and after. Tests to add:
   and fingerprinted to prove no challenge row moved). No re-keying has happened and
   no program binding exists — grading still resolves by policy, exactly as before.
 - `users.account_ids_json` is refreshed after adoption; see §5.1.
-- Nothing here is implemented. `INTEGRATION_GAPS_REPORT.txt` D2 and D4 remain
-  recorded-but-not-built.
+- ~~Nothing here is implemented.~~ **Corrected 2026-10-06:** everything in §4–§8
+  except `account_strategy_bindings` (§0.1) is implemented and covered by
+  `tests/test_account_registry.py` / `tests/test_trade_schema.py`. `INTEGRATION_GAPS_REPORT.txt`
+  D2 and D4 are likewise closed and should be re-read before being cited.
+- **account→strategy binding is implemented (2026-10-06, row 741).** `account_strategy_bindings`
+  maps a researched strategy version to an account; `accounts/strategy_bindings.py` +
+  `persistence/repositories_trades.py` + tests in `tests/test_account_strategy_bindings.py` (33).
+  It is a **record layer, not execution**: the only exposed surface is read-only
+  (`GET /accounts/{account_id}/bindings`, ownership-guarded via `own_record_access()` —
+  9 tests in `tests/test_operations/test_account_binding_routes.py`), no engine consults it,
+  and nothing in it can authorise a trade (the Risk Governor remains the only authority).
+  `guard_account()` wiring to routes (D4/D6) remains unwired while `TRADERAIG_AUTH=0` (D5).
+- **Post-P1 architecture (2026-10-06, row 742):** providers are external adapters behind an
+  External Provider Registry (`provider_id, name, type, referral_program, tracking_method,
+  verification_method, supported_venues, supported_accounts, policy_adapter`); XTAIG is an
+  economy that grants service access only (`Entitlement + Billing + Economy` APIs), never a
+  trade gate; the Strategy NFT mints off the verified Strategy Performance Ledger. None of it
+  adds a `grants_trade_permission` to any table.
+- `guard_account()` is **still called by no route**, and `isolation_report()`
+  publishes `guard_account_called_by_any_route: false`. Registration-level
+  ownership is enforced; authentication-level identity is not.
 - The CEX side has **no** reconciliation path today. MT5 is the only venue with
   a broker-authoritative position sync (`execution/mt5_adapter.py:273-314`).
   Writing exchange reconciliation is a separate, larger piece of work and is not

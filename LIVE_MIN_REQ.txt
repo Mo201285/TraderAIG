@@ -1,0 +1,9 @@
+﻿متطلبات LIVE مباشرة:
+1. MT5 Live: Server, Login, Password (MT5 Terminal متصل)
+2. أو CEX: API Key, Secret (Trade فقط، IP allowlist)
+3. .env: تحديث إعدادات Venue
+4. ربط Venue حي → reconciliation Healthy
+5. TradingAccount + Provider + Policy + StrategyBinding
+6. التحقق Paper مستقر + Kill Switch جاهز
+
+البنية، Gates، Provenance، Audit جاهزة بالكامل.

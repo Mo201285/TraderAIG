@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 
 from core.config import settings
 from core.logging import get_logger
+from governance.products import get_product
 
 
 log = get_logger("governance.payments")
@@ -92,6 +93,8 @@ class ChargeResult:
     message: str = ""
     wallet_balance: float = 0.0
     subscription_activated: bool = False
+    product_id: str = ""
+    product_activated: bool = False
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -104,6 +107,8 @@ class ChargeResult:
             "message": self.message,
             "wallet_balance": round(self.wallet_balance, 4),
             "subscription_activated": self.subscription_activated,
+            "product_id": self.product_id,
+            "product_activated": self.product_activated,
         }
 
 
@@ -401,15 +406,24 @@ class PaymentService:
     def charge(self, user_id: str, amount_usd: float, plan: str = "",
                provider: Optional[PaymentProvider] = None,
                description: str = "", duration_seconds: Optional[float] = None,
-               metadata: Optional[Dict[str, Any]] = None) -> ChargeResult:
-        """Route a charge through the current (or an overridden) provider."""
+               metadata: Optional[Dict[str, Any]] = None,
+               product_id: str = "") -> ChargeResult:
+        """Route a charge through the current (or an overridden) provider.
+
+        `plan` and `product_id` are the two things a successful charge may
+        activate, and they activate different things on different clocks. A
+        plan change REPLACES the user's entitlements; a product grant ADDS one
+        record. They are mutually exclusive on purpose: `charge_product` refuses
+        to send a plan, so a $9.99 purchase can never reach
+        `activate_subscription` and strip `can_trade` from the payer.
+        """
         self._guard()
         if amount_usd <= 0.0:
             self._last_error = "amount must be positive"
             return ChargeResult(
                 charge_id="", user_id=user_id, provider=self._provider.name,
                 amount_usd=amount_usd, status=PaymentStatus.FAILED,
-                message=self._last_error,
+                message=self._last_error, product_id=product_id,
                 wallet_balance=self.wallet(user_id)["balance_usd"])
 
         prov = provider or self._provider
@@ -418,6 +432,8 @@ class PaymentService:
         meta.setdefault("user_id", user_id)
         if plan:
             meta.setdefault("plan", plan)
+        if product_id:
+            meta.setdefault("product_id", product_id)
 
         sandbox = prov.name == PaymentProviderKind.SANDBOX.value
         if sandbox:
@@ -433,14 +449,19 @@ class PaymentService:
             if status == PaymentStatus.SUCCEEDED and plan:
                 activated = self._activate_plan(user_id, plan, charge_id,
                                                 duration_seconds)
+            product_activated = False
+            if status == PaymentStatus.SUCCEEDED and product_id:
+                product_activated = self._activate_product(
+                    user_id, product_id, charge_id)
             self._after_charge(user_id, charge_id, status, prov.name, plan,
-                               amount_usd)
+                               amount_usd, product_id)
             return ChargeResult(
                 charge_id=charge_id, user_id=user_id, provider=prov.name,
                 amount_usd=amount_usd, status=status, plan=plan,
                 message=result.get("error") or "sandbox charge succeeded",
                 wallet_balance=self.wallet(user_id)["balance_usd"],
-                subscription_activated=activated)
+                subscription_activated=activated, product_id=product_id,
+                product_activated=product_activated)
 
         # Live providers: submit PENDING; a verified webhook confirms.
         if not self.live_armed:
@@ -459,7 +480,7 @@ class PaymentService:
             return ChargeResult(
                 charge_id=charge_id, user_id=user_id, provider=prov.name,
                 amount_usd=amount_usd, status=PaymentStatus.FAILED, plan=plan,
-                message=self._last_error,
+                message=self._last_error, product_id=product_id,
                 wallet_balance=self.wallet(user_id)["balance_usd"])
         if result.get("charge_id"):
             charge_id = result["charge_id"]
@@ -469,7 +490,37 @@ class PaymentService:
             charge_id=charge_id, user_id=user_id, provider=prov.name,
             amount_usd=amount_usd, status=PaymentStatus.PENDING, plan=plan,
             message="submitted; awaiting verified webhook confirmation",
+            product_id=product_id,
             wallet_balance=self.wallet(user_id)["balance_usd"])
+
+    def charge_product(self, user_id: str, product_id: str,
+                       provider: Optional[PaymentProvider] = None,
+                       duration_seconds: Optional[float] = None) -> ChargeResult:
+        """Buy a catalogue product at the SERVER's price (§34.2).
+
+        The caller supplies exactly one field: which product. The amount, the
+        entitlement and the duration all come from `governance.products`, so no
+        request can invent a price. This is the same rule
+        `PaymentService.charge()` applies by refusing a negative amount, applied
+        to the thing that actually matters — a $9.99 service that could be
+        purchased for $0.01 is not a business model.
+        """
+        product = get_product(product_id)
+        if product is None:
+            self._last_error = f"unknown product: {product_id!r}"
+            return ChargeResult(
+                charge_id="", user_id=user_id, provider=self._provider.name,
+                amount_usd=0.0, status=PaymentStatus.FAILED,
+                message=self._last_error, product_id=str(product_id or ""),
+                wallet_balance=self.wallet(user_id)["balance_usd"])
+        return self.charge(
+            user_id, product.price_usd, plan="",
+            provider=provider,
+            description=f"{product.name} ({product.product_id})",
+            duration_seconds=duration_seconds,
+            metadata={"product": product.product_id,
+                      "entitlement": product.entitlement.value},
+            product_id=product.product_id)
 
     def charge_owner(self, charge_id: str) -> str:
         """The user a charge belongs to, or "" when the id is unknown.
@@ -549,12 +600,21 @@ class PaymentService:
                     activated = self._activate_plan(
                         entry.user_id, plan, charge_id)
                     entry.details["activated"] = True
+                product_id = (entry.details.get("product_id")
+                              or (obj.get("metadata") or {}).get("product_id", ""))
+                product_activated = False
+                if product_id and not entry.details.get("product_activated"):
+                    product_activated = self._activate_product(
+                        entry.user_id, product_id, charge_id)
+                    entry.details["product_activated"] = True
                 self._after_charge(entry.user_id, charge_id,
                                    PaymentStatus.SUCCEEDED, prov.name, plan,
-                                   entry.amount_usd)
+                                   entry.amount_usd, product_id)
                 return {"received": True, "kind": kind, "processed": True,
                         "charge_id": charge_id,
-                        "subscription_activated": activated}
+                        "subscription_activated": activated,
+                        "product_id": product_id,
+                        "product_activated": product_activated}
             return {"received": True, "kind": kind, "processed": False,
                     "reason": "unknown charge (out-of-band)"}
         if kind == "charge.refunded":
@@ -583,6 +643,30 @@ class PaymentService:
             self._last_error = f"unknown plan: {plan}"
         return False
 
+    def _activate_product(self, user_id: str, product_id: str,
+                          charge_id: str) -> bool:
+        """Grant a paid product entitlement. Only ever reached from a SUCCEEDED
+        charge (sandbox, or a verified webhook) — that is the whole point.
+
+        §34.20 requires that a billing failure must not corrupt operational
+        state, so there is no partial path: either the charge is confirmed and
+        the entitlement exists, or nothing changed. The plan path above cannot be
+        reused here because `activate_subscription` REPLACES entitlements and
+        would strip `can_trade` from the payer.
+        """
+        try:
+            from governance.products import products
+
+            products.grant(user_id, product_id, charge_id=charge_id,
+                           actor="payments")
+            return True
+        except ValueError as exc:
+            self._last_error = str(exc)
+        except Exception:  # noqa: BLE001
+            log.exception("product activation failed for %s/%s", user_id,
+                          product_id)
+        return False
+
     def _record_audit(self, actor: str, action: str, entry: WalletEntry) -> None:
         try:
             from governance.identity import identity
@@ -592,13 +676,15 @@ class PaymentService:
             log.debug("payment audit skipped")
 
     def _after_charge(self, user_id: str, charge_id: str, status: PaymentStatus,
-                      provider: str, plan: str, amount_usd: float) -> None:
+                      provider: str, plan: str, amount_usd: float,
+                      product_id: str = "") -> None:
         try:
             from operations.event_feed import event_feed
             event_feed.publish("payment", "billing", actor="payments", payload={
                 "user_id": user_id, "charge_id": charge_id,
                 "status": status.value, "provider": provider,
                 "plan": plan or "", "amount_usd": amount_usd,
+                "product_id": product_id or "",
             })
         except Exception:  # noqa: BLE001
             log.debug("payment event publish skipped")

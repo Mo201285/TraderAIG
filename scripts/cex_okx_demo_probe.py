@@ -6,7 +6,7 @@ falling back to the main slot otherwise. Demo keys need no production KYC / IP
 binding, which makes this the fastest way to prove the full signing+transport
 wire end to end. Nothing here can place an order.
 
-Run after registering demo data in D:\\One\\.env:
+Run after registering demo data in the repo's ``.env``:
     CEX_OKX_DEMO_API_KEY=...
     CEX_OKX_DEMO_API_SECRET=...
     CEX_OKX_DEMO_PASSPHRASE=...
@@ -20,13 +20,9 @@ import sys
 
 from typing import Optional
 
-ROOT_CANDIDATES = ("", "D:\\One")
 import pathlib
-for _p in ROOT_CANDIDATES:
-    _root = pathlib.Path(_p)
-    if (_root / "core" / "config.py").exists():
-        sys.path.insert(0, str(_root.resolve()))
-        break
+_root = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_root))
 
 from execution.cex.venues import OKXVenue  # noqa: E402
 
@@ -55,7 +51,7 @@ def main() -> int:
 
     key_ok = health["api_key_set"] and demo
     if not key_ok or not pass_ok:
-        print(f"\n[probe] demo registration incomplete. Add all three of {_DEMO_ENV} to D:\\One\\.env, re-run.")
+        print(f"\n[probe] demo registration incomplete. Add all three of {_DEMO_ENV} to <repo>/.env, re-run.")
         return 3
 
     print("\n[probe] calling GET /api/v5/account/balance (signed, read-only, DEMO) …")

@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $false)]
-    [string]$DataDir = "E:\Postgres\data",
+    [string]$DataDir = "$env:LOCALAPPDATA\Postgres\data",
 
     [Parameter(Mandatory = $false)]
     [int]$Port = 5432,
@@ -9,22 +9,22 @@ param(
 )
 
 <#
-PostgreSQL production deployment test (real server, detached, on E:).
+PostgreSQL production deployment test (real server, detached).
 
 Owns the server lifecycle OUTSIDE the terminal process tree: starting
 postgres from inside a slaved terminal made every spawned backend abort with
 STATUS_DLL_INIT_FAILED (backends inherited console handles from a killed
 launcher). Launching via WMI Win32_Process.Create detaches the server so it
-boots and serves backends cleanly — verified on this machine.
+boots and serves backends cleanly.
 
 Runs `scripts/postgres_deploytest.py` (schema bootstrap + canonical-table
 asserts + full pytest on PostgreSQL). Binaries expected at
-`E:\Postgres\pgsql` (EDB portable *-binaries.zip layout; nothing is
+`<DataDir parent>\pgsql\bin` (EDB portable *-binaries.zip layout; nothing is
 installed as a Windows service).
 
 Usage:
     powershell -ExecutionPolicy Bypass -File scripts\postgres_prod_test.ps1
-    powershell -ExecutionPolicy Bypass -File scripts\postgres_prod_test.ps1 -Port 55432 -DataDir "E:\Postgres\data16" -NoSuite
+    powershell -ExecutionPolicy Bypass -File scripts\postgres_prod_test.ps1 -Port 55432 -DataDir "$env:LOCALAPPDATA\Postgres\data16" -NoSuite
 #>
 
 $ErrorActionPreference = "Stop"
@@ -36,7 +36,7 @@ $Psql = Join-Path $Bin "psql.exe"
 $Log = Join-Path $DataDir "pg.log"
 
 if (-not (Test-Path $Initdb)) {
-    Write-Error "PostgreSQL binaries not found under '$Bin' (extract the EDB *-binaries.zip there first)"
+    throw "PostgreSQL binaries not found under '$Bin' (extract the EDB *-binaries.zip there first)"
 }
 
 Write-Host "== postgres-prod-test: DataDir=$DataDir Port=$Port"

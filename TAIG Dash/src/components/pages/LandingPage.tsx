@@ -11,7 +11,7 @@ interface Props {
 
 const C = {
   en: {
-    nav: ["Product", "How it works", "Paper-first", "Pricing", "FAQ"],
+    nav: ["Product", "The core loop", "Paper-first", "Pricing", "FAQ"],
     badge: "INSTITUTIONAL OPERATING CORE",
     heroTitle: "Where serious traders build conviction.",
     heroSub:
@@ -22,12 +22,17 @@ const C = {
     thesisTitle: "Trading is an operating problem, not a prediction game.",
     thesisBody:
       "Markets reward process. TraderAIG turns research into testable strategies, gates every decision through a risk layer, and forces paper validation before capital is ever exposed. The result is an institutional-grade workflow — not another signal feed.",
-    howTitle: "How it works",
-    how: [
-      { step: "01", title: "Observe & research", desc: "Evidence board, regime context, and session-aware theses built in the Research workspace." },
-      { step: "02", title: "Validate in the Strategy Lab", desc: "Every family of setups is replayed deterministically over real M1 data before it earns trust." },
-      { step: "03", title: "Run under paper", desc: "Promotion queue handsoff approved strategies to a governed paper executor. Zero capital at risk." },
-      { step: "04", title: "Learn from outcomes", desc: "Every trade becomes a learning record. The system gets measurably smarter over time." },
+    howTitle: "The eight-step core loop",
+    howHint: "Click a step to walk the loop every decision runs through.",
+    journey: [
+      { step: "01", title: "Observe", desc: "Market structure, liquidity, session context and evidence are collected into the research workspace — nothing enters the loop without a recorded source." },
+      { step: "02", title: "Understand", desc: "Each setup becomes a readable thesis: scenarios, probabilities and the evidence behind them — reasoning you can follow, not a signal to trust." },
+      { step: "03", title: "Verify", desc: "Every candidate is replayed deterministically over real M1 history — in-sample and out-of-sample — before it earns any trust." },
+      { step: "04", title: "Decide", desc: "Score, risk and allocation checks decide what advances. Every decision carries its reason." },
+      { step: "05", title: "Govern", desc: "Approvals, vetoes and quarantines run through one governed control plane — no surface can bypass it, and no AI can promote itself." },
+      { step: "06", title: "Execute", desc: "Approved strategies run paper-first through a promotion queue; live execution stays behind a governed gate." },
+      { step: "07", title: "Learn", desc: "Every trade becomes a learning record — wins, mistakes and patterns with the regime and session that produced them." },
+      { step: "08", title: "Improve", desc: "Learning feeds the next research cycle, so the loop measurably sharpens instead of drifting." },
     ],
     paperTitle: "Why paper-first matters",
     paperBody:
@@ -58,7 +63,7 @@ const C = {
     pricingFeatured: "FEATURED",
   },
   ar: {
-    nav: ["المنتج", "كيف يعمل", "الورق أولاً", "الأسعار", "الأسئلة"],
+    nav: ["المنتج", "حلقة النواة", "الورق أولاً", "الأسعار", "الأسئلة"],
     badge: "نظام التشغيل المؤسسي",
     heroTitle: "حيث يبني المتداولون الجادون قناعاتهم.",
     heroSub: "ابحث. تحقق. نفّذ بانضباط. كل قرار موثّق. كل نتيجة درس.",
@@ -68,12 +73,17 @@ const C = {
     thesisTitle: "التداول مشكلة تشغيل، ليست لعبة توقع.",
     thesisBody:
       "السوق يكافئ العملية. TraderAIG يحوّل البحث إلى استراتيجيات قابلة للاختبار، ويُخضع كل قرار لطبقة مخاطر، ويفرض تحققاً ورْقياً قبل تعريض رأس المال. النتيجة: سير عمل مؤسسي، لا مجرد موجز إشارات.",
-    howTitle: "كيف يعمل",
-    how: [
-      { step: "01", title: "راقب وابحث", desc: "لوحة أدلة، وسياق نظام، ورؤى مبنية على الجلسات في مساحة البحث." },
-      { step: "02", title: "تحقق في مختبر الاستراتيجيات", desc: "كل عائلة من الإعدادات تُعاد على بيانات M1 حقيقية بشكل محدد قبل أن تستحق الثقة." },
-      { step: "03", title: "نفّذ ورْقياً", desc: "قائمة الترقية تحوّل الاستراتيجيات المعتمدة إلى منفذ ورقي محكوم. صفر مخاطر." },
-      { step: "04", title: "تعلّم من النتائج", desc: "كل صفقة تصبح سجلاً تعليمياً. النظام يصبح أذكى بشكل قابل للقياس." },
+    howTitle: "حلقة النواة بثماني خطوات",
+    howHint: "اضغط أي خطوة لتتصفّح الحلقة التي يمرّ بها كل قرار.",
+    journey: [
+      { step: "01", title: "راقب", desc: "بنية السوق والسيولة وسياق الجلسة والأدلة تُجمع في مساحة البحث — لا شيء يدخل الحلقة دون مصدر مسجَّل." },
+      { step: "02", title: "افهم", desc: "كل إعداد يصير أطروحة قابلة للقراءة: سيناريوهات واحتمالات وأدلتها — منطق تتبعه، لا إشارة تثق بها." },
+      { step: "03", title: "تحقق", desc: "كل مرشح يُعاد تشغيله بشكل حتمي على تاريخ M1 حقيقي — داخل وخارج العينة — قبل أن يكسب أي ثقة." },
+      { step: "04", title: "قرّر", desc: "الدرجة والمخاطر وفحص التوزيع تقرّر ما يتقدّم. كل قرار يحمل سببه." },
+      { step: "05", title: "احكُم", desc: "الموافقات والرفض والحجر تمرّ عبر لوحة تحكم واحدة محكومة — لا سطح يتجاوزها، ولا ذكاء اصطناعي يرقّي نفسه." },
+      { step: "06", title: "نفّذ", desc: "الاستراتيجيات المعتمدة تعمل ورقياً أولاً عبر قائمة الترقية؛ التنفيذ الحيّ يبقى خلف بوابة محكومة." },
+      { step: "07", title: "تعلّم", desc: "كل صفقة تصبح سجل تعلّم — أرباح وأخطاء وأنماط مع النظام والجلسة التي أنتجتها." },
+      { step: "08", title: "حسّن", desc: "التعلّم يغذّي دورة البحث التالية، فتصبح الحلقة أكثر حدة بدل أن تتلاشى." },
     ],
     paperTitle: "لماذا الورق أولاً؟",
     paperBody:
@@ -109,6 +119,7 @@ export default function LandingPage({ lang, onOpenApp, onRequestAccess, onLangTo
   const t = C[lang];
   const rtl = isRtl(lang);
   const [openFaq, setOpenFaq] = useState<number | null>(0);
+  const [activeStep, setActiveStep] = useState(0);
 
   return (
     <div dir={rtl ? "rtl" : "ltr"} style={{ minHeight: "100%", background: "var(--background)", color: "var(--foreground)", fontFamily: ff(lang), overflowY: "auto" }}>
@@ -159,18 +170,39 @@ export default function LandingPage({ lang, onOpenApp, onRequestAccess, onLangTo
         </Card>
       </section>
 
-      {/* How it works */}
+      {/* Eight-step core loop (interactive journey) */}
       <section style={{ maxWidth: 900, margin: "0 auto", padding: "2rem 1.25rem" }}>
-        <h2 style={{ fontFamily: fd(lang), fontSize: "1.5rem", fontWeight: 600, marginBottom: "1.25rem" }}>{t.howTitle}</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0.75rem" }}>
-          {t.how.map((h) => (
-            <Card key={h.step} style={{ padding: "1.25rem" }}>
-              <div style={{ fontSize: "0.7rem", fontFamily: "var(--font-mono)", color: "var(--primary)", marginBottom: 6 }}>{h.step}</div>
-              <div style={{ fontSize: "0.92rem", fontWeight: 600, marginBottom: 6, fontFamily: ff(lang) }}>{h.title}</div>
-              <div style={{ fontSize: "0.8rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>{h.desc}</div>
-            </Card>
+        <h2 style={{ fontFamily: fd(lang), fontSize: "1.5rem", fontWeight: 600, marginBottom: 6 }}>{t.howTitle}</h2>
+        <p style={{ fontSize: "0.82rem", color: "var(--muted-foreground)", marginBottom: "1rem", fontFamily: ff(lang) }}>{t.howHint}</p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "0.5rem" }}>
+          {t.journey.map((j, i) => (
+            <button
+              key={j.step}
+              onClick={() => setActiveStep(i)}
+              style={{
+                textAlign: "start",
+                padding: "0.7rem 0.8rem",
+                background: activeStep === i ? "rgba(245,158,11,0.08)" : "var(--card)",
+                border: `1px solid ${activeStep === i ? "rgba(245,158,11,0.45)" : "var(--border)"}`,
+                borderRadius: 8,
+                cursor: "pointer",
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+              }}
+            >
+              <span style={{ fontSize: "0.66rem", fontFamily: "var(--font-mono)", letterSpacing: "0.08em", color: activeStep === i ? "var(--primary)" : "var(--muted-foreground)" }}>{j.step}</span>
+              <span style={{ fontSize: "0.85rem", fontWeight: 600, fontFamily: ff(lang), color: activeStep === i ? "var(--foreground)" : "var(--muted-foreground)" }}>{j.title}</span>
+            </button>
           ))}
         </div>
+        <Card style={{ marginTop: "0.75rem" }}>
+          <div style={{ display: "flex", gap: 12, alignItems: "baseline" }}>
+            <span style={{ fontSize: "1.5rem", fontFamily: "var(--font-mono)", color: "var(--primary)", fontWeight: 600 }}>{t.journey[activeStep].step}</span>
+            <h3 style={{ fontFamily: fd(lang), fontSize: "1.05rem", fontWeight: 600 }}>{t.journey[activeStep].title}</h3>
+          </div>
+          <p style={{ fontSize: "0.87rem", color: "var(--muted-foreground)", lineHeight: 1.7, marginTop: 8, fontFamily: ff(lang) }}>{t.journey[activeStep].desc}</p>
+        </Card>
       </section>
 
       {/* Paper-first + auditability */}

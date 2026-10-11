@@ -61,19 +61,21 @@ def _make_fake_mt5():
     return mt5
 
 
-def _candidate() -> TradeCandidate:
-    return TradeCandidate(
-        candidate_id="cand-1",
-        thesis_id="thesis-1",
-        symbol="XAUUSD",
-        direction=TradeDirection.LONG,
-        entry=2000.0,
-        stop_loss=1990.0,
-        take_profit=2020.0,
-        size=0.10,
-        risk_reward=2.0,
-        confidence=0.7,
-    )
+def _candidate(**kwargs) -> TradeCandidate:
+    base = {
+        "candidate_id": "cand-1",
+        "thesis_id": "thesis-1",
+        "symbol": "XAUUSD",
+        "direction": TradeDirection.LONG,
+        "entry": 2000.0,
+        "stop_loss": 1990.0,
+        "take_profit": 2020.0,
+        "size": 0.10,
+        "risk_reward": 2.0,
+        "confidence": 0.7,
+    }
+    base.update(kwargs)
+    return TradeCandidate(**base)
 
 
 @pytest.fixture
@@ -401,15 +403,16 @@ def test_place_position_fills_when_approved_and_connected(monkeypatch, adapter):
                                    equity=10_000.0, leverage=100))
     state.risk.daily_pnl = 0.0
 
+    fake.order_send = lambda req: SimpleNamespace(
+        retcode=10009, order=777, price=2000.1, comment="done")
     fake.positions_get = lambda: [SimpleNamespace(
         ticket=777, symbol="XAUUSD", type=0, volume=0.1,
         price_open=2000.1, price_current=2000.1, sl=1990.0, tp=2020.0,
         time=1000, profit=0.0, swap=0.0)]
 
-    fake.order_send = lambda req: SimpleNamespace(
-        retcode=10009, order=777, price=2000.1, comment="done")
-
-    pos = adapter.place_position(_candidate(), RiskDecisionKind.APPROVED)
+    pos = adapter.place_position(_candidate(strategy_id="xauusd:loop:v1",
+                                            strategy_stage="production"),
+                                  RiskDecisionKind.APPROVED)
     assert pos is not None
     assert pos.position_id == "777"
     assert state.get_position("777") is not None
@@ -447,7 +450,9 @@ def test_place_position_falls_back_across_filling_modes(monkeypatch, adapter):
 
     fake.order_send = order_send
 
-    pos = adapter.place_position(_candidate(), RiskDecisionKind.APPROVED)
+    pos = adapter.place_position(_candidate(strategy_id="xauusd:loop:v1",
+                                            strategy_stage="production"),
+                                  RiskDecisionKind.APPROVED)
     assert pos is not None
     assert pos.position_id == "888"
     assert filled["done"] is True

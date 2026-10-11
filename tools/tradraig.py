@@ -33,6 +33,7 @@ import socket
 import subprocess
 import sys
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -108,6 +109,15 @@ I18N = {
         "pay_charge_locked": "charge gated (live providers locked)",
         "pay_refund_ok": "refunded",
         "pay_unknown": "unknown pay action",
+        "ch_api_down": "challenge API down",
+        "ch_unknown": "unknown challenge action",
+        "ch_buy_pending": "charge created — activation happens when billing confirms it",
+        "ch_buy_ok": "challenge service active",
+        "ch_entitled": "entitled",
+        "ch_not_entitled": "not entitled",
+        "ch_buy_hint": "buy it with: tradraig challenge buy --user <id>",
+        "ch_no_policy": "no policy registered for this account",
+        "ch_no_user": "no acting identity; pass --user <id>",
     },
     "ar": {
         "layer": "الطبقة", "state": "الحالة", "detail": "التفصيل",
@@ -144,6 +154,15 @@ I18N = {
         "pay_charge_locked": "الرسوم محظورة (الدفع الحي مقفول)",
         "pay_refund_ok": "تمت الاسترداد",
         "pay_unknown": "إجراء دفع غير معروف",
+        "ch_api_down": "واجهة التحدي متوقفة",
+        "ch_unknown": "إجراء تحدٍ غير معروف",
+        "ch_buy_pending": "تم إنشاء الرسوم — التفعيل عند تأكيد الفوترة",
+        "ch_buy_ok": "خدمة إدارة الحساب مُفعّلة",
+        "ch_entitled": "مُخوَّل",
+        "ch_not_entitled": "غير مُخوَّل",
+        "ch_buy_hint": "للشراء: tradraig challenge buy --user <id>",
+        "ch_no_policy": "لا توجد سياسة مسجّلة لهذا الحساب",
+        "ch_no_user": "لا توجد هوية فاعلة؛ مرّر --user <id>",
     },
 }
 
@@ -1152,6 +1171,183 @@ def cmd_pay(args: argparse.Namespace) -> int:
     return 1
 
 
+def _expires(value: object) -> str:
+    """Render an expiry as a date, or say plainly that it is not a date.
+
+    The API reports timestamps as epoch floats, and `1793386638.9044793` on its
+    own is a number an operator has to convert by hand to answer the only
+    question they have ("how long do I have?"). An unknown value prints as
+    `unknown` rather than as a formatted 1970 date, which is what a zero epoch
+    would silently become.
+    """
+    try:
+        secs = float(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if secs <= 0:
+        return "unknown"
+    return datetime.fromtimestamp(secs).strftime("%Y-%m-%d %H:%M")
+
+
+def cmd_products(args: argparse.Namespace) -> int:
+    """The product catalogue (34.19) — what can be bought, and what is held.
+
+    Read-only and never a purchase path: buying goes through
+    `tradraig challenge buy`, which posts to `/payments/product` so the price
+    and the entitlement come from the server's catalogue. A console command
+    that could name its own price would make the console a second billing
+    authority.
+    """
+    t = I18N[args.lang]
+    base = f"http://127.0.0.1:{API_PORT}"
+    ok, data = http_json(f"{base}/payments/products")
+    if not ok:
+        print(f"{_ANSI['bad']}{t['pay_api_down']}{_ANSI['off']}")
+        return 1
+    print(f"  catalogue ({data.get('actor') or t['ch_not_entitled']}):")
+    for p in data.get("catalog", []):
+        print(f"    {p['product_id']:<18} ${p['price_usd']:<7} "
+              f"{p['duration_days']}d grace={p['grace_days']}d "
+              f"entitlement={p['entitlement']} "
+              f"trade_permission={p['grants_trade_permission']}")
+    held = (data.get("entitlements") or {}).get("entitlements") or []
+    if not held:
+        print(f"    {t['ch_not_entitled']}: {t['ch_buy_hint']}")
+    for e in held:
+        print(f"    [{str(e.get('state', '')):<9}] {e.get('product_id')} "
+              f"expires={_expires(e.get('expires_at'))}")
+    return 0
+
+
+def cmd_challenge(args: argparse.Namespace) -> int:
+    """Challenge account management (34): status via the API, buy via billing."""
+    t = I18N[args.lang]
+    base = f"http://127.0.0.1:{API_PORT}"
+    act = args.action
+
+    def _down() -> int:
+        print(f"{_ANSI['bad']}{t['ch_api_down']}{_ANSI['off']}")
+        return 1
+
+    if act == "status":
+        ok, data = http_json(f"{base}/challenge/status")
+        if not ok:
+            return _down()
+        commercial = data.get("commercial") or {}
+        # The verdict lives under commercial.gate, not at the top level:
+        # `commercial` also carries the price and the product record, so reading
+        # a flat `entitled` here would report "not entitled" on a paid service.
+        gate = commercial.get("gate") or {}
+        entitled = bool(gate.get("active"))
+        mark = t["ch_entitled"] if entitled else t["ch_not_entitled"]
+        colour = _ANSI["ok"] if entitled else _ANSI["warn"]
+        print(f"  service: {colour}{mark}{_ANSI['off']} "
+              f"(${commercial.get('price_usd')}) "
+              f"bootstrap={gate.get('bootstrap')}")
+        if gate.get("detail"):
+            print(f"    {gate['detail']}")
+        record = commercial.get("record") or {}
+        if record:
+            print(f"    state={record.get('state')} "
+                  f"expires={_expires(record.get('expires_at'))}")
+        if commercial.get("grants_trade_permission") is False:
+            print("    trade permission: no (this service protects an account; "
+                  "it does not authorise trading)")
+        print(f"  managed={data.get('managed')} "
+              f"program={data.get('program') or '-'} "
+              f"permission={(data.get('decision') or {}).get('permission', '-')}")
+        state = data.get("state") or {}
+        if state:
+            print(f"  state={state.get('status')} "
+                  f"counts={state.get('counts')}")
+        report = data.get("headroom") or {}
+        dims = report.get("dimensions") or {}
+        for name in ("daily_loss", "max_drawdown", "profit_target",
+                     "trading_days"):
+            head = dims.get(name) or {}
+            if not head.get("is_known"):
+                print(f"  {name:<14} unknown: {head.get('reason', '')}")
+            else:
+                print(f"  {name:<14} remaining={head.get('remaining')} "
+                      f"buffer={head.get('buffer')}")
+        blocking = data.get("blocking_reasons") or []
+        if blocking:
+            print(f"  {_ANSI['warn']}blocking: {', '.join(blocking)}{_ANSI['off']}")
+        return 0
+
+    if act == "policy":
+        # There is no list-everything route, and inventing one here would mean
+        # the console reading the registry directly -- a second authority over
+        # the policies that decide whether a trade is allowed. Both branches go
+        # through /challenge/policies: the bare call is the registry's own
+        # summary, and provider+program is the only way to enumerate versions.
+        if args.provider_name or args.program:
+            # Program names contain spaces ("Classic 2-Step"), and a raw space
+            # in a URL is a 400 that reads as "API down". Everything interpolated
+            # into a query string is quoted here for that reason.
+            import urllib.parse
+
+            query = urllib.parse.urlencode(
+                {"provider": args.provider_name, "program": args.program})
+            ok, data = http_json(f"{base}/challenge/policies?{query}")
+            if not ok:
+                return _down()
+            rows = data.get("versions") or []
+            if not rows:
+                print(f"  {args.provider_name}/{args.program}: {t['ch_no_policy']}")
+                return 0
+            for p in rows:
+                missing = p.get("missing_rules") or []
+                print(f"  v{p.get('policy_version')} "
+                      f"from={p.get('effective_from')} "
+                      f"until={p.get('effective_until')} "
+                      f"complete={p.get('is_fully_specified')}")
+                if missing:
+                    print(f"    {_ANSI['warn']}unverified: "
+                          f"{', '.join(missing)}{_ANSI['off']}")
+            return 0
+        ok, data = http_json(f"{base}/challenge/policies")
+        if not ok:
+            return _down()
+        reg = data.get("registry") or {}
+        print(f"  registered: {reg.get('registered')}")
+        accounts = data.get("accounts") or []
+        print(f"  accounts: {', '.join(accounts) if accounts else '-'}")
+        print(f"  {data.get('baseline_persistence', '')}")
+        if not accounts:
+            print(f"  {t['ch_no_policy']}")
+        return 0
+
+    if act == "buy":
+        if not args.user:
+            print(f"{_ANSI['warn']}{t['ch_no_user']}{_ANSI['off']}")
+            return 1
+        rc, data = http_post_json(f"{base}/payments/product", {
+            "user_id": args.user, "product_id": args.product,
+            "provider": getattr(args, "provider", "") or "",
+        })
+        if rc is None:
+            return _down()
+        if rc != 200:
+            print(f"{_ANSI['bad']}HTTP {rc}: {data}{_ANSI['off']}")
+            return 1
+        status = str(data.get("status", ""))
+        if status == "succeeded":
+            print(f"{_ANSI['ok']}{t['ch_buy_ok']}{_ANSI['off']}: "
+                  f"{args.product} -> {data.get('entitlement')} "
+                  f"trade_permission={data.get('grants_trade_permission')}")
+        else:
+            # A live provider lands PENDING by design: only a verified webhook
+            # activates the service. Saying "activated" here would be a claim
+            # the billing system has not made yet.
+            print(f"{_ANSI['warn']}{t['ch_buy_pending']}{_ANSI['off']}: "
+                  f"{status} {data.get('charge_id')}")
+        return 0
+
+    print(f"{_ANSI['bad']}{t['ch_unknown']}: {act}{_ANSI['off']}")
+    return 1
+
+
 def cmd_portfolio(args: argparse.Namespace) -> int:
     """Portfolio intelligence & capital allocation — always via the API."""
     t = I18N[args.lang]
@@ -1737,6 +1933,24 @@ def _parser() -> argparse.ArgumentParser:
     pay.add_argument("--description", default="")
     pay.add_argument("--charge", default="", help="charge_id (refund)")
     pay.set_defaults(fn=cmd_pay)
+
+    pr = sub.add_parser("products",
+                        help="product catalogue + what is held (34.19; read-only)")
+    pr.set_defaults(fn=cmd_products)
+
+    cha = sub.add_parser("challenge",
+                          help="Challenge account management (34): status / policy / buy")
+    cha.add_argument("action", choices=("status", "policy", "buy"),
+                      help="status | policy | buy")
+    cha.add_argument("--user", default="", help="user_id (buy)")
+    cha.add_argument("--product", default="challenge_basic",
+                     help="product_id to buy (34.19 catalogue; price is server-side)")
+    cha.add_argument("--provider", default="", choices=("", "sandbox", "stripe", "pi"))
+    cha.add_argument("--provider-name", default="",
+                     help="challenge provider, e.g. FTTrading (policy)")
+    cha.add_argument("--program", default="",
+                     help="challenge program, e.g. 'Classic 2-Step' (policy)")
+    cha.set_defaults(fn=cmd_challenge)
 
     pf = sub.add_parser("portfolio", help="Portfolio intelligence & capital allocation (via the API)")
     pf.add_argument("action", choices=("state", "alloc", "correlation", "set", "clear"),

@@ -20,6 +20,28 @@ DEFAULT_PATH = REGISTRY_DIR / "programs.json"
 PROGRAMS_DIR = REGISTRY_DIR / "programs"
 
 
+def resolve_artifact(raw: Optional[str]) -> Optional[Path]:
+    """Resolve a stored artifact reference to a real file, portably.
+
+    Artifacts are written repo-relative so a USB copy works from any host or
+    drive letter. Legacy absolute references that no longer resolve are re-linked
+    by filename to this repository's programs folder.
+    """
+    if not raw:
+        return None
+    p = Path(raw)
+    if p.is_absolute():
+        if p.is_file():
+            try:
+                return p.relative_to(REGISTRY_DIR)
+            except ValueError:
+                return p
+        local = PROGRAMS_DIR / p.name
+        return Path("programs") / p.name if local.is_file() else None
+    candidate = REGISTRY_DIR / p
+    return p if candidate.is_file() else None
+
+
 class ProgramStatus(str, Enum):
     RESEARCH = "research"
     CANDIDATE = "candidate"
@@ -103,7 +125,12 @@ class ProgramRegistry:
                 raw = json.load(fh)
         except (json.JSONDecodeError, OSError):
             return []
-        return [AIProgramVersion.from_dict(item) for item in raw if isinstance(item, dict)]
+        versions = [AIProgramVersion.from_dict(item) for item in raw if isinstance(item, dict)]
+        for version in versions:
+            resolved = resolve_artifact(version.artifact)
+            if resolved is not None:
+                version.artifact = str(resolved)
+        return versions
 
     def save(self, versions: List[AIProgramVersion]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

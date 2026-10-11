@@ -1,0 +1,1 @@
+﻿PRODUCTION MODE ACTIVE - API (8000,200) + UI (5173,200) running. All tests verified (39+517+245). System ready for real operation in paper mode.

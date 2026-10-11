@@ -50,11 +50,11 @@ class AIProgramCompiler:
             )
             blob = report.get("program_blob")
             if blob:
-                from .registry.programs import PROGRAMS_DIR
+                from .registry.programs import PROGRAMS_DIR, REGISTRY_DIR
                 artifact = PROGRAMS_DIR / f"{entry.version}.json"
                 artifact.parent.mkdir(parents=True, exist_ok=True)
                 artifact.write_text(blob, encoding="utf-8")
-                entry.artifact = str(artifact)
+                entry.artifact = str(artifact.relative_to(REGISTRY_DIR))
             entry.update_from_report(report)
             registry.add(entry)
             # keep the stdout report human-readable; the blob lives on disk
@@ -82,8 +82,9 @@ class AIProgramCompiler:
         blob = None
         if entry.get("artifact"):
             try:
-                art = Path(entry["artifact"])
-                if art.is_file():
+                from .registry.programs import resolve_artifact
+                art = resolve_artifact(entry["artifact"])
+                if art is not None:
                     blob = art.read_text(encoding="utf-8")[:30000]
             except Exception:
                 blob = None

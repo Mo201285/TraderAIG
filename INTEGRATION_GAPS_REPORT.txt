@@ -1,4 +1,4 @@
-﻿INTEGRATION GAP REGISTER — TraderAIG (D:\One)
+﻿INTEGRATION GAP REGISTER — TraderAIG (D:\TraderAIG)
 Generated 2026-10-04 · Supersedes the truncated first pass of this file.
 Status legend: [VERIFIED] = confirmed by reading code / live DB this session.
                [UNVERIFIED] = plausible, needs runtime payload or log inspection.

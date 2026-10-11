@@ -39,11 +39,28 @@ input group "=== Python Bridge ==="
 input string InpBridgeFileName   = "TraderAIG_bridge.json"; // shared file (Common folder)
 input int    InpBridgePollMS     = 1000;      // Bridge check engine (ms)
 
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
 input group "=== Market Publisher (28.6) ==="
 input bool   InpPublishMarket    = true;      // Publish tick/bar frames to the backend
 input string InpMarketSubDir     = "market";  // <Common>\market\ must match the server's bridge market dir
 input int    InpMarketTimeframe  = PERIOD_M15; // Bar timeframe published with each tick
 input int    InpMarketIntervalMS = 1000;      // Market publish cadence (ms)
+
+//+------------------------------------------------------------------+
+//| Session schedules (weekend close windows)                        |
+//| python-MT5 does not expose SymbolInfoSessionTrade, so the        |
+//| backend cannot work out when each symbol actually stops trading  |
+//| on Friday. The terminal can, authoritatively. This publishes the |
+//| terminal's own weekly trade schedule per symbol; the server uses |
+//| it to place a close window and, where a symbol has no readable  |
+//| schedule, treats it as unreadable rather than guessing.          |
+//+------------------------------------------------------------------+
+input group "=== Session Publisher ==="
+input bool   InpPublishSessions  = true;      // Publish per-symbol trading schedules
+input string InpSessionsSubDir   = "sessions";// <Common>\sessions\sessions.json
+input int    InpSessionsIntervalMS = 300000;  // Schedule publish cadence (ms)
 
 //+------------------------------------------------------------------+
 //| Global state                                                      |
@@ -63,6 +80,9 @@ bool     g_hardStopTriggered = false;
 double   g_sessionStartEquity = 0.0;
 datetime g_lastMarketWrite   = 0;
 bool     g_marketWriteReported = false;   // one diagnostic per session, not one per tick
+datetime g_lastSessionsWrite = 0;
+bool     g_sessionsWriteReported = false;
+int      g_sessionsSymbolCount = -1;      // -1 = not reported yet this session
 
 //+------------------------------------------------------------------+
 //| Initialization                                                   |
@@ -97,7 +117,7 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
   {
-   // Hard daily-loss stop: kill the robot before it can act.
+// Hard daily-loss stop: kill the robot before it can act.
    CheckHardDailyLossStop();
 
    if(IsBridgeDue())
@@ -107,6 +127,7 @@ void OnTick()
      }
 
    PublishMarketFrame();
+   PublishSessionSchedules();
   }
 
 //+------------------------------------------------------------------+
@@ -114,7 +135,7 @@ void OnTick()
 //+------------------------------------------------------------------+
 bool IsWithinHardRiskLimits(double volume, double sl, double tp)
   {
-   // 1. Spread gate
+// 1. Spread gate
    long   spreadPoints = SymbolInfoInteger(g_symbol, SYMBOL_SPREAD);
    if(spreadPoints > InpMaxSpreadPoints)
      {
@@ -122,7 +143,7 @@ bool IsWithinHardRiskLimits(double volume, double sl, double tp)
       return(false);
      }
 
-   // 2. Position count ceiling
+// 2. Position count ceiling
    int openPositions = CountOpenPositions();
    if(openPositions >= (int)InpHardMaxPosition)
      {
@@ -130,14 +151,14 @@ bool IsWithinHardRiskLimits(double volume, double sl, double tp)
       return(false);
      }
 
-   // 3. Per-trade risk sanity: SL must exist (institutional rule)
+// 3. Per-trade risk sanity: SL must exist (institutional rule)
    if(InpSymbolFilter != "" && (sl <= 0.0 || tp <= 0.0))
      {
       PrintFormat("Missing stop loss or take profit");
       return(false);
      }
 
-   // 4. Leverage ceiling
+// 4. Leverage ceiling
    double notional      = volume * SymbolInfoDouble(g_symbol, SYMBOL_TRADE_TICK_VALUE);
    double equity        = AccountInfoDouble(ACCOUNT_EQUITY);
    if(equity > 0.0 && (notional / equity) > InpHardMaxLeverage)
@@ -210,7 +231,7 @@ void HandleBridgeFile()
    if(StringLen(result) < 2)
       return;
 
-   // Parse the JSON dictionary.
+// Parse the JSON dictionary.
    CJAVal root;
    if(!root.Deserialize(result))
      {
@@ -218,7 +239,7 @@ void HandleBridgeFile()
       return;
      }
 
-   // Only act on explicit APPROVED signal with full execution plan.
+// Only act on explicit APPROVED signal with full execution plan.
    string signal = root["signal"].ToStr();
    if(signal != "trade")
       return;
@@ -239,7 +260,7 @@ void HandleBridgeFile()
       return;
      }
 
-   // Local hard gate (idempotent with Python's Risk Governor).
+// Local hard gate (idempotent with Python's Risk Governor).
    if(!g_hardStopTriggered && IsWithinHardRiskLimits(volume, sl, tp))
      {
       bool ok = SubmitOrder(action, volume, sl, tp, price);
@@ -324,18 +345,26 @@ string MarketTimeframeName(const ENUM_TIMEFRAMES tf)
   {
    switch(tf)
      {
-      case PERIOD_M1:  return("M1");
-      case PERIOD_M5:  return("M5");
-      case PERIOD_M15: return("M15");
-      case PERIOD_M30: return("M30");
-      case PERIOD_H1:  return("H1");
-      case PERIOD_H4:  return("H4");
-   case PERIOD_D1:  return("D1");
-   case PERIOD_W1:  return("W1");
-  }
-   // Unsupported: return nothing so the frame is not published under a name
-   // the server never asked for (it would reject it anyway) and this EA never
-   // claims to be sending a timeframe it is not sending.
+      case PERIOD_M1:
+         return("M1");
+      case PERIOD_M5:
+         return("M5");
+      case PERIOD_M15:
+         return("M15");
+      case PERIOD_M30:
+         return("M30");
+      case PERIOD_H1:
+         return("H1");
+      case PERIOD_H4:
+         return("H4");
+      case PERIOD_D1:
+         return("D1");
+      case PERIOD_W1:
+         return("W1");
+     }
+// Unsupported: return nothing so the frame is not published under a name
+// the server never asked for (it would reject it anyway) and this EA never
+// claims to be sending a timeframe it is not sending.
    return("");
   }
 
@@ -390,12 +419,12 @@ string MarketFrameJson()
    double last = tick.last;
    double bid  = tick.bid;
    double ask  = tick.ask;
-   // Two real sides is what makes a quote usable. `last` is NOT part of that
-   // test: plenty of real venues (every crypto CFD here, for one) report no
-   // last trade at all and only ever fill bid/ask. Gating on `last > 0` meant
-   // the publisher stayed silent on exactly the symbol the operator trades.
-   // The server derives last from the mid when the terminal has no last, so
-   // nothing is invented here.
+// Two real sides is what makes a quote usable. `last` is NOT part of that
+// test: plenty of real venues (every crypto CFD here, for one) report no
+// last trade at all and only ever fill bid/ask. Gating on `last > 0` meant
+// the publisher stayed silent on exactly the symbol the operator trades.
+// The server derives last from the mid when the terminal has no last, so
+// nothing is invented here.
    if(bid <= 0.0 || ask <= 0.0)
       return("");   // no real two-sided price: publish nothing rather than guess
    if(ask < bid)
@@ -408,12 +437,12 @@ string MarketFrameJson()
    json += "\"symbol\":\"" + g_marketSymbol + "\",";
    json += "\"timeframe\":\"" + tfName + "\",";
    json += "\"time\":" + JsonInt((long)now) + ",";
-   // When the venue reports no last trade, the mid of the two real sides is
-   // published instead -- the same rule `execution/mt5_adapter.py` already
-   // applies to this terminal's ticks, so nothing downstream has to invent a
-   // price of its own. `last_source` says which it is, so a consumer can tell
-   // a traded last from a derived mid; the frame is self-describing rather
-   // than quietly presenting a mid as a trade.
+// When the venue reports no last trade, the mid of the two real sides is
+// published instead -- the same rule `execution/mt5_adapter.py` already
+// applies to this terminal's ticks, so nothing downstream has to invent a
+// price of its own. `last_source` says which it is, so a consumer can tell
+// a traded last from a derived mid; the frame is self-describing rather
+// than quietly presenting a mid as a trade.
    bool lastIsTrade = (last > 0.0);
    json += "\"quote\":{";
    json += "\"bid\":"       + JsonNumber(bid) + ",";
@@ -424,12 +453,12 @@ string MarketFrameJson()
    json += "\"tick_time\":" + JsonInt((long)tick.time);
    json += "}";
 
-   // The forming bar: real o/h/l/c so far, re-sent on every publish. The
-   // server replaces the bar with the same timestamp, so this is a stream,
-   // not duplicate history.
-   double barOpen  = iOpen (g_marketSymbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
-   double barHigh  = iHigh (g_marketSymbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
-   double barLow   = iLow  (g_marketSymbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
+// The forming bar: real o/h/l/c so far, re-sent on every publish. The
+// server replaces the bar with the same timestamp, so this is a stream,
+// not duplicate history.
+   double barOpen  = iOpen(g_marketSymbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
+   double barHigh  = iHigh(g_marketSymbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
+   double barLow   = iLow(g_marketSymbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
    double barClose = iClose(g_marketSymbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
    long   barVol   = iVolume(g_marketSymbol, (ENUM_TIMEFRAMES)InpMarketTimeframe, 0);
    if(barOpen > 0.0 && barHigh > 0.0 && barLow > 0.0 && barClose > 0.0)
@@ -443,13 +472,16 @@ string MarketFrameJson()
       json += "\"tick_volume\":" + JsonInt(barVol);
       json += "}]";
      }
-   // else: no real bar, so no `bars` key at all. The server treats a frame
-   // without bars as a quote-only frame; it never invents a bar.
+// else: no real bar, so no `bars` key at all. The server treats a frame
+// without bars as a quote-only frame; it never invents a bar.
 
    json += "}";
    return(json);
   }
 
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
 void PublishMarketFrame()
   {
    if(!InpPublishMarket)
@@ -464,13 +496,13 @@ void PublishMarketFrame()
    if(StringLen(json) < 2)
       return;
 
-   // MQL5 will not write outside its sandbox, and with FILE_COMMON it resolves
-   // a RELATIVE path against the shared root `<TERMINAL_COMMONDATA_PATH>\Files`.
-   // A live attach proved both halves of that: an absolute path under Common
-   // returned err 5002 while a probe file in the common root wrote fine, and
-   // FolderCreate on that absolute path failed the same way. So: relative here,
-   // `<common>\Files\market\<SYMBOL>.json` on disk, and the server points
-   // MT5_COMMON_DATA at `<common>\Files`.
+// MQL5 will not write outside its sandbox, and with FILE_COMMON it resolves
+// a RELATIVE path against the shared root `<TERMINAL_COMMONDATA_PATH>\Files`.
+// A live attach proved both halves of that: an absolute path under Common
+// returned err 5002 while a probe file in the common root wrote fine, and
+// FolderCreate on that absolute path failed the same way. So: relative here,
+// `<common>\Files\market\<SYMBOL>.json` on disk, and the server points
+// MT5_COMMON_DATA at `<common>\Files`.
    string commonPath = TerminalInfoString(TERMINAL_COMMONDATA_PATH);
    string relDir     = InpMarketSubDir;                 // resolved under Common\Files
    string dir        = commonPath + "\\Files\\" + relDir;
@@ -507,6 +539,152 @@ void PublishMarketFrame()
    FileWriteString(handle, json);
    FileClose(handle);
    g_lastMarketWrite = now;
+  }
+
+//+------------------------------------------------------------------+
+//| SessionJsonFor                                                    |
+//| The terminal's own weekly trade schedule for one symbol.         |
+//|                                                                  |
+//|   {"symbol":"EURUSD","mode":4,"sessions":[[5,36000,82800],       |
+//|                                          [6,0,10]]}             |
+//|                                                                  |
+//| Each entry is [weekday, from_seconds, to_seconds] in the        |
+//| terminal's own (server) day, and mode is SYMBOL_TRADE_MODE.     |
+//| Hand-built text like the market frame: Json.mqh on this terminal |
+//| supports no nested objects or arrays.                            |
+//|                                                                  |
+//| Returns "" when the symbol reports no session at all. An        |
+//| unreadable schedule and a zero-length one are not the same      |
+//| thing, and the server acts differently on each -- so "" must     |
+//| mean the former and must never be smoothed into the latter.      |
+//+------------------------------------------------------------------+
+string SessionJsonFor(const string symbol)
+  {
+   string sessions = "";
+
+   for(int day = 0; day <= 6; day++)
+     {
+      for(int idx = 0; idx < 8; idx++)
+        {
+         datetime from = 0, to = 0;
+         if(!SymbolInfoSessionTrade(symbol, (ENUM_DAY_OF_WEEK)day, idx, from, to))
+            break;
+
+         if(sessions == "")
+            sessions += "[";
+         else
+            sessions += ",";
+
+         sessions += "[" + IntegerToString(day) + ","
+                     + IntegerToString((int)from) + ","
+                     + IntegerToString((int)to) + "]";
+        }
+     }
+
+   if(sessions == "")
+      return("");
+
+   long mode = SymbolInfoInteger(symbol, SYMBOL_TRADE_MODE);
+   return("{\"symbol\":\"" + symbol + "\",\"mode\":" + JsonInt(mode)
+          + ",\"sessions\":" + sessions + "]}");
+  }
+
+//+------------------------------------------------------------------+
+//| PublishSessionSchedules                                           |
+//| One file for the whole terminal rather than one per symbol: the  |
+//| market watch of a live account runs to dozens of symbols, and    |
+//| writing each of them on a timer would be dozens of file creates  |
+//| to deliver one document the server reads in a single read.       |
+//|                                                                  |
+//| Market Watch is the set the operator actually has on screen and  |
+//| it is bounded. The chart symbol is forced in as well, so the     |
+//| schedule for whatever this EA is about to trade cannot be missing |
+//| merely because nobody watched it.                                 |
+//|                                                                  |
+//| The chart symbol is forced in, and it is the MARKET symbol: the |
+//| trading-filter symbol is a trading decision, and publishing a   |
+//| schedule for a symbol nobody is charting is the attach defect   |
+//| the publisher tests exist to catch, one function over.          |
+//|                                                                  |
+//| An empty symbol set is still published. "Attached, and I read no |
+//| schedules" is a real and different state from "not attached",    |
+//| and the weekend rule fails closed on both -- but only one of    |
+//| them is something the operator can fix.                          |
+//+------------------------------------------------------------------+
+void PublishSessionSchedules()
+  {
+   if(!InpPublishSessions)
+      return;
+
+   datetime now = TimeCurrent();
+   if(g_lastSessionsWrite != 0 &&
+      (long)(now - g_lastSessionsWrite) * 1000 < InpSessionsIntervalMS)
+      return;
+
+   int    total   = SymbolsTotal(false);   // Market Watch
+   string json    = "{\"server_time\":" + JsonInt((long)now) + ",\"symbols\":{";
+   int    written = 0;
+
+   for(int i = 0; i < total; i++)
+     {
+      string entry = SessionJsonFor(SymbolName(i, false));
+      if(StringLen(entry) < 2)
+         continue;
+      if(written > 0)
+         json += ",";
+      json += entry;
+      written++;
+     }
+
+   // The chart symbol only. The traded symbol is deliberately absent: a schedule
+   // for a symbol this EA would trade but is not charting is still worth having,
+   // but it is read from Market Watch, and forcing InpSymbolFilter in here would
+   // publish a symbol on whose chart nothing is running.
+   string forced[1] = {g_marketSymbol};
+   for(int f = 0; f < 1; f++)
+     {
+      if(StringLen(forced[f]) == 0)
+         continue;
+      if(StringFind(json, "{\"symbol\":\"" + forced[f] + "\"", 0) >= 0)
+         continue;
+      string entry = SessionJsonFor(forced[f]);
+      if(StringLen(entry) < 2)
+         continue;
+      if(written > 0)
+         json += ",";
+      json += entry;
+      written++;
+     }
+
+   json += "}}";
+
+   bool dirMade = FolderCreate(InpSessionsSubDir, FILE_COMMON);
+   string filePath = InpSessionsSubDir + "\\sessions.json";
+
+   int handle = FileOpen(filePath, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
+   if(handle == INVALID_HANDLE)
+     {
+      int err = GetLastError();
+      if(!g_sessionsWriteReported)
+        {
+         g_sessionsWriteReported = true;
+         PrintFormat("TraderAIG sessions: cannot write %s (err %d) | dirCreated=%d",
+                     filePath, err, (int)dirMade);
+        }
+      g_lastSessionsWrite = now;
+      return;
+     }
+
+   FileWriteString(handle, json);
+   FileClose(handle);
+   g_lastSessionsWrite = now;
+
+   if(g_sessionsSymbolCount != written)
+     {
+      g_sessionsSymbolCount = written;
+      PrintFormat("TraderAIG sessions: published %d of %d market-watch symbols",
+                  written, total);
+     }
   }
 
 //+------------------------------------------------------------------+

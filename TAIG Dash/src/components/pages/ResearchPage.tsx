@@ -1,9 +1,12 @@
 import { useState } from "react";
-import type { Language, Thesis } from "../../types";
-import { Card, PageHeader, SectionLabel, StateChip, Btn, Tab, EmptyState, ff, fd, isRtl } from "../ui/shared";
+import type { EvidenceRow, Language, Thesis } from "../../types";
+import { Card, PageHeader, SectionLabel, StateChip, Btn, Tab, EmptyState, LoadingState, ff, fd, isRtl } from "../ui/shared";
 import { useData, api } from "../../lib/useData";
 
-const DATA = {
+const LADDER_COLORS = ["#64748b", "#3b82f6", "#22c55e", "#22c55e", "#22c55e",
+  "#22c55e", "#22c55e", "#22c55e", "#f59e0b", "#ef4444"];
+
+const UI = {
   en: {
     title: "Research Workspace",
     subtitle: "Build evidence, shape theses, understand regime.",
@@ -13,32 +16,16 @@ const DATA = {
       { id: "notes", label: "Notes" },
       { id: "ai", label: "AI Explain" },
     ],
-    evidence: [
-      { id: "E-01", tag: "Macro", title: "Fed held rates — hawkish tone persisted", source: "FOMC Minutes", date: "Sep 8", weight: "High", color: "#f59e0b" },
-      { id: "E-02", tag: "Technical", title: "AAPL reclaimed 50-day MA on strong volume", source: "Price Action", date: "Sep 9", weight: "High", color: "#22c55e" },
-      { id: "E-03", tag: "Sentiment", title: "Put/Call ratio elevated above 1.3", source: "CBOE Data", date: "Sep 9", weight: "Medium", color: "#3b82f6" },
-      { id: "E-04", tag: "Fundamental", title: "NVDA raised guidance by 12% sequentially", source: "Earnings Call", date: "Sep 6", weight: "High", color: "#a78bfa" },
-      { id: "E-05", tag: "Flow", title: "Institutional buying detected in XLK", source: "Dark Pool", date: "Sep 9", weight: "Medium", color: "#22c55e" },
-    ],
-    theses: [
-      { id: "T-01", symbol: "AAPL", title: "Accumulation at demand zone", status: "Validated", score: 87, tags: ["Technical", "Macro"] },
-      { id: "T-02", symbol: "NVDA", title: "Earnings momentum continuation", status: "Draft", score: 64, tags: ["Fundamental", "Flow"] },
-      { id: "T-03", symbol: "SPY", title: "Macro hedge via put spreads", status: "Risk Blocked", score: 41, tags: ["Macro", "Sentiment"] },
-    ],
-    notes: [
-      { date: "Sep 9, 09:41", text: "Rate environment still headwind for growth — keep tech thesis size conservative.", pinned: true },
-      { date: "Sep 8, 16:22", text: "AAPL demand zone held for the third time. Pattern has statistical support from prior two setups.", pinned: false },
-      { date: "Sep 7, 10:03", text: "Watching XLK flows — if dark pool activity continues, may confirm thesis T-02 earlier.", pinned: false },
-    ],
-    scenarios: [
-      { label: "Base Case", prob: 55, desc: "Fed pauses, tech consolidates, AAPL thesis plays out over 3–4 weeks." },
-      { label: "Bull Case", prob: 25, desc: "Rate cut hints drive broad risk-on; NVDA accelerates above target." },
-      { label: "Bear Case", prob: 20, desc: "Macro deterioration, earnings revisions, risk-off forces hedge activation." },
-    ],
-    aiExplain: {
-      question: "Why was T-01 validated?",
-      answer: "Strategy T-01 passed validation because: (1) The demand zone at $172 held across three separate touches with declining volume on each test — a structural accumulation pattern. (2) Macro evidence E-01 confirmed the Fed is not cutting, reducing tail-risk for the long thesis. (3) The risk/reward at entry is 1:3.2 with the invalidation threshold defined cleanly at $168.50. The validation score of 87 reflects strong technical confluences and acceptable position sizing within the risk policy.",
-    },
+    boardLoading: "Loading evidence…",
+    boardEmpty: "No evidence recorded",
+    boardEmptyHint: "Evidence enters through the evidence plane; this board stages nothing on its own.",
+    scenariosEmpty: "No scenarios yet",
+    scenariosEmptyHint: "Scenarios derive from the registered theses.",
+    notesEmpty: "No notes yet",
+    notesEmptyHint: "Nothing is stored for this workstation yet — anything typed here stays in this box only.",
+    aiEmpty: "No explanation yet",
+    aiEmptyHint: "No route on this deployment serves explanations, so none is shown here.",
+    ladder: "Ladder",
   },
   ar: {
     title: "مساحة البحث",
@@ -49,32 +36,16 @@ const DATA = {
       { id: "notes", label: "الملاحظات" },
       { id: "ai", label: "شرح الذكاء الاصطناعي" },
     ],
-    evidence: [
-      { id: "E-01", tag: "كلي", title: "الفيدرالي أبقى على الأسعار — نبرة متشددة استمرت", source: "محضر FOMC", date: "8 سبتمبر", weight: "مرتفع", color: "#f59e0b" },
-      { id: "E-02", tag: "تقني", title: "AAPL استعادت المتوسط 50 يوم بحجم قوي", source: "حركة السعر", date: "9 سبتمبر", weight: "مرتفع", color: "#22c55e" },
-      { id: "E-03", tag: "معنوي", title: "نسبة Put/Call مرتفعة فوق 1.3", source: "بيانات CBOE", date: "9 سبتمبر", weight: "متوسط", color: "#3b82f6" },
-      { id: "E-04", tag: "أساسي", title: "NVDA رفعت التوجيهات 12% فصلياً", source: "اجتماع أرباح", date: "6 سبتمبر", weight: "مرتفع", color: "#a78bfa" },
-      { id: "E-05", tag: "تدفق", title: "شراء مؤسسي مرصود في XLK", source: "Dark Pool", date: "9 سبتمبر", weight: "متوسط", color: "#22c55e" },
-    ],
-    theses: [
-      { id: "T-01", symbol: "AAPL", title: "تراكم عند منطقة الطلب", status: "موثّق", score: 87, tags: ["تقني", "كلي"] },
-      { id: "T-02", symbol: "NVDA", title: "استمرار زخم الأرباح", status: "مسودة", score: 64, tags: ["أساسي", "تدفق"] },
-      { id: "T-03", symbol: "SPY", title: "تحوّط كلي عبر فروق الخيارات", status: "محظور بالمخاطر", score: 41, tags: ["كلي", "معنوي"] },
-    ],
-    notes: [
-      { date: "9 سبتمبر، 09:41", text: "بيئة الفائدة لا تزال عائقاً للنمو — أبقِ حجم أطروحة التقنية محافظاً.", pinned: true },
-      { date: "8 سبتمبر، 16:22", text: "منطقة الطلب في AAPL صمدت للمرة الثالثة. النمط له دعم إحصائي من الإعدادين السابقين.", pinned: false },
-      { date: "7 سبتمبر، 10:03", text: "أراقب تدفقات XLK — إذا استمر نشاط Dark Pool قد يؤكد أطروحة T-02 مبكراً.", pinned: false },
-    ],
-    scenarios: [
-      { label: "الحالة الأساسية", prob: 55, desc: "الفيدرالي يتوقف، التقنية تتماسك، أطروحة AAPL تتحقق خلال 3-4 أسابيع." },
-      { label: "الحالة الصعودية", prob: 25, desc: "تلميحات لخفض الفائدة تدفع المخاطرة للأعلى؛ NVDA يتسارع فوق الهدف." },
-      { label: "الحالة الهبوطية", prob: 20, desc: "تدهور كلي، مراجعات الأرباح، تجنب المخاطرة يفعّل التحوط." },
-    ],
-    aiExplain: {
-      question: "لماذا تم التحقق من T-01؟",
-      answer: "اجتازت استراتيجية T-01 التحقق لأن: (1) منطقة الطلب عند 172$ صمدت عبر ثلاث لمسات منفصلة مع انخفاض الحجم في كل اختبار — نمط تراكم هيكلي. (2) الدليل الكلي E-01 أكد أن الفيدرالي لن يخفض، مما يقلل مخاطر الذيل للأطروحة الطويلة. (3) نسبة المخاطرة/العائد عند الدخول 1:3.2 مع مستوى الإلغاء المحدد عند 168.50$. درجة التحقق 87 تعكس تقاطعات تقنية قوية وتحجيم مقبول ضمن سياسة المخاطر.",
-    },
+    boardLoading: "جارٍ تحميل الأدلة…",
+    boardEmpty: "لا أدلة مسجّلة",
+    boardEmptyHint: "تصل الأدلة عبر مساحة الأدلة؛ هذه اللوحة لا تعرض شيئاً من تلقاء نفسها.",
+    scenariosEmpty: "لا سيناريوهات بعد",
+    scenariosEmptyHint: "تُشتق السيناريوهات من الأطروحات المسجَّلة.",
+    notesEmpty: "لا ملاحظات بعد",
+    notesEmptyHint: "لا يُخزَّن شيء لهذه المحطة بعد — ما تكتبه هنا يبقى داخل هذا الحقل وحده.",
+    aiEmpty: "لا شرح بعد",
+    aiEmptyHint: "لا يوجد مسار في هذا النشر يقدّم الشروحات، لذا لا يُعرض شيء هنا.",
+    ladder: "السلّم",
   },
 };
 
@@ -87,11 +58,15 @@ const TS_META: Record<Thesis["status"], { en: string; ar: string; color: string 
 
 export default function ResearchPage({ lang }: { lang: Language }) {
   const [tab, setTab] = useState("board");
-  const d = DATA[lang];
+  const d = UI[lang];
   const rtl = isRtl(lang);
 
   const theses = useData(() => api.getTheses());
+  const evidence = useData(() => api.getEvidence());
   const thesisList: Thesis[] = theses.data ?? [];
+  const evidenceList: EvidenceRow[] = evidence.data ?? [];
+  const scenarioThesis = thesisList.find((t) => t.scenarios.length > 0);
+  const scenarios = scenarioThesis?.scenarios ?? [];
   const en = lang === "en";
 
   return (
@@ -114,72 +89,79 @@ export default function ResearchPage({ lang }: { lang: Language }) {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: "1rem" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
             <SectionLabel lang={lang}>{rtl ? "الأدلة المجمّعة" : "Collected Evidence"}</SectionLabel>
-            {d.evidence.map((ev) => (
-              <Card key={ev.id} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-                <div
-                  style={{
-                    width: 4,
-                    alignSelf: "stretch",
-                    background: ev.color,
-                    borderRadius: 2,
-                    flexShrink: 0,
-                  }}
-                />
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
-                    <span
-                      style={{
-                        fontSize: "0.62rem",
-                        fontFamily: "var(--font-mono)",
-                        color: ev.color,
-                        background: `${ev.color}16`,
-                        border: `1px solid ${ev.color}28`,
-                        padding: "2px 7px",
-                        borderRadius: 10,
-                      }}
-                    >
-                      {ev.tag}
-                    </span>
-                    <span style={{ fontSize: "0.65rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
-                      {ev.id}
-                    </span>
-                    <span
-                      style={{
-                        marginInlineStart: "auto",
-                        fontSize: "0.62rem",
-                        fontFamily: "var(--font-mono)",
-                        color: "var(--muted-foreground)",
-                      }}
-                    >
-                      {ev.date}
-                    </span>
+            {evidence.source === "loading" ? (
+              <Card><LoadingState label={d.boardLoading} lang={lang} /></Card>
+            ) : evidenceList.length === 0 ? (
+              <Card><EmptyState title={d.boardEmpty} hint={d.boardEmptyHint} lang={lang} /></Card>
+            ) : evidenceList.map((ev) => {
+              const color = LADDER_COLORS[ev.trust_ladder] ?? "var(--muted-foreground)";
+              return (
+                <Card key={ev.evidence_id} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                  <div
+                    style={{
+                      width: 4,
+                      alignSelf: "stretch",
+                      background: color,
+                      borderRadius: 2,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+                      <span
+                        style={{
+                          fontSize: "0.62rem",
+                          fontFamily: "var(--font-mono)",
+                          color,
+                          background: `${color}16`,
+                          border: `1px solid ${color}28`,
+                          padding: "2px 7px",
+                          borderRadius: 10,
+                        }}
+                      >
+                        {ev.source_kind}
+                      </span>
+                      <span style={{ fontSize: "0.65rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                        {ev.evidence_id}
+                      </span>
+                      <span
+                        style={{
+                          marginInlineStart: "auto",
+                          fontSize: "0.62rem",
+                          fontFamily: "var(--font-mono)",
+                          color: "var(--muted-foreground)",
+                        }}
+                      >
+                        {ev.created_at.slice(0, 10)}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: "0.875rem", fontFamily: ff(lang), fontWeight: 500, marginBottom: 3 }}>
+                      {ev.headline ?? ev.topic ?? "—"}
+                    </div>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                      <span style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color }}>
+                        ● {d.ladder} L{ev.trust_ladder}
+                      </span>
+                      {ev.markets.length > 0 && (
+                        <span style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                          {ev.markets.slice(0, 3).join(" · ")}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <div style={{ fontSize: "0.875rem", fontFamily: ff(lang), fontWeight: 500, marginBottom: 3 }}>
-                    {ev.title}
-                  </div>
-                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                    <span style={{ fontSize: "0.72rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
-                      {rtl ? "المصدر:" : "Source:"} {ev.source}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: "0.62rem",
-                        fontFamily: "var(--font-mono)",
-                        color: ev.weight === "High" || ev.weight === "مرتفع" ? "#22c55e" : "#f59e0b",
-                      }}
-                    >
-                      ● {ev.weight}
-                    </span>
-                  </div>
-                </div>
-              </Card>
-            ))}
+                </Card>
+              );
+            })}
           </div>
 
-          {/* Scenario sidebar */}
+          {/* Scenario sidebar — derived from the registered theses */}
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-            <SectionLabel lang={lang}>{rtl ? "السيناريوهات" : "Scenarios"}</SectionLabel>
-            {d.scenarios.map((s) => (
+            <SectionLabel lang={lang}>
+              {(rtl ? "السيناريوهات" : "Scenarios") + (scenarioThesis ? ` — ${scenarioThesis.symbol}` : "")}
+            </SectionLabel>
+            {scenarios.length === 0 ? (
+              <Card><EmptyState title={d.scenariosEmpty} hint={d.scenariosEmptyHint} lang={lang} /></Card>
+            ) : scenarios.map((s) => (
               <Card key={s.label} style={{ padding: "0.9rem" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <span style={{ fontSize: "0.8rem", fontFamily: fd(lang), fontWeight: 600 }}>{s.label}</span>
@@ -269,19 +251,9 @@ export default function ResearchPage({ lang }: { lang: Language }) {
 
       {tab === "notes" && (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          {d.notes.map((n, i) => (
-            <Card key={i} style={{ borderLeft: n.pinned ? "3px solid var(--primary)" : "3px solid transparent", borderRight: "none" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <span style={{ fontSize: "0.65rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>{n.date}</span>
-                {n.pinned && (
-                  <span style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: "var(--primary)", background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", padding: "2px 6px", borderRadius: 8 }}>
-                    {rtl ? "مثبّت" : "PINNED"}
-                  </span>
-                )}
-              </div>
-              <p style={{ fontSize: "0.875rem", fontFamily: ff(lang), lineHeight: 1.65, color: "var(--foreground)" }}>{n.text}</p>
-            </Card>
-          ))}
+          <Card>
+            <EmptyState title={d.notesEmpty} hint={d.notesEmptyHint} lang={lang} />
+          </Card>
           <Card style={{ background: "var(--muted)", cursor: "text" }}>
             <textarea
               placeholder={rtl ? "أضف ملاحظة..." : "Add a note…"}
@@ -305,14 +277,8 @@ export default function ResearchPage({ lang }: { lang: Language }) {
       {tab === "ai" && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
           <Card>
-            <SectionLabel lang={lang}>{rtl ? "السؤال" : "Question"}</SectionLabel>
-            <p style={{ fontSize: "1rem", fontFamily: fd(lang), fontWeight: 500, marginBottom: "1.25rem", lineHeight: 1.5 }}>
-              {d.aiExplain.question}
-            </p>
             <SectionLabel lang={lang}>{rtl ? "شرح النظام" : "System Explanation"}</SectionLabel>
-            <p style={{ fontSize: "0.875rem", fontFamily: ff(lang), lineHeight: 1.75, color: "var(--foreground)" }}>
-              {d.aiExplain.answer}
-            </p>
+            <EmptyState title={d.aiEmpty} hint={d.aiEmptyHint} lang={lang} />
           </Card>
           <Card style={{ background: "var(--muted)" }}>
             <SectionLabel lang={lang}>{rtl ? "اسأل عن استراتيجية أو قرار" : "Ask about a strategy or decision"}</SectionLabel>

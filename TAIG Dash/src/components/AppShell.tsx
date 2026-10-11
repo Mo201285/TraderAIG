@@ -4,14 +4,19 @@ import type { Language, User } from "../types";
 import Dashboard from "./Dashboard";
 import ChartPage from "./pages/ChartPage";
 import ResearchPage from "./pages/ResearchPage";
+import IntelligencePage from "./pages/IntelligencePage";
 import StrategyLabPage from "./pages/StrategyLabPage";
+import StrategyBuilderPage from "./pages/StrategyBuilderPage";
 import PaperWorkflowPage from "./pages/PaperWorkflowPage";
 import RiskCenterPage from "./pages/RiskCenterPage";
+import ExecutionCenterPage from "./pages/ExecutionCenterPage";
 import LearningPage from "./pages/LearningPage";
 import SubscriberPage from "./pages/SubscriberPage";
 import SystemHealthPage from "./pages/SystemHealthPage";
+import DeveloperHubPage from "./pages/DeveloperHubPage";
 import GovernancePage from "./pages/GovernancePage";
 import LiveOpsPage from "./pages/LiveOpsPage";
+import EconomyPage from "./pages/EconomyPage";
 
 interface Props {
   user: User;
@@ -20,34 +25,44 @@ interface Props {
   onLogout: () => void;
 }
 
-type Page = "dashboard" | "chart" | "research" | "strategy-lab" | "paper" | "risk" | "learning" | "subscriber" | "governance" | "ops" | "system";
+type Page = "dashboard" | "chart" | "research" | "intelligence" | "strategy-lab" | "builder" | "paper" | "risk" | "execution" | "learning" | "subscriber" | "governance" | "ops" | "system" | "developer" | "economy";
 
 const NAV_EN = [
   { id: "dashboard", label: "Command Center", icon: GridIcon },
   { id: "chart", label: "Chart", icon: ChartIcon },
   { id: "research", label: "Research", icon: SearchIcon },
+  { id: "intelligence", label: "Intelligence", icon: RadarIcon },
   { id: "strategy-lab", label: "Strategy Lab", icon: FlaskIcon },
+  { id: "builder", label: "Strategy Builder", icon: WandIcon },
   { id: "paper", label: "Paper Workflow", icon: FileIcon },
   { id: "risk", label: "Risk Center", icon: ShieldIcon },
-  { id: "learning", label: "Learning", icon: BookIcon },
+  { id: "execution", label: "Execution Center", icon: SendIcon },
+  { id: "learning", label: "Learning Center", icon: BookIcon },
   { id: "subscriber", label: "Subscriber", icon: StarIcon },
-  { id: "governance", label: "Change Governance", icon: LockIcon },
+  { id: "economy", label: "XTAIG Economy", icon: CoinIcon },
+  { id: "governance", label: "Governance Center", icon: LockIcon },
   { id: "ops", label: "Live Ops", icon: PulseIcon },
   { id: "system", label: "System Health", icon: ActivityIcon },
+  { id: "developer", label: "Developer Hub", icon: CodeIcon },
 ] as const;
 
 const NAV_AR = [
   { id: "dashboard", label: "مركز القيادة" },
   { id: "chart", label: "الشارت" },
   { id: "research", label: "البحث" },
+  { id: "intelligence", label: "الذكاء" },
   { id: "strategy-lab", label: "مختبر الاستراتيجيات" },
+  { id: "builder", label: "منشئ الاستراتيجيات" },
   { id: "paper", label: "سير عمل الورق" },
   { id: "risk", label: "مركز المخاطر" },
-  { id: "learning", label: "التعلم" },
+  { id: "execution", label: "مركز التنفيذ" },
+  { id: "learning", label: "مركز التعلم" },
   { id: "subscriber", label: "المشترك" },
-  { id: "governance", label: "حوكمة التغيير" },
+  { id: "economy", label: "اقتصاد XTAIG" },
+  { id: "governance", label: "مركز الحوكمة" },
   { id: "ops", label: "العمليات الحية" },
   { id: "system", label: "صحة النظام" },
+  { id: "developer", label: "بوابة المطوّر" },
 ] as const;
 
 function GridIcon() {
@@ -56,14 +71,23 @@ function GridIcon() {
 function SearchIcon() {
   return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.2"/><path d="M10 10L13.5 13.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>;
 }
+function RadarIcon() {
+  return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="7.5" r="6" stroke="currentColor" strokeWidth="1.2"/><circle cx="7.5" cy="7.5" r="3" stroke="currentColor" strokeWidth="1.2"/><circle cx="7.5" cy="7.5" r="1" fill="currentColor"/><path d="M7.5 7.5L12 3.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>;
+}
 function FlaskIcon() {
   return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M5 1H10M6 1V6L2 13H13L9 6V1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+}
+function WandIcon() {
+  return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M2 13L8 7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><path d="M9.5 2.5L10.5 4.5L12.5 5.5L10.5 6.5L9.5 8.5L8.5 6.5L6.5 5.5L8.5 4.5L9.5 2.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg>;
 }
 function FileIcon() {
   return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M3 2a1 1 0 011-1h6l3 3v9a1 1 0 01-1 1H4a1 1 0 01-1-1V2z" stroke="currentColor" strokeWidth="1.2"/><path d="M9 1v3h3" stroke="currentColor" strokeWidth="1.2"/><path d="M5 7h5M5 10h5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>;
 }
 function ShieldIcon() {
   return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 1L2 3.5V8C2 11 4.5 13.5 7.5 14C10.5 13.5 13 11 13 8V3.5L7.5 1Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg>;
+}
+function SendIcon() {
+  return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M13 2L1.5 7L5.5 9L7.5 13L13 2Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/><path d="M13 2L5.5 9" stroke="currentColor" strokeWidth="1.2"/></svg>;
 }
 function BookIcon() {
   return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M3 2a1 1 0 011-1h7a1 1 0 011 1v11l-4-2-4 2V2z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg>;
@@ -82,6 +106,12 @@ function LockIcon() {
 }
 function PulseIcon() {
   return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M1 7.5H4L6 3L9 12L11 6.5H14" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+}
+function CodeIcon() {
+  return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M5.5 4L2 7.5L5.5 11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/><path d="M9.5 4L13 7.5L9.5 11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+}
+function CoinIcon() {
+  return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="7.5" r="6" stroke="currentColor" strokeWidth="1.2"/><path d="M7.5 4.2V10.8M9.4 5.6C9.4 4.9 8.6 4.5 7.5 4.5C6.4 4.5 5.6 4.9 5.6 5.7C5.6 7.9 9.4 7 9.4 9.3C9.4 10.1 8.6 10.5 7.5 10.5C6.4 10.5 5.6 10.1 5.6 9.4" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/></svg>;
 }
 
 const PLAN_COLORS: Record<string, string> = {
@@ -371,14 +401,19 @@ export default function AppShell({ user, lang, onLangToggle, onLogout }: Props) 
           {page === "dashboard" && <Dashboard lang={lang} user={user} />}
           {page === "chart" && <ChartPage lang={lang} />}
           {page === "research" && <ResearchPage lang={lang} />}
+          {page === "intelligence" && <IntelligencePage lang={lang} />}
           {page === "strategy-lab" && <StrategyLabPage lang={lang} />}
+          {page === "builder" && <StrategyBuilderPage lang={lang} />}
           {page === "paper" && <PaperWorkflowPage lang={lang} />}
           {page === "risk" && <RiskCenterPage lang={lang} />}
+          {page === "execution" && <ExecutionCenterPage lang={lang} />}
           {page === "learning" && <LearningPage lang={lang} />}
           {page === "subscriber" && <SubscriberPage lang={lang} user={user} />}
+          {page === "economy" && <EconomyPage lang={lang} user={user} />}
           {page === "governance" && <GovernancePage lang={lang} />}
           {page === "ops" && <LiveOpsPage lang={lang} />}
           {page === "system" && <SystemHealthPage lang={lang} />}
+          {page === "developer" && <DeveloperHubPage lang={lang} />}
         </main>
       </div>
     </div>

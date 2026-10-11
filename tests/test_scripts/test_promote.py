@@ -12,7 +12,7 @@ import promote_to_live as promo
 
 def test_build_robocopy_args_includes_exclusions():
     args = promo.build_robocopy_args(
-        Path("D:\\One\\mt5-dev"), Path("D:\\One\\mt5-portable"),
+        Path("D:\\TraderAIG\\mt5-dev"), Path("D:\\TraderAIG\\mt5-portable"),
         ["Cache", "optimizer", "Custom"])
     assert "/XF" in args and "*.hcc" in args
     assert "/XD" in args
@@ -25,8 +25,8 @@ def test_build_robocopy_args_includes_exclusions():
 
 def test_parse_tasklist_variants():
     live, dev = promo.parse_tasklist(
-        '"pid1","D:\\One\\mt5-portable\\terminal64.exe","Console"'
-        '\r\n"pid2","D:\\One\\mt5-dev\\terminal64.exe","Console"')
+        '"pid1","D:\\TraderAIG\\mt5-portable\\terminal64.exe","Console"'
+        '\r\n"pid2","D:\\TraderAIG\\mt5-dev\\terminal64.exe","Console"')
     assert live == ["pid1"]
     assert dev is True
 
@@ -45,8 +45,8 @@ def test_terminal_state_maps_instances(monkeypatch):
     _captured = {}
 
     def fake_subprocess(args, **kw):
-        return type("R", (), {"stdout": '"111","D:\\One\\mt5-portable\\terminal64.exe"\r\n'
-                                       '"222","D:\\One\\mt5-dev\\terminal64.exe"'})
+        return type("R", (), {"stdout": '"111","D:\\TraderAIG\\mt5-portable\\terminal64.exe"\r\n'
+                                       '"222","D:\\TraderAIG\\mt5-dev\\terminal64.exe"'})
 
     monkeypatch.setattr(promo.subprocess, "run", fake_subprocess)
     st = promo.terminal_state()

@@ -47,6 +47,7 @@ from sqlalchemy import (
     Float,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -56,6 +57,10 @@ from .db import Base
 
 def _now_ts() -> float:
     return datetime.now(timezone.utc).timestamp()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class TradeOrderRecord(Base):
@@ -293,5 +298,63 @@ class TradeCycleRecord(Base):
         UniqueConstraint(
             "account_id", "strategy_id", "period_start",
             name="uq_trade_cycle_account_strategy_period",
+        ),
+    )
+
+
+class AccountStrategyBindingRecord(Base):
+    """Which approved research strategy may run on which account, under what rules.
+
+    A strategy is **not** owned by an account. `research/strategy_lab/data/registry.json`
+    is a research-plane asset: the same validated strategy may run on several
+    accounts under different policies, and a binding is deliberately not a copy of
+    the strategy -- it holds no parameters, no thresholds and no validation
+    numbers. Copying them per account would fork the strategy once per account and
+    make "which version is live where" unanswerable after the first divergence.
+
+    What *is* account-scoped is the permission and the risk context: this is where
+    "this account may run this strategy, with this risk override, in these
+    sessions, at this governance state" is recorded.
+
+    **`strategy_id` already carries its version.** The registry keys entries as
+    `btcusd:ict_liquidity_sweep_reversal:v7`, and `variant_hash` is the content
+    hash of that variant. A separate `strategy_version` column would be a second
+    spelling of a fact the key already states, and two spellings of a version
+    disagree the first time someone edits one of them. So the binding keys on
+    `(account_id, strategy_id, variant_hash)` and the live gate can compare it to
+    the registry's own `variant_hash` rather than to a guess.
+
+    **`grants_trade_permission` is not stored here, and that is deliberate.**
+    Whether a strategy may place an order is decided by the Risk Governor against
+    the promotion stage, the challenge window and the account's own policy. A
+    boolean cached in this row would be a second, staler answer to a question the
+    governor already answers fail-closed, and it would still read `True` after a
+    challenge expired. This row records *permission to be considered*; the
+    governor remains the only authority that says no.
+
+    `risk_override_json` is nullable and defaults to empty for the usual reason:
+    "no override" and "an override of zero" are different facts, and a binding
+    whose risk is the account default must not be indistinguishable from one that
+    was explicitly set to zero.
+    """
+
+    __tablename__ = "account_strategy_bindings"
+
+    binding_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    account_id: Mapped[str] = mapped_column(String(64), index=True)
+    strategy_id: Mapped[str] = mapped_column(String(128), index=True)
+    variant_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    governance_state: Mapped[str] = mapped_column(String(32), default="", index=True)
+    risk_override_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    allowed_sessions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bound_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bound_at: Mapped[float] = mapped_column(Float, default=_now_ts)
+    updated_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id", "strategy_id", "variant_hash",
+            name="uq_account_strategy_binding",
         ),
     )

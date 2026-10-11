@@ -93,7 +93,18 @@ class MT5Adapter:
         # Hard local gates (mirror of institutional defaults, never loosened).
         # Wired with the live registry-stage resolver so a quarantine that
         # lands mid-cycle vetoes locally too (G3 appendix B).
-        self._gate = RiskGovernor(stage_resolver=live_stage_resolver)
+        #
+        # `require_strategy_linkage=True` is the last stop before a real
+        # `order_send`, and it is what makes "only what was tested" true rather
+        # than aspirational. A candidate reaches `place_position` with
+        # `strategy_id=None` whenever the pipeline resolved no live-stage prior
+        # for its asset/regime/session -- and the strategy gate is *inert* in
+        # that case, not failing. So without this, an unlinked, un-validated
+        # candidate sails through the gate on the way to the broker. Every
+        # other check here can be satisfied by a good-looking signal; this one
+        # can only be satisfied by a strategy that actually earned its stage.
+        self._gate = RiskGovernor(stage_resolver=live_stage_resolver,
+                                  require_strategy_linkage=True)
 
     # ------------------------------------------------------------------
     # Connection

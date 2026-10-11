@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Language, UserMode } from "../../types";
-import { Btn, Card, SectionLabel, StateChip, ff, fd, isRtl } from "../ui/shared";
+import { Btn, Card, SectionLabel, StateChip, StatusChip, ff, fd, isRtl } from "../ui/shared";
 
 interface Props {
   lang: Language;
@@ -121,13 +121,13 @@ export default function OnboardingPage({ lang, user, onLaunch, onBack }: Props) 
             <SectionLabel lang={lang}>{en ? "PAPER vs LIVE BOUNDARY" : "حد الورق مقابل المباشر"}</SectionLabel>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: "1.25rem" }}>
               <Card style={{ borderColor: "rgba(34,197,94,0.3)" }}>
-                <StateChip label="PAPER" color="#22c55e" />
+                <StatusChip status="PAPER" lang={lang} />
                 <div style={{ marginTop: 8, fontSize: "0.8rem", color: "var(--muted-foreground)", lineHeight: 1.7, fontFamily: ff(lang) }}>
                   {en ? "Approved strategies move through a promotion queue into a paper executor. Same risk gates, same audit trail. No real capital." : "الاستراتيجيات المعتمدة تنتقل عبر قائمة ترقية إلى منفذ ورقي. نفس بوابات المخاطر ونفس سجل التدقيق. دون رأس مال حقيقي."}
                 </div>
               </Card>
               <Card style={{ borderColor: "rgba(71,85,105,0.3)" }}>
-                <StateChip label="LIVE" color="#64748b" />
+                <StatusChip status="LIVE" lang={lang} />
                 <div style={{ marginTop: 8, fontSize: "0.8rem", color: "var(--muted-foreground)", lineHeight: 1.7, fontFamily: ff(lang) }}>
                   {en ? "Live promotion is intentionally production-only. It requires a production-grade entitlement, a separate approval, and a human risk sign-off." : "الترقية المباشرة مقصودة لأن تكون للمرحلة الإنتاجية فقط. تتطلب صلاحية إنتاجية، موافقة منفصلة، وتوقيع بشري على المخاطر."}
                 </div>

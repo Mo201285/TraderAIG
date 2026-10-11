@@ -136,11 +136,15 @@ class RiskGovernor:
     _PROMOTION_FLOOR = "paper"
 
     def __init__(self, state_ref: Optional[CanonicalState] = None,
-                 stage_resolver=None) -> None:
+                 stage_resolver=None,
+                 require_strategy_linkage: bool = False) -> None:
         self._state = state_ref or state
         # stage_resolver(candidate) -> Optional[str] of the *current* registry
         # stage. When None, falls back to the stage recorded on the candidate.
         self._stage_resolver = stage_resolver
+        # Live-only. When True, a candidate with no strategy linkage is a
+        # VETO rather than an inactive gate -- see `_check_strategy_gate`.
+        self._require_strategy_linkage = bool(require_strategy_linkage)
         # The challenge verdict for the candidate most recently gated, with the
         # candidate_id it belongs to. Carries no verdict across candidates, so a
         # `compute_volume()` reached without a preceding `veto_reason()` reads
@@ -308,12 +312,35 @@ class RiskGovernor:
         """M8.3: gate live usage by the strategy's promotion stage.
 
         Only candidates that resolve a strategy prior (strategy_id set) are
-        affected. The *authoritative* stage comes from the injected registry
-        resolver when available (current truth), else from the stage recorded
-        at decision time. A strategy below the floor (or quarantined/unknown)
-        vetoes the candidate so un-validated research never reaches orders.
+        affected by default. The *authoritative* stage comes from the injected
+        registry resolver when available (current truth), else from the stage
+        recorded at decision time. A strategy below the floor (or
+        quarantined/unknown) vetoes the candidate so un-validated research never
+        reaches orders.
+
+        `require_strategy_linkage` closes the hole that default leaves open.
+        A candidate only carries a `strategy_id` when the pipeline resolved a
+        live-stage prior for it, and `TradingLoop._resolve_prior` returns None
+        for every asset/regime/session without one. So on a registry with no
+        `paper`/`production` entries, *every* candidate arrives unlinked, this
+        gate reports itself inactive, and un-tested generic candidates reach
+        `order_send` with the strategy gate never having run. On a challenge
+        account that is the difference between "trading what was tested" and
+        "trading whatever the loop happened to emit", so the gate in front of
+        real venue orders refuses an unlinked candidate instead of standing
+        aside. The paper desk keeps the permissive default: its whole purpose
+        is to observe un-linked candidates.
         """
         if getattr(candidate, "strategy_id", None) is None:
+            if self._require_strategy_linkage:
+                reasons.append(
+                    "candidate carries no strategy linkage; live orders require "
+                    "a promotion-cleared strategy, and this candidate resolved no "
+                    "live-stage prior")
+                return {"name": "strategy_gate", "passed": False, "active": True,
+                        "detail": {"strategy_id": None, "stage": None,
+                                   "floor": self._PROMOTION_FLOOR,
+                                   "reason": "linkage_required"}}
             return {"name": "strategy_gate", "passed": True,
                     "detail": {"active": False, "strategy_id": None}}
         stage = None

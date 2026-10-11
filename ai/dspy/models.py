@@ -2,7 +2,8 @@
 
 The DSPy layer is deliberately provider-agnostic. ``lm.py`` is the *adapter*: it
 resolves the active provider + model from env-driven settings so TrederAIG can
-run the same school programs against Llama 3.2 (Ollama local on ``E:\\MLL``),
+run the same school programs against Llama 3.2 (local Ollama on the repo's own
+``_llm`` copy),
 Qwen / Gemma / Mistral, or a cloud provider without rebuilding the programs.
 This module is the *observable half* of that contract:
 

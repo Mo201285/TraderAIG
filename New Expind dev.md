@@ -1087,7 +1087,7 @@ Event Store       Decision                 Audit
 
 
 وبخصوص
-D:\One\research\USER_STRATEGY_INTAKE_AND_DEPLOYMENT_SPEC.md
+D:\TraderAIG\research\USER_STRATEGY_INTAKE_AND_DEPLOYMENT_SPEC.md
 تكامل مع التالي
 بالضبط. في TrederAIG الأفضل ألا يكون المستخدم مضطرًا لتحويل فكرته إلى كود أو مصطلحات تقنية. يكون لديه **Strategy Intake → Strategy Compiler → Vetting → Backtest → Validation → Paper → Governance → Production**.
 
@@ -1904,7 +1904,7 @@ Drift Status
 
 
 مع اضافة بند في
-D:\One\ENGINEERING MAST.md
+D:\TraderAIG\ENGINEERING MAST.md
 
 
 

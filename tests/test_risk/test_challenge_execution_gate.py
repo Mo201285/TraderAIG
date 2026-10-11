@@ -424,6 +424,43 @@ def test_a_trade_far_over_the_room_is_refused_rather_than_shrunk_to_nothing(monk
     assert check["permission"] == "protect"
 
 
+def test_a_strategy_wanting_700_gets_resized_to_the_challenge_room(monkeypatch):
+    """§34.23's chain, end to end: $700 proposed → resized to ≤ $750 of room.
+
+    The spec's example is "Strategy Risk = $700 → Challenge allows only $420
+    remaining risk → Resize to ≤ $420 → Governance Approve/Reject". This is that
+    with different numbers so the arithmetic is checkable by eye:
+
+        remaining room = 7.5% of 100k = 750, safety buffer 10% of 750 = 75
+        safe room      = 675
+        proposed       = 0.7 lots x $1,000/lot = 700
+
+    700 overruns 675 but fits inside 750, so the rung is ALLOW_REDUCED_RISK, the
+    gate approves it, and the position comes back smaller. The assertion is on
+    the resulting RISK, not on the lot count: 675/1000 is the whole claim, and a
+    lot-count assertion would pass just as happily if the cap were computed from
+    the wrong dollar figure.
+    """
+    _register_policy(monkeypatch, max_drawdown=0.0075)
+    _pay()
+    _principal(monkeypatch)
+    governor, _ = _governor()
+    candidate = _candidate(size=0.7)
+
+    decision = governor.veto_reason(candidate)
+
+    assert _challenge_check(decision)["permission"] == "allow_reduced_risk"
+    assert decision.kind == RiskDecisionKind.APPROVED
+
+    volume = governor.compute_volume(candidate)
+
+    assert governor._risk_per_lot(candidate) == pytest.approx(1_000.0)
+    # 0.01 is the broker's volume step, so the capped 0.675 is sent as 0.67 --
+    # rounded down, which is the direction the limit requires.
+    assert volume == pytest.approx(0.67)
+    assert volume * 1_000.0 <= 675.0
+
+
 def test_an_unknown_headroom_produces_no_cap_at_all(monkeypatch):
     """None is not zero, and the reason is recorded rather than assumed.
 

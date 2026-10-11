@@ -15,13 +15,9 @@ import sys
 
 from typing import Optional
 
-ROOT_CANDIDATES = ("", "D:\\One")
 import pathlib
-for _p in ROOT_CANDIDATES:
-    _root = pathlib.Path(_p)
-    if (_root / "core" / "config.py").exists():
-        sys.path.insert(0, str(_root.resolve()))
-        break
+_root = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_root))
 
 from execution.cex.venues import OKXVenue  # noqa: E402
 
@@ -47,7 +43,7 @@ def main() -> int:
 
     if not bool(settings.cex.okx_passphrase):
         print("\n[probe] passphrase missing -> a signed OKX request cannot authenticate.")
-        print("[probe] wire is otherwise ready. Add CEX_OKX_PASSPHRASE to D:\\One\\.env, re-run.")
+        print("[probe] wire is otherwise ready. Add CEX_OKX_PASSPHRASE to <repo>/.env, re-run.")
         return 3
 
     print("\n[probe] calling GET /api/v5/account/balance (signed, read-only) …")

@@ -23,11 +23,45 @@ const STATUS_COLORS: Record<string, string> = {
   cancelled: "var(--muted-foreground)",
 };
 
+const GATE_LABEL: Record<string, [string, string]> = {
+  passed: ["Passed", "ناجح"],
+  failed: ["Failed", "فاشل"],
+  pending: ["Pending", "معلّق"],
+};
+
+const GATE_COLORS: Record<string, string> = {
+  passed: "#22c55e",
+  failed: "#ef4444",
+  pending: "#f59e0b",
+};
+
+const CATEGORY_COLORS: Record<string, string> = {
+  risk: "#ef4444",
+  promotion: "#22c55e",
+  execution: "#3b82f6",
+  auth: "#f59e0b",
+  policy: "#8b5cf6",
+};
+
+const STAGE_COLORS: Record<string, string> = {
+  research: "#3b82f6",
+  candidate: "#f59e0b",
+  validated: "#22c55e",
+  paper: "#3b82f6",
+  production: "#22c55e",
+  quarantined: "#ef4444",
+};
+
 const UI: Record<string, Record<string, string>> = {
   en: {
-    page: "Change Governance",
+    page: "Governance Center",
     subtitle:
-      "Audited change-request tracker. The registry is only ever mutated by an approved request, applied under the engine-safety guard.",
+      "Change requests, audit trail, validation gates and promotion history — every decision traceable through GOVERNANCE OS.",
+    chain: "SYSTEM AUTHORITY → GOVERNANCE OS → APPROVE / VETO",
+    tabRequests: "Change Requests",
+    tabAudit: "Audit",
+    tabGates: "Validation Gates",
+    tabPromotions: "Promotions",
     pending: "PENDING",
     all: "ALL",
     requested: "Requested by",
@@ -41,16 +75,34 @@ const UI: Record<string, Record<string, string>> = {
     refresh: "Refresh",
     loading: "Loading change requests…",
     empty: "No change requests",
-    emptyHint: "Submit one from the operator console: tradraig change submit",
+    emptyHint: "Submit one from the operator console: tradraig change submit · /governance/change-requests",
     sourceNote: "Decisions flow through the API so they are appended to the audit trail.",
     live: "live",
     mock: "mock",
     source: "SOURCE",
+    auditEmpty: "No audit entries yet",
+    auditEmptyHint: "/audit",
+    actor: "Actor",
+    detail: "Detail",
+    gatesEmpty: "No validation reports yet",
+    gatesEmptyHint: "/research/gates",
+    samples: "Samples",
+    expected: "Expected value",
+    failing: "Failing gates",
+    promosEmpty: "No ladder movement yet",
+    promosEmptyHint: "/research/promotions",
+    byStage: "BY STAGE",
+    noEvents: "no history events recorded for this strategy yet",
   },
   ar: {
-    page: "حوكمة التغيير",
+    page: "مركز الحوكمة",
     subtitle:
-      "سجلّ طلبات التغيير المُدقّق. لا تُمَسّ سجلّات الاستراتيجيات إلا بطلب صريح وتحت حارس أمان المحرك.",
+      "طلبات التغيير وسجل التدقيق وبوابات التحقق وسجل الترقيات — كل قرار مَتعقَّب عبر GOVERNANCE OS.",
+    chain: "سلطة النظام ← GOVERNANCE OS ← قرار / فيتو",
+    tabRequests: "طلبات التغيير",
+    tabAudit: "سجل التدقيق",
+    tabGates: "بوابات التحقق",
+    tabPromotions: "الترقيات",
     pending: "معلّق",
     all: "الكل",
     requested: "قدّمه",
@@ -64,25 +116,46 @@ const UI: Record<string, Record<string, string>> = {
     refresh: "تحديث",
     loading: "جارٍ تحميل طلبات التغيير…",
     empty: "لا توجد طلبات تغيير",
-    emptyHint: "أرسل واحدًا من الكونسول: tradraig change submit",
+    emptyHint: "أرسل واحدًا من الكونسول: tradraig change submit · /governance/change-requests",
     sourceNote: "القرارات تمر عبر الواجهة لتُسجَّل في سجل التدقيق.",
     live: "مباشر",
     mock: "محاكاة",
     source: "المصدر",
+    auditEmpty: "لا قيود تدقيق بعد",
+    auditEmptyHint: "/audit",
+    actor: "الفاعل",
+    detail: "التفصيل",
+    gatesEmpty: "لا تقارير تحقق بعد",
+    gatesEmptyHint: "/research/gates",
+    samples: "العينات",
+    expected: "القيمة المتوقعة",
+    failing: "البوابات الفاشلة",
+    promosEmpty: "لا حركة على السلّم بعد",
+    promosEmptyHint: "/research/promotions",
+    byStage: "حسب المرحلة",
+    noEvents: "لا أحداث سجل مسجّلة لهذه الاستراتيجية بعد",
   },
 };
+
+type Tab = "requests" | "audit" | "gates" | "promotions";
 
 export default function GovernancePage({ lang }: { lang: Language }) {
   const rtl = isRtl(lang);
   const t = UI[lang];
   const [version, setVersion] = useState(0);
-  const [tab, setTab] = useState<"pending" | "all">("pending");
+  const [tab, setTab] = useState<Tab>("requests");
+  const [sub, setSub] = useState<"pending" | "all">("pending");
   const [denyingId, setDenyingId] = useState<string | null>(null);
   const [denyReason, setDenyReason] = useState("");
-  const { data, source, error } = useData(() => api.getChangeRequests(), version);
+  const changes = useData(() => api.getChangeRequests(), version);
+  const audit = useData(() => api.getAudit(), version);
+  const gates = useData(() => api.getResearchGates(), version);
+  const promos = useData(() => api.getResearchPromotions(), version);
 
-  const all = (data ?? []) as ChangeRequest[];
-  const rows = tab === "pending" ? all.filter((c) => c.status === "pending") : all;
+  const all = (changes.data ?? []) as ChangeRequest[];
+  const rows = sub === "pending" ? all.filter((c) => c.status === "pending") : all;
+  const active =
+    tab === "audit" ? audit : tab === "gates" ? gates : tab === "promotions" ? promos : changes;
 
   const act = async (id: string, action: "approve" | "deny") => {
     if (action === "approve") {
@@ -94,6 +167,21 @@ export default function GovernancePage({ lang }: { lang: Language }) {
     setDenyReason("");
     setVersion((v) => v + 1);
   };
+
+  const loadingCard = (
+    <Card>
+      <div style={{ fontSize: "0.85rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
+        {t.loading}
+      </div>
+    </Card>
+  );
+
+  const TABS: Array<[Tab, string]> = [
+    ["requests", t.tabRequests],
+    ["audit", t.tabAudit],
+    ["gates", t.tabGates],
+    ["promotions", t.tabPromotions],
+  ];
 
   return (
     <div>
@@ -108,85 +196,215 @@ export default function GovernancePage({ lang }: { lang: Language }) {
         }
       />
 
+      <div
+        style={{
+          marginBottom: "1rem",
+          padding: "8px 12px",
+          background: "var(--muted)",
+          border: "1px solid var(--border)",
+          borderRadius: 6,
+          fontSize: "0.68rem",
+          fontFamily: "var(--font-mono)",
+          color: "var(--muted-foreground)",
+          letterSpacing: "0.05em",
+        }}
+      >
+        {t.chain}
+      </div>
+
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "1rem", flexWrap: "wrap" }}>
-        {(["pending", "all"] as const).map((k) => (
+        {TABS.map(([k, label]) => (
           <Btn key={k} variant={tab === k ? "primary" : "ghost"} onClick={() => setTab(k)}>
-            {k === "pending" ? t.pending : t.all}
+            {label}
           </Btn>
         ))}
+        {tab === "requests" &&
+          (["pending", "all"] as const).map((k) => (
+            <Btn key={k} variant={sub === k ? "primary" : "ghost"} onClick={() => setSub(k)}>
+              {k === "pending" ? t.pending : t.all}
+            </Btn>
+          ))}
         <span style={{ marginInlineStart: "auto", fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
-          {t.source}: {source === "live" ? t.live : t.mock}
-          {error ? ` · ${error}` : ""}
+          {t.source}: {active.source === "live" ? t.live : t.mock}
+          {active.error ? ` · ${active.error}` : ""}
         </span>
       </div>
 
-      {source === "loading" || !data ? (
-        <Card><div style={{ fontSize: "0.85rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>{t.loading}</div></Card>
-      ) : rows.length === 0 ? (
-        <EmptyState title={t.empty} hint={t.emptyHint} />
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          {rows.map((c) => {
-            const pending = c.status === "pending";
-            const color = STATUS_COLORS[c.status] ?? "var(--muted-foreground)";
-            return (
-              <Card key={c.id} style={{ borderColor: pending ? `${STATUS_COLORS.pending}55` : "var(--border)" }}>
+      {tab === "requests" ? (
+        changes.source === "loading" || !changes.data ? (
+          loadingCard
+        ) : rows.length === 0 ? (
+          <EmptyState title={t.empty} hint={t.emptyHint} />
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {rows.map((c) => {
+              const pending = c.status === "pending";
+              const color = STATUS_COLORS[c.status] ?? "var(--muted-foreground)";
+              return (
+                <Card key={c.id} style={{ borderColor: pending ? `${STATUS_COLORS.pending}55` : "var(--border)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <SectionLabel lang={lang}>{c.id}</SectionLabel>
+                    <StateChip label={KIND_LABEL[c.kind]?.[rtl ? 1 : 0] ?? c.kind} color="#3b82f6" />
+                    <StateChip label={STATUS_LABEL[c.status]?.[rtl ? 1 : 0] ?? c.status} color={color} />
+                    <span style={{ marginInlineStart: "auto", fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <span>{t.target}: <b style={{ color: "var(--foreground)" }}>{c.target}</b></span>
+                      <span>{t.requested}: {c.requestedBy}</span>
+                      <span>{c.createdAt}</span>
+                    </span>
+                  </div>
+
+                  <p style={{ fontSize: "0.78rem", color: "var(--foreground)", fontFamily: ff(lang), margin: "8px 0 0" }}>
+                    {c.reason}
+                  </p>
+
+                  {c.history.length > 0 && (
+                    <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
+                      <span style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", letterSpacing: "0.07em" }}>{t.history}</span>
+                      {c.history.map((h, i) => (
+                        <span key={i} style={{ fontSize: "0.7rem", fontFamily: "var(--font-mono)", color: i === c.history.length - 1 ? color : "var(--muted-foreground)" }}>
+                          › {h}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {pending && (
+                    <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <Btn variant="primary" onClick={() => act(c.id, "approve")}>{t.approve}</Btn>
+                      <Btn variant="danger" onClick={() => setDenyingId(denyingId === c.id ? null : c.id)}>{t.deny}</Btn>
+                      {denyingId === c.id && (
+                        <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <input
+                            value={denyReason}
+                            onChange={(e) => setDenyReason(e.target.value)}
+                            placeholder={t.denying}
+                            style={{
+                              background: "var(--muted)",
+                              border: "1px solid var(--border)",
+                              borderRadius: 5,
+                              padding: "5px 9px",
+                              color: "var(--foreground)",
+                              fontSize: "0.75rem",
+                              fontFamily: ff(lang),
+                              outline: "none",
+                              width: 220,
+                            }}
+                          />
+                          <Btn variant="danger" onClick={() => act(c.id, "deny")}>✓</Btn>
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </Card>
+              );
+            })}
+          </div>
+        )
+      ) : tab === "audit" ? (
+        audit.source === "loading" || !audit.data ? (
+          loadingCard
+        ) : audit.data.length === 0 ? (
+          <EmptyState title={t.auditEmpty} hint={t.auditEmptyHint} />
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {audit.data.map((entry) => (
+              <Card key={entry.id}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                  <SectionLabel lang={lang}>{c.id}</SectionLabel>
-                  <StateChip label={KIND_LABEL[c.kind]?.[rtl ? 1 : 0] ?? c.kind} color="#3b82f6" />
-                  <StateChip label={STATUS_LABEL[c.status]?.[rtl ? 1 : 0] ?? c.status} color={color} />
-                  <span style={{ marginInlineStart: "auto", fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    <span>{t.target}: <b style={{ color: "var(--foreground)" }}>{c.target}</b></span>
-                    <span>{t.requested}: {c.requestedBy}</span>
-                    <span>{c.createdAt}</span>
+                  <SectionLabel lang={lang}>{entry.id}</SectionLabel>
+                  <StateChip
+                    label={entry.category}
+                    color={CATEGORY_COLORS[entry.category] ?? "var(--muted-foreground)"}
+                  />
+                  <span style={{ marginInlineStart: "auto", fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                    {entry.at}
                   </span>
                 </div>
-
-                <p style={{ fontSize: "0.78rem", color: "var(--foreground)", fontFamily: ff(lang), margin: "8px 0 0" }}>
-                  {c.reason}
+                <p style={{ fontSize: "0.78rem", fontFamily: "var(--font-mono)", color: "var(--foreground)", margin: "8px 0 0" }}>
+                  {entry.action}
                 </p>
-
-                {c.history.length > 0 && (
-                  <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
-                    <span style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", letterSpacing: "0.07em" }}>{t.history}</span>
-                    {c.history.map((h, i) => (
-                      <span key={i} style={{ fontSize: "0.7rem", fontFamily: "var(--font-mono)", color: i === c.history.length - 1 ? color : "var(--muted-foreground)" }}>
-                        › {h}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {pending && (
-                  <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <Btn variant="primary" onClick={() => act(c.id, "approve")}>{t.approve}</Btn>
-                    <Btn variant="danger" onClick={() => setDenyingId(denyingId === c.id ? null : c.id)}>{t.deny}</Btn>
-                    {denyingId === c.id && (
-                      <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <input
-                          value={denyReason}
-                          onChange={(e) => setDenyReason(e.target.value)}
-                          placeholder={t.denying}
-                          style={{
-                            background: "var(--muted)",
-                            border: "1px solid var(--border)",
-                            borderRadius: 5,
-                            padding: "5px 9px",
-                            color: "var(--foreground)",
-                            fontSize: "0.75rem",
-                            fontFamily: ff(lang),
-                            outline: "none",
-                            width: 220,
-                          }}
-                        />
-                        <Btn variant="danger" onClick={() => act(c.id, "deny")}>✓</Btn>
-                      </span>
-                    )}
-                  </div>
-                )}
+                <div style={{ marginTop: 6, display: "flex", gap: 14, flexWrap: "wrap", fontSize: "0.72rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
+                  <span>{t.actor}: <b style={{ color: "var(--foreground)" }}>{entry.actor}</b></span>
+                  <span>{t.detail}: {entry.detail}</span>
+                </div>
               </Card>
-            );
-          })}
+            ))}
+          </div>
+        )
+      ) : tab === "gates" ? (
+        gates.source === "loading" || !gates.data ? (
+          loadingCard
+        ) : gates.data.length === 0 ? (
+          <EmptyState title={t.gatesEmpty} hint={t.gatesEmptyHint} />
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {gates.data.map((row) => {
+              const failing = Object.entries(row.gates)
+                .filter(([, ok]) => !ok)
+                .map(([name]) => name);
+              const verdict = row.passed === true ? "passed" : row.passed === false ? "failed" : "pending";
+              return (
+                <Card key={row.strategy_id}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <SectionLabel lang={lang}>{row.strategy_id}</SectionLabel>
+                    <StateChip
+                      label={row.stage ?? "—"}
+                      color={STAGE_COLORS[row.stage ?? ""] ?? "var(--muted-foreground)"}
+                    />
+                    <StateChip label={GATE_LABEL[verdict]?.[rtl ? 1 : 0] ?? verdict} color={GATE_COLORS[verdict]} />
+                    <span style={{ marginInlineStart: "auto", fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", display: "flex", gap: 12, flexWrap: "wrap" }}>
+                      <span>{t.samples}: <b style={{ color: "var(--foreground)" }}>{row.samples ?? "—"}</b></span>
+                      <span>{t.expected}: <b style={{ color: "var(--foreground)" }}>{row.expected_value ?? "—"}</b></span>
+                    </span>
+                  </div>
+                  {row.passed === false && failing.length > 0 && (
+                    <p style={{ fontSize: "0.74rem", color: "#ef4444", fontFamily: ff(lang), margin: "8px 0 0" }}>
+                      {t.failing}: {failing.join(", ")}
+                    </p>
+                  )}
+                </Card>
+              );
+            })}
+          </div>
+        )
+      ) : promos.source === "loading" || !promos.data ? (
+        loadingCard
+      ) : promos.data.timeline.length === 0 && Object.keys(promos.data.by_stage).length === 0 ? (
+        <EmptyState title={t.promosEmpty} hint={t.promosEmptyHint} />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          <Card>
+            <SectionLabel lang={lang}>{t.byStage}</SectionLabel>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+              {Object.entries(promos.data.by_stage).map(([stage, n]) => (
+                <StateChip
+                  key={stage}
+                  label={`${stage} · ${n}`}
+                  color={STAGE_COLORS[stage] ?? "var(--muted-foreground)"}
+                />
+              ))}
+            </div>
+          </Card>
+          {promos.data.timeline.map((e) => (
+            <Card key={e.strategy_id}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <SectionLabel lang={lang}>{e.strategy_id}</SectionLabel>
+                <StateChip label={e.stage} color={STAGE_COLORS[e.stage] ?? "var(--muted-foreground)"} />
+              </div>
+              <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 2 }}>
+                {e.events.length === 0 ? (
+                  <span style={{ fontSize: "0.72rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
+                    {t.noEvents}
+                  </span>
+                ) : (
+                  e.events.map((ev, i) => (
+                    <span key={i} style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: i === e.events.length - 1 ? "var(--foreground)" : "var(--muted-foreground)" }}>
+                      › {ev.kind}#{ev.value}
+                    </span>
+                  ))
+                )}
+              </div>
+            </Card>
+          ))}
         </div>
       )}
     </div>

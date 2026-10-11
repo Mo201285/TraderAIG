@@ -6,13 +6,16 @@
  */
 import type {
   AuditEntry,
+  ChallengeStatusView,
   ChangeRequest,
   CopyFollower,
+  ExecutionTruthView,
   FollowerEntry,
   LearningExperience,
   MarketRegime,
   ObservationRecord,
   OpsEvent,
+  PortfolioStateView,
   PromotionStage,
   RiskLimitsView,
   RiskStateView,
@@ -220,6 +223,189 @@ export function adaptRiskLimits(e: Record<string, any>): RiskLimitsView {
       desc: s(g.desc),
     })),
     window: { vetoes: Number(e.window?.vetoes ?? 0), failure_counts: failures },
+  };
+}
+
+// ─── portfolio state (from /portfolio/state — canonical position aggregate) ─
+
+export function adaptPortfolioState(e: Record<string, any>): PortfolioStateView {
+  const conc = e.concentration && typeof e.concentration === "object"
+    ? e.concentration : {};
+  const bySymbol = e.by_symbol && typeof e.by_symbol === "object"
+    ? e.by_symbol : {};
+  const byStrategy = e.by_strategy && typeof e.by_strategy === "object"
+    ? e.by_strategy : {};
+  return {
+    equity: Number(e.equity ?? 0),
+    gross_exposure: Number(e.gross_exposure ?? 0),
+    net_exposure: Number(e.net_exposure ?? 0),
+    long_exposure: Number(e.long_exposure ?? 0),
+    short_exposure: Number(e.short_exposure ?? 0),
+    open_positions: Number(e.open_positions ?? 0),
+    by_symbol: bySymbol,
+    by_strategy: byStrategy,
+    concentration: {
+      top_symbol: s(conc.top_symbol),
+      top_share: Number(conc.top_share ?? 0),
+    },
+    unrealized_pnl: Number(e.unrealized_pnl ?? 0),
+    realized_pnl: Number(e.realized_pnl ?? 0),
+  };
+}
+
+// ─── challenge status (from /challenge/status — 34.22 account verdict) ──────
+
+export function adaptChallengeStatus(e: Record<string, any>): ChallengeStatusView {
+  const headroom = e.headroom && typeof e.headroom === "object" ? e.headroom : undefined;
+  const decision = e.decision && typeof e.decision === "object" ? e.decision : undefined;
+  const state = e.state && typeof e.state === "object" ? e.state : undefined;
+  const bool = (v: unknown): boolean | undefined =>
+    v === undefined || v === null ? undefined : Boolean(v);
+  return {
+    ok: e.ok === undefined ? true : Boolean(e.ok),
+    observed: Boolean(e.observed),
+    account_id: s(e.account_id) || undefined,
+    managed: bool(e.managed),
+    applies: bool(e.applies),
+    program: s(e.program) || undefined,
+    window_open: bool(e.window_open),
+    can_open_new_position: bool(e.can_open_new_position),
+    refusal_reason: e.refusal_reason == null ? undefined : String(e.refusal_reason),
+    headroom: headroom
+      ? {
+          account_id: s(headroom.account_id) || undefined,
+          policy_known: bool(headroom.policy_known),
+          policy_key: s(headroom.policy_key) || undefined,
+          dimensions: headroom.dimensions && typeof headroom.dimensions === "object"
+            ? headroom.dimensions : undefined,
+        }
+      : undefined,
+    decision: decision
+      ? {
+          permission: s(decision.permission) || undefined,
+          checks: Array.isArray(decision.checks) ? decision.checks : undefined,
+        }
+      : undefined,
+    state: state
+      ? { state: s(state.state) || undefined, is_terminal: bool(state.is_terminal) }
+      : undefined,
+    commercial: e.commercial && typeof e.commercial === "object" ? e.commercial : undefined,
+  };
+}
+
+// ─── execution truth (from /execution/truth — the §7 Execution Truth Plane) ─
+
+export function adaptExecutionTruth(e: Record<string, any>): ExecutionTruthView {
+  const lifecycle = e.lifecycle && typeof e.lifecycle === "object" ? e.lifecycle : {};
+  const metrics = e.metrics && typeof e.metrics === "object" ? e.metrics : {};
+  const account = e.account && typeof e.account === "object" ? e.account : {};
+  const num = (v: unknown): number => Number(v ?? 0);
+  const maybe = (v: unknown): number | null => v == null ? null : Number(v);
+  const orders = Array.isArray(e.orders)
+    ? e.orders.map((o: Record<string, any>) => ({
+        order_id: s(o.order_id),
+        symbol: s(o.symbol),
+        order_type: s(o.order_type),
+        direction: s(o.direction),
+        volume: num(o.volume),
+        price: maybe(o.price),
+        sl: maybe(o.sl),
+        tp: maybe(o.tp),
+        status: s(o.status),
+        candidate_id: o.candidate_id == null ? undefined : String(o.candidate_id),
+        strategy_id: o.strategy_id == null ? undefined : String(o.strategy_id),
+        filled_price: maybe(o.filled_price),
+        slippage: num(o.slippage),
+        commission: num(o.commission),
+        account_id: o.account_id == null ? undefined : String(o.account_id),
+        venue: o.venue == null ? undefined : String(o.venue),
+        venue_order_ref: o.venue_order_ref == null ? undefined : String(o.venue_order_ref),
+        risk_decision_id: o.risk_decision_id == null ? undefined : String(o.risk_decision_id),
+        created_at: num(o.created_at),
+        updated_at: o.updated_at == null ? undefined : num(o.updated_at),
+      }))
+    : [];
+  const positions = Array.isArray(e.positions)
+    ? e.positions.map((p: Record<string, any>) => ({
+        position_id: s(p.position_id),
+        symbol: s(p.symbol),
+        direction: s(p.direction),
+        volume: num(p.volume),
+        entry_price: num(p.entry_price),
+        current_price: num(p.current_price),
+        status: s(p.status),
+        unrealized_pnl: num(p.unrealized_pnl),
+        realized_pnl: num(p.realized_pnl),
+        account_id: p.account_id == null ? undefined : String(p.account_id),
+        venue: p.venue == null ? undefined : String(p.venue),
+        venue_position_ref: p.venue_position_ref == null ? undefined : String(p.venue_position_ref),
+        strategy_id: p.strategy_id == null ? undefined : String(p.strategy_id),
+        open_time: p.open_time == null ? undefined : num(p.open_time),
+      }))
+    : [];
+  const learning = e.learning && typeof e.learning === "object"
+    ? {
+        track: s(e.learning.track),
+        count: num(e.learning.count),
+        win_rate: num(e.learning.win_rate),
+        wins: num(e.learning.wins),
+        losses: num(e.learning.losses),
+        net_pnl: num(e.learning.net_pnl),
+        avg_pnl: num(e.learning.avg_pnl),
+        avg_slippage: num(e.learning.avg_slippage),
+        avg_delay_ms: num(e.learning.avg_delay_ms),
+        avg_fees: num(e.learning.avg_fees),
+        error_counts: e.learning.error_counts && typeof e.learning.error_counts === "object"
+          ? e.learning.error_counts : {},
+        fill_count: num(e.learning.fill_count),
+        storage: s(e.learning.storage),
+      }
+    : null;
+  return {
+    generated_at: num(e.generated_at),
+    read_only: Boolean(e.read_only),
+    is_authorisation: Boolean(e.is_authorisation),
+    source: s(e.source),
+    account: {
+      login: num(account.login),
+      broker: s(account.broker),
+      balance: num(account.balance),
+      equity: num(account.equity),
+      margin: num(account.margin),
+      free_margin: num(account.free_margin),
+      leverage: num(account.leverage),
+      currency: s(account.currency),
+      server: s(account.server),
+      status: s(account.status),
+      last_update: num(account.last_update),
+    },
+    orders,
+    positions,
+    venues: Array.isArray(e.venues) ? e.venues.map((v: unknown) => String(v)) : [],
+    lifecycle: {
+      intents: num(lifecycle.intents),
+      pending: num(lifecycle.pending),
+      submitted: num(lifecycle.submitted),
+      filled: num(lifecycle.filled),
+      partial: num(lifecycle.partial),
+      rejected: num(lifecycle.rejected),
+      cancelled: num(lifecycle.cancelled),
+      expired: num(lifecycle.expired),
+      fill_ratio: num(lifecycle.fill_ratio),
+      rejections: num(lifecycle.rejections),
+      positions_open: num(lifecycle.positions_open),
+      positions_closed: maybe(lifecycle.positions_closed),
+      open_realized_pnl: num(lifecycle.open_realized_pnl),
+    },
+    metrics: {
+      avg_slippage: maybe(metrics.avg_slippage),
+      avg_latency_ms: maybe(metrics.avg_latency_ms),
+      fees: maybe(metrics.fees),
+      realized_pnl: maybe(metrics.realized_pnl),
+      unrealized_pnl: num(metrics.unrealized_pnl),
+      total_volume: num(metrics.total_volume),
+    },
+    learning,
   };
 }
 

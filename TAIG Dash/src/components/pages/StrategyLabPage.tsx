@@ -16,6 +16,7 @@ import {
   Tab,
   ScoreBar,
   EmptyState,
+  LoadingState,
   ff,
   fd,
   isRtl,
@@ -67,6 +68,100 @@ const GATES = [
   ["survivability", "Survival"],
 ];
 
+// --- AI Programs tab copy (UX-08, row 762) -----------------------------------
+
+const AI_UI: Record<Language, Record<string, string>> = {
+  en: {
+    aiTab: "AI Programs",
+    loading: "Loading the AI program registry…",
+    source: "SOURCE",
+    live: "live",
+    mock: "mock",
+    statusTitle: "Compiler status",
+    enabled: "Enabled",
+    disabled: "Disabled",
+    dspyVersion: "DSPy version",
+    installed: "DSPy installed",
+    configuredLm: "Configured model",
+    reason: "Reason",
+    gateEnv: "Gate",
+    governance: "Governance contract",
+    programs: "School programs",
+    modules: "Modules",
+    inputForm: "Input",
+    outputForm: "Output",
+    metricWeights: "Metric weights",
+    corpus: "Corpus",
+    observations: "obs",
+    statusEmpty: "Compiler status unanswered",
+    statusEmptyHint: "The status card reads /research/dspy/status.",
+    providersTitle: "Model providers",
+    reachable: "Reachable",
+    unreachable: "Unreachable",
+    keyPresent: "Key present",
+    modelsTitle: "Local models",
+    configuredTitle: "Configured",
+    adapterNote: "Swap contract",
+    modelsEmpty: "Model registry unanswered",
+    modelsEmptyHint: "The model card reads /research/dspy/models.",
+    registryTitle: "Program versions",
+    optimizer: "Optimizer",
+    validation: "Validation",
+    created: "Created",
+    registryEmpty: "No compiled versions",
+    registryEmptyHint: "The version ledger reads /research/dspy/registry.",
+  },
+  ar: {
+    aiTab: "برامج الذكاء الاصطناعي",
+    loading: "جارٍ تحميل سجل برامج الذكاء…",
+    source: "المصدر",
+    live: "مباشر",
+    mock: "محاكاة",
+    statusTitle: "حالة المُركِّب",
+    enabled: "مُفعَّل",
+    disabled: "معطَّل",
+    dspyVersion: "إصدار DSPy",
+    installed: "DSPy مثبَت",
+    configuredLm: "النموذج المُهيَّأ",
+    reason: "السبب",
+    gateEnv: "بوابة التفعيل",
+    governance: "عقد الحوكمة",
+    programs: "برامج المدارس",
+    modules: "الوحدات",
+    inputForm: "المدخل",
+    outputForm: "المخرج",
+    metricWeights: "أوزان المقاييس",
+    corpus: "المصادر",
+    observations: "ملاحظة",
+    statusEmpty: "لم يُجب حالة المُركِّب",
+    statusEmptyHint: "بطاقة الحالة تقرأ /research/dspy/status.",
+    providersTitle: "مزوّدو النماذج",
+    reachable: "متاح",
+    unreachable: "غير متاح",
+    keyPresent: "مفتاح موجود",
+    modelsTitle: "النماذج المحلية",
+    configuredTitle: "التهيئة",
+    adapterNote: "عقد التبديل",
+    modelsEmpty: "لم يُجب سجل النماذج",
+    modelsEmptyHint: "بطاقة النماذج تقرأ /research/dspy/models.",
+    registryTitle: "إصدارات البرامج",
+    optimizer: "المُحسِّن",
+    validation: "التحقق",
+    created: "أُنشئ",
+    registryEmpty: "لا إصدارات مُجمَّعة",
+    registryEmptyHint: "سجل الإصدارات يقرأ /research/dspy/registry.",
+  },
+};
+
+const VSTATUS_COLORS: Record<string, string> = {
+  research: "#64748b",
+  candidate: "#f59e0b",
+  validated: "#22c55e",
+  paper: "#3b82f6",
+  production: "#a78bfa",
+  quarantined: "#ef4444",
+};
+
 function famName(lang: Language, id: string): string {
   const [en, ar] = FAMILY_LABELS[id] ?? [id.replace(/_/g, " "), id.replace(/_/g, " ")];
   return lang === "ar" ? ar : en;
@@ -89,11 +184,24 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
   const [flash, setFlash] = useState("");
   const rtl = isRtl(lang);
   const en = lang === "en";
+  const t = AI_UI[lang];
+  const aiChip: React.CSSProperties = {
+    fontSize: "0.62rem",
+    fontFamily: ff(lang),
+    color: "var(--muted-foreground)",
+    background: "var(--muted)",
+    border: "1px solid var(--border)",
+    padding: "2px 7px",
+    borderRadius: 8,
+  };
 
   const strategies = useData(() => api.getStrategies(), refresh);
   const observations = useData(() => api.getObservations(), refresh);
   const validation = useData(() => api.getValidation(), refresh);
   const audit = useData(() => api.getAudit(), refresh);
+  const dspyStatus = useData(() => api.getDspyStatus(), refresh);
+  const dspyModels = useData(() => api.getDspyModels(), refresh);
+  const dspyRegistry = useData(() => api.getDspyRegistry(), refresh);
 
   const policyQ = useData(() => api.getDrawdownPolicy(), refresh);
   const [mode, setMode] = useState<DrawdownModeKind>("governed");
@@ -186,12 +294,14 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
         { id: "observations", label: "Observations" },
         { id: "promotions", label: "Promotion Queue" },
         { id: "audit", label: "Audit Trail" },
+        { id: "ai", label: t.aiTab },
       ]
     : [
         { id: "contracts", label: "عقود الاستراتيجيات" },
         { id: "observations", label: "الملاحظات" },
         { id: "promotions", label: "قائمة الترقية" },
         { id: "audit", label: "مسار التدقيق" },
+        { id: "ai", label: t.aiTab },
       ];
 
   return (
@@ -595,6 +705,150 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
             </tbody>
           </table>
         </Card>
+      )}
+
+      {tab === "ai" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.65rem" }}>
+          {dspyStatus.source === "loading" ? (
+            <Card><LoadingState label={t.loading} lang={lang} /></Card>
+          ) : !dspyStatus.data ? (
+            <Card><EmptyState title={t.statusEmpty} hint={t.statusEmptyHint} /></Card>
+          ) : (
+            <Card>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <SectionLabel lang={lang}>{t.statusTitle}</SectionLabel>
+                <span style={{ fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                  {t.source}: {dspyStatus.source === "live" ? t.live : t.mock}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8, marginBottom: 10 }}>
+                <StateChip
+                  label={dspyStatus.data.enabled ? t.enabled : t.disabled}
+                  color={dspyStatus.data.enabled ? "#22c55e" : "#f59e0b"}
+                />
+                <span style={aiChip}>{t.dspyVersion}: {dspyStatus.data.dspy_version ?? "—"}</span>
+                <span style={aiChip}>{t.installed}: {dspyStatus.data.dspy_installed ? "✓" : "—"}</span>
+                <span style={aiChip}>{t.configuredLm}: {dspyStatus.data.lm.provider} / {dspyStatus.data.lm.model}</span>
+                <span style={aiChip}>{t.gateEnv}: {dspyStatus.data.gate_env}</span>
+              </div>
+              {dspyStatus.data.reason && (
+                <div style={{ fontSize: "0.7rem", fontFamily: ff(lang), color: "#f59e0b", marginBottom: 6 }}>
+                  {t.reason}: {dspyStatus.data.reason}
+                </div>
+              )}
+              <div style={{ fontSize: "0.72rem", fontFamily: ff(lang), color: "var(--muted-foreground)", lineHeight: 1.55 }}>
+                {t.governance}: {dspyStatus.data.governance}
+              </div>
+
+              <SectionLabel lang={lang}>{t.programs} ({dspyStatus.data.programs.length})</SectionLabel>
+              {dspyStatus.data.programs.map((p) => (
+                <div key={p.program_id} style={{ background: "var(--muted)", borderRadius: 6, padding: "9px 11px", marginTop: 6 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 5 }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.72rem", color: "var(--foreground)" }}>{p.program_id}</span>
+                    <StateChip label={p.school} color="#3b82f6" />
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 4 }}>
+                    <span style={{ fontSize: "0.6rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>{t.modules}:</span>
+                    {p.modules.map((m) => (<span key={m} style={aiChip}>{m}</span>))}
+                  </div>
+                  <div style={{ fontSize: "0.68rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+                    {t.inputForm}: {p.input_form} → {t.outputForm}: {p.output_form}
+                  </div>
+                </div>
+              ))}
+              {!dspyStatus.data.programs.length && <div style={{ fontSize: "0.8rem" }}>—</div>}
+
+              <SectionLabel lang={lang}>{t.metricWeights}</SectionLabel>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                {Object.entries(dspyStatus.data.metric_weights).map(([k, v]) => (
+                  <span key={k} style={aiChip}>{k} · {v}</span>
+                ))}
+                {!Object.keys(dspyStatus.data.metric_weights).length && <span style={aiChip}>—</span>}
+              </div>
+
+              <SectionLabel lang={lang}>{t.corpus}</SectionLabel>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                {Object.entries(dspyStatus.data.sources).map(([sym, s]) => (
+                  <span key={sym} style={aiChip}>{sym} · {s.observations} {t.observations}</span>
+                ))}
+                {!Object.keys(dspyStatus.data.sources).length && <span style={aiChip}>—</span>}
+              </div>
+            </Card>
+          )}
+
+          {dspyModels.source === "loading" ? (
+            <Card><LoadingState label={t.loading} lang={lang} /></Card>
+          ) : !dspyModels.data ? (
+            <Card><EmptyState title={t.modelsEmpty} hint={t.modelsEmptyHint} /></Card>
+          ) : (
+            <Card>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <SectionLabel lang={lang}>{t.providersTitle}</SectionLabel>
+                <span style={{ fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                  {t.source}: {dspyModels.source === "live" ? t.live : t.mock}
+                </span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                {dspyModels.data.providers.map((pr) => (
+                  <div key={pr.provider} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: "0.7rem", fontFamily: ff(lang) }}>
+                    <span style={{ fontFamily: "var(--font-mono)", color: "var(--foreground)" }}>{pr.provider}</span>
+                    <span style={{ color: "var(--muted-foreground)" }}>{pr.kind}</span>
+                    <span style={aiChip}>{t.keyPresent}: {pr.key_present ? "✓" : "—"}</span>
+                    <span style={aiChip}>
+                      {pr.reachable === null ? "—" : pr.reachable ? t.reachable : t.unreachable} · {pr.model_count}
+                    </span>
+                  </div>
+                ))}
+                {!dspyModels.data.providers.length && <span style={{ fontSize: "0.8rem" }}>—</span>}
+              </div>
+              <SectionLabel lang={lang}>{t.configuredTitle}</SectionLabel>
+              <div style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", marginTop: 4 }}>
+                {dspyModels.data.configured.provider} / {dspyModels.data.configured.model ?? "—"} · {dspyModels.data.configured.auto_model ?? "—"}
+              </div>
+              <SectionLabel lang={lang}>{t.modelsTitle} ({dspyModels.data.models.length})</SectionLabel>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                {dspyModels.data.models.map((m) => (
+                  <span key={m.digest} style={aiChip}>{m.name} · {m.size_gb}GB</span>
+                ))}
+                {!dspyModels.data.models.length && <span style={{ fontSize: "0.8rem" }}>—</span>}
+              </div>
+              <div style={{ fontSize: "0.66rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginTop: 8 }}>
+                {t.adapterNote}: {dspyModels.data.adapter.note}
+              </div>
+              <div style={{ fontSize: "0.66rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", marginTop: 4 }}>
+                {dspyModels.data.local_reachable ? t.reachable : t.unreachable}
+              </div>
+            </Card>
+          )}
+
+          {dspyRegistry.source === "loading" ? (
+            <Card><LoadingState label={t.loading} lang={lang} /></Card>
+          ) : !dspyRegistry.data ? (
+            <Card><EmptyState title={t.registryEmpty} hint={t.registryEmptyHint} /></Card>
+          ) : (
+            <Card>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <SectionLabel lang={lang}>{t.registryTitle} ({dspyRegistry.data.count})</SectionLabel>
+                <span style={{ fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                  {t.source}: {dspyRegistry.source === "live" ? t.live : t.mock}
+                </span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                {dspyRegistry.data.versions.map((v) => (
+                  <div key={v.version} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: "0.7rem", fontFamily: ff(lang) }}>
+                    <span style={{ fontFamily: "var(--font-mono)", color: "var(--foreground)" }}>{v.version}</span>
+                    <StateChip label={v.status} color={VSTATUS_COLORS[v.status] ?? "#64748b"} />
+                    <span style={{ color: "var(--muted-foreground)" }}>{v.program}</span>
+                    <span style={aiChip}>{t.optimizer}: {v.optimizer}</span>
+                    <span style={aiChip}>{t.validation}: {v.validation}</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.64rem", color: "var(--muted-foreground)", marginInlineStart: "auto" }}>{t.created}: {v.created_at}</span>
+                  </div>
+                ))}
+                {!dspyRegistry.data.versions.length && <span style={{ fontSize: "0.8rem" }}>—</span>}
+              </div>
+            </Card>
+          )}
+        </div>
       )}
     </div>
   );

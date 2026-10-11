@@ -5,18 +5,47 @@ import type {
   AuditEntry,
   ChangeRequest,
   ChangeStatus,
+  ChallengeStatusView,
   ChartContextResponse,
   ChartStrategy,
   ChartTimeframes,
   CopyFollower,
+  DriftStatusView,
+  DspyModelsView,
+  DspyRegistryView,
+  DspyStatusView,
+  EvidenceRow,
+  ExecutionTruthView,
   ExerciseStatus,
+  HealthView,
+  IntakeEntry,
+  IntelligenceRouterView,
   LearningExperience,
+  LearningSplitView,
   LearningStatsView,
   MarketRegime,
+  MissionsSummaryView,
   ObservationRecord,
   OpsEvent,
+  OpportunityRow,
   PaperRequest,
+  PaymentProvidersView,
+  PaymentsStatusView,
+  PortfolioStateView,
+  ProductsView,
+  QualityStatusView,
   Recommendation,
+  RegimeSnapshot,
+  ResearchFactoryView,
+  ResearchGateRow,
+  ResearchMissionRow,
+  ResearchPackageRow,
+  ResearchPromotionsView,
+  ResearchQueueItem,
+  ResearchQueueSummary,
+  ResearchSourceRow,
+  ResearchSummaryView,
+  ReviewQueueView,
   RiskPolicy,
   RiskLimitsView,
   RiskStateView,
@@ -24,8 +53,14 @@ import type {
   StrategyContract,
   SubscriberPlan,
   SystemHealthReport,
+  SystemRoutesView,
+  RoadmapView,
+  TenancyReport,
   Thesis,
+  TrustSummary,
   ValidationReport,
+  VerificationView,
+  WalletView,
 } from "../types";
 import {
   mockAudit,
@@ -49,9 +84,12 @@ import {
   adaptAudit,
   adaptChangeRequest,
   adaptCopyFollower,
+  adaptExecutionTruth,
   adaptExperience,
   adaptObservation,
   adaptOpsEvent,
+  adaptChallengeStatus,
+  adaptPortfolioState,
   adaptRegime,
   adaptRiskLimits,
   adaptRiskState,
@@ -93,7 +131,18 @@ async function authorizedFetch(path: string, token?: string): Promise<Response> 
 }
 
 export async function postJson<T>(path: string, body: unknown): Promise<Envelope<T>> {
-  if (!health.live) return { ok: true, data: {} as T, source: "mock" };
+  if (!health.live) {
+    // A mutation that never left the browser is not a success. This branch used
+    // to return ok:true, which told the operator a governed promote/quarantine
+    // had been applied while the backend was unreachable and nothing had been
+    // sent at all -- the one outcome a control-plane surface must never report.
+    return {
+      ok: false,
+      data: {} as T,
+      source: "mock",
+      error: `backend not reachable; ${path} was not sent`,
+    };
+  }
   try {
     const res = await fetch(`${baseUrl}${path}`, {
       method: "POST",
@@ -111,7 +160,7 @@ export async function postJson<T>(path: string, body: unknown): Promise<Envelope
 const cache: Record<string, boolean> = {};
 
 export const health = {
-  live: false,
+  live: true,
   async check(): Promise<Envelope<{ status: string }>> {
     if (!this.live) return { ok: true, data: { status: "mock" }, source: "mock" };
     try {
@@ -279,6 +328,72 @@ export const api = {
       return { ok: true, data: mockRiskVetoes, source: "mock", error: String(e) };
     }
   },
+  async getPortfolioState(): Promise<Envelope<PortfolioStateView>> {
+    const empty: PortfolioStateView = {
+      equity: 0, gross_exposure: 0, net_exposure: 0, long_exposure: 0,
+      short_exposure: 0, open_positions: 0, by_symbol: {}, by_strategy: {},
+      concentration: { top_symbol: "", top_share: 0 }, unrealized_pnl: 0,
+      realized_pnl: 0,
+    };
+    if (!health.live) return { ok: true, data: empty, source: "mock" };
+    try {
+      const res = await authorizedFetch("/portfolio/state");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as Record<string, any>;
+      return { ok: true, data: adaptPortfolioState(raw), source: "live" };
+    } catch (e) {
+      return { ok: true, data: empty, source: "mock", error: String(e) };
+    }
+  },
+  async getChallengeStatus(): Promise<Envelope<ChallengeStatusView>> {
+    const empty: ChallengeStatusView = { ok: true, observed: false };
+    if (!health.live) return { ok: true, data: empty, source: "mock" };
+    try {
+      const res = await authorizedFetch("/challenge/status");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as Record<string, any>;
+      return { ok: true, data: adaptChallengeStatus(raw), source: "live" };
+    } catch (e) {
+      return { ok: true, data: empty, source: "mock", error: String(e) };
+    }
+  },
+  async getExecutionTruth(): Promise<Envelope<ExecutionTruthView>> {
+    const num = (v: unknown): number => Number(v ?? 0);
+    const maybe = (v: unknown): number | null => v == null ? null : Number(v);
+    const empty: ExecutionTruthView = {
+      generated_at: 0,
+      read_only: true,
+      is_authorisation: false,
+      source: "mock",
+      account: {
+        login: 0, broker: "", balance: 0, equity: 0, margin: 0,
+        free_margin: 0, leverage: 0, currency: "USD", server: "",
+        status: "active", last_update: 0,
+      },
+      orders: [],
+      positions: [],
+      venues: [],
+      lifecycle: {
+        intents: 0, pending: 0, submitted: 0, filled: 0, partial: 0,
+        rejected: 0, cancelled: 0, expired: 0, fill_ratio: 0, rejections: 0,
+        positions_open: 0, positions_closed: null, open_realized_pnl: 0,
+      },
+      metrics: {
+        avg_slippage: null, avg_latency_ms: null, fees: null,
+        realized_pnl: null, unrealized_pnl: num(0), total_volume: num(0),
+      },
+      learning: null,
+    };
+    if (!health.live) return { ok: true, data: empty, source: "mock" };
+    try {
+      const res = await authorizedFetch("/execution/truth");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as Record<string, any>;
+      return { ok: true, data: adaptExecutionTruth(raw), source: "live" };
+    } catch (e) {
+      return { ok: true, data: empty, source: "mock", error: String(e) };
+    }
+  },
   async getExercise(): Promise<Envelope<ExerciseStatus>> {
     if (!health.live) {
       return { ok: true, data: { running: false, last_run: null, duration_s: 0, error: null }, source: "mock" };
@@ -381,6 +496,17 @@ export const api = {
       return { ok: false, data: [], source: "mock", error: String(e) };
     }
   },
+  async getHealth(): Promise<Envelope<HealthView>> {
+    const empty: HealthView = { status: "unknown", version: "" };
+    if (!health.live) return { ok: false, data: empty, source: "mock" };
+    try {
+      const res = await authorizedFetch("/health");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as HealthView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: empty, source: "mock", error: String(e) };
+    }
+  },
   async getSystemHealth(): Promise<Envelope<SystemHealthReport>> {
     if (!health.live) return { ok: false, data: mockSystemHealth, source: "mock" };
     try {
@@ -389,6 +515,88 @@ export const api = {
       return { ok: true, data: (await res.json()) as SystemHealthReport, source: "live" };
     } catch (e) {
       return { ok: false, data: mockSystemHealth, source: "mock", error: String(e) };
+    }
+  },
+  // -- Developer Hub (row 756): catalogue generated by the registered API ----
+  async getSystemRoutes(): Promise<Envelope<SystemRoutesView>> {
+    const empty: SystemRoutesView = {
+      ok: false,
+      generated_at: "",
+      title: "",
+      api_version: "",
+      counts: { operations: 0, paths: 0, methods: {} },
+      tags: [],
+      routes: [],
+    };
+    if (!health.live) return { ok: false, data: empty, source: "mock" };
+    try {
+      const res = await authorizedFetch("/system/routes");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as SystemRoutesView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: empty, source: "mock", error: String(e) };
+    }
+  },
+  // -- Developer Home (row 764): the measured gate run (verify_all) -----------
+  async getVerification(): Promise<Envelope<VerificationView>> {
+    const empty: VerificationView = {
+      ok: false,
+      present: false,
+      generated_at: null,
+      source: "",
+      gates: {},
+      summary: { gates_total: 0, passed: 0, failed: 0 },
+    };
+    if (!health.live) return { ok: false, data: empty, source: "mock" };
+    try {
+      const res = await authorizedFetch("/system/verification");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as VerificationView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: empty, source: "mock", error: String(e) };
+    }
+  },
+  // -- Roadmap Explorer (row 766): live from PROJECT_MAP.md -------------------
+  async getRoadmap(): Promise<Envelope<RoadmapView>> {
+    const empty: RoadmapView = {
+      present: false,
+      source: "",
+      generated_at: null,
+      counts: {
+        phases: 0,
+        milestones_total: 0,
+        milestones_done: 0,
+        milestones_open: 0,
+        decision_rows: 0,
+        open_work: 0,
+        completed_work: 0,
+      },
+      phases: [],
+      decision_log: [],
+      open_work: [],
+    };
+    if (!health.live) return { ok: false, data: empty, source: "mock" };
+    try {
+      const res = await authorizedFetch("/roadmap/status");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as RoadmapView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: empty, source: "mock", error: String(e) };
+    }
+  },
+  // -- UX-14 Research Factory (row 768): one live read over the pipeline -----
+  async getResearchFactory(): Promise<Envelope<ResearchFactoryView | null>> {
+    if (!health.live) return { ok: false, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/factory");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return {
+        ok: true,
+        data: (await res.json()) as ResearchFactoryView,
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
     }
   },
   // -- Change Governance (audited change requests) ---------------------------
@@ -464,6 +672,347 @@ export const api = {
       return { ok: false, data: mockCopyFollower, source: "mock", error: String(e) };
     }
   },
+  // -- Research / Market Intelligence (rows 746-750) -------------------------
+  async getResearchSources(): Promise<Envelope<ResearchSourceRow[]>> {
+    if (!health.live) return { ok: true, data: [], source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/sources");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { sources?: Record<string, any>[] };
+      return { ok: true, data: (raw.sources ?? []) as ResearchSourceRow[], source: "live" };
+    } catch (e) {
+      return { ok: false, data: [], source: "mock", error: String(e) };
+    }
+  },
+  async getResearchQueue(status?: string): Promise<Envelope<ResearchQueueItem[]>> {
+    if (!health.live) return { ok: true, data: [], source: "mock" };
+    try {
+      const q = status ? `?status=${encodeURIComponent(status)}` : "";
+      const res = await authorizedFetch(`/research/queue${q}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { items?: Record<string, any>[] };
+      return { ok: true, data: (raw.items ?? []) as ResearchQueueItem[], source: "live" };
+    } catch (e) {
+      return { ok: false, data: [], source: "mock", error: String(e) };
+    }
+  },
+  async getResearchQueueSummary(): Promise<Envelope<ResearchQueueSummary | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/queue/summary");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { queue?: ResearchQueueSummary };
+      return { ok: true, data: raw.queue ?? null, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getEvidence(sourceKind?: string, minTrust?: number): Promise<Envelope<EvidenceRow[]>> {
+    if (!health.live) return { ok: true, data: [], source: "mock" };
+    try {
+      const params = new URLSearchParams();
+      if (sourceKind) params.set("source_kind", sourceKind);
+      if (minTrust !== undefined) params.set("min_trust", String(minTrust));
+      const qs = params.toString();
+      const res = await authorizedFetch(`/evidence${qs ? `?${qs}` : ""}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { evidence?: Record<string, any>[] };
+      return { ok: true, data: (raw.evidence ?? []) as EvidenceRow[], source: "live" };
+    } catch (e) {
+      return { ok: false, data: [], source: "mock", error: String(e) };
+    }
+  },
+  async getResearchTrust(): Promise<Envelope<TrustSummary | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/trust");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { trust?: TrustSummary };
+      return { ok: true, data: raw.trust ?? null, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getResearchPackages(): Promise<Envelope<ResearchPackageRow[]>> {
+    if (!health.live) return { ok: true, data: [], source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/packages");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { packages?: Record<string, any>[] };
+      return { ok: true, data: (raw.packages ?? []) as ResearchPackageRow[], source: "live" };
+    } catch (e) {
+      return { ok: false, data: [], source: "mock", error: String(e) };
+    }
+  },
+  // -- User home band (row 755, UX-03): "Your Investment Intelligence" -------
+  async getRegimeSnapshot(): Promise<Envelope<RegimeSnapshot[]>> {
+    if (!health.live) return { ok: true, data: [], source: "mock" };
+    try {
+      const res = await authorizedFetch("/regime/state");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as Record<string, any>[];
+      return {
+        ok: true,
+        data: raw.map((d) => ({
+          symbol: String(d.symbol ?? ""),
+          bars: Number(d.bars ?? 0),
+          trades: Number(d.trades ?? 0),
+          regime: String(d.regime ?? "unknown"),
+        })),
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: [], source: "mock", error: String(e) };
+    }
+  },
+  async getOpportunities(): Promise<Envelope<OpportunityRow[]>> {
+    if (!health.live) return { ok: true, data: [], source: "mock" };
+    try {
+      const res = await authorizedFetch("/opportunities");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as Record<string, any>[];
+      return { ok: true, data: raw as OpportunityRow[], source: "live" };
+    } catch (e) {
+      return { ok: false, data: [], source: "mock", error: String(e) };
+    }
+  },
+  async getResearchSummary(): Promise<Envelope<ResearchSummaryView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/summary");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as Record<string, any>;
+      return {
+        ok: true,
+        data: {
+          registered: Number(raw.registered ?? 0),
+          validated: Number(raw.validated ?? 0),
+          by_stage: (raw.by_stage ?? {}) as Record<string, number>,
+          bottlenecks: (raw.bottlenecks ?? []) as { gate: string; fails: number; evaluated: number }[],
+        },
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  // -- UX-04 Command Center (row 758): operational attention reads -----------
+  async getResearchGates(): Promise<Envelope<ResearchGateRow[]>> {
+    if (!health.live) return { ok: false, data: [], source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/gates");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as ResearchGateRow[], source: "live" };
+    } catch (e) {
+      return { ok: false, data: [], source: "mock", error: String(e) };
+    }
+  },
+  async getResearchPromotions(): Promise<Envelope<ResearchPromotionsView | null>> {
+    if (!health.live) return { ok: false, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/promotions");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as ResearchPromotionsView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getMonitoringDrift(): Promise<Envelope<DriftStatusView | null>> {
+    if (!health.live) return { ok: false, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/monitoring/drift");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as DriftStatusView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getLearningSplit(): Promise<Envelope<LearningSplitView | null>> {
+    if (!health.live) return { ok: false, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/learning/split");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as LearningSplitView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getMonitoringQuality(): Promise<Envelope<QualityStatusView | null>> {
+    if (!health.live) return { ok: false, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/monitoring/quality");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as QualityStatusView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getMonitoringReview(): Promise<Envelope<ReviewQueueView | null>> {
+    if (!health.live) return { ok: false, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/monitoring/review");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as ReviewQueueView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  // -- UX-06 Research Experience (row 760): missions + the intelligence router --
+  async getResearchMissions(): Promise<Envelope<ResearchMissionRow[]>> {
+    if (!health.live) return { ok: true, data: [], source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/missions");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { missions?: Record<string, any>[] };
+      return { ok: true, data: (raw.missions ?? []) as ResearchMissionRow[], source: "live" };
+    } catch (e) {
+      return { ok: false, data: [], source: "mock", error: String(e) };
+    }
+  },
+  async getResearchMissionsSummary(): Promise<Envelope<MissionsSummaryView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/missions/summary");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { missions?: MissionsSummaryView };
+      return { ok: true, data: raw.missions ?? null, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getResearchIntelligence(): Promise<Envelope<IntelligenceRouterView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/intelligence");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { router?: IntelligenceRouterView };
+      return { ok: true, data: raw.router ?? null, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  // -- UX-07 Strategy Builder (row 761): the user intake path ----------------
+  async getIntakeBoard(): Promise<Envelope<IntakeEntry[]>> {
+    if (!health.live) return { ok: true, data: [], source: "mock" };
+    try {
+      const res = await authorizedFetch("/strategies/intake");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { entries?: Record<string, any>[] };
+      return { ok: true, data: (raw.entries ?? []) as IntakeEntry[], source: "live" };
+    } catch (e) {
+      return { ok: false, data: [], source: "mock", error: String(e) };
+    }
+  },
+  async proposeIntake(body: {
+    description: string;
+    asset?: string;
+    family?: string;
+  }): Promise<Envelope<{ entry: IntakeEntry }>> {
+    return postJson("/strategies/intake", body);
+  },
+  // -- UX-08 Strategy Lab AI segment (row 762): DSPy + model registry --------
+  async getDspyStatus(): Promise<Envelope<DspyStatusView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/dspy/status");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return {
+        ok: true,
+        data: (await res.json()) as DspyStatusView,
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getDspyModels(): Promise<Envelope<DspyModelsView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/dspy/models");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return {
+        ok: true,
+        data: (await res.json()) as DspyModelsView,
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getDspyRegistry(): Promise<Envelope<DspyRegistryView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/dspy/registry");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return {
+        ok: true,
+        data: (await res.json()) as DspyRegistryView,
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  // -- UX-09 XTAIG Economy (row 763): payments / service access --------------
+  async getPaymentsStatus(): Promise<Envelope<PaymentsStatusView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/payments/status");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return {
+        ok: true,
+        data: (await res.json()) as PaymentsStatusView,
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getPaymentProviders(): Promise<Envelope<PaymentProvidersView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/payments/providers");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return {
+        ok: true,
+        data: (await res.json()) as PaymentProvidersView,
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getWallet(userId: string): Promise<Envelope<WalletView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch(
+        `/payments/wallet/${encodeURIComponent(userId)}`,
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return {
+        ok: true,
+        data: (await res.json()) as WalletView,
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getProducts(userId?: string): Promise<Envelope<ProductsView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const query = userId ? `?user_id=${encodeURIComponent(userId)}` : "";
+      const res = await authorizedFetch(`/payments/products${query}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return {
+        ok: true,
+        data: (await res.json()) as ProductsView,
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
 };
 
 async function resolve<T>(key: string, mock: T, livePath: string): Promise<Envelope<T>> {
@@ -475,4 +1024,10 @@ async function resolve<T>(key: string, mock: T, livePath: string): Promise<Envel
   } catch (e) {
     return { ok: false, data: mock, source: "mock", error: String(e) };
   }
+}
+
+
+export function setLiveMode(v: boolean) {
+  health.live = v;
+  (health as any).live = v;
 }

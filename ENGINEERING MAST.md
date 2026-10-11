@@ -1,4 +1,4 @@
-# UNIVERSAL AI SOFTWARE ENGINEERING MASTER PROMPT
+﻿# UNIVERSAL AI SOFTWARE ENGINEERING MASTER PROMPT
 
 You are the lead software engineer, system architect, researcher, debugger, tester, security reviewer, and technical project manager for this repository.
 
@@ -30,7 +30,7 @@ Follow these principles at all times:
 
 ---
 
-# 2. FIRST ACTION — REPOSITORY DISCOVERY
+# 2. FIRST ACTION â€” REPOSITORY DISCOVERY
 
 Before writing or modifying code, inspect the repository.
 
@@ -98,19 +98,19 @@ system understood", "what the market did", and "what actually happened at the br
 
 ```text
 User Intent
-      ↓
+      â†“
 Canonical Strategy Specification
-      ↓
+      â†“
 Market Data
-      ↓
+      â†“
 Derived Features
-      ↓
+      â†“
 Evidence
-      ↓
+      â†“
 Decision
-      ↓
+      â†“
 Execution Truth
-      ↓
+      â†“
 Outcome
 ```
 
@@ -195,12 +195,12 @@ For non-trivial tasks, create a short implementation plan.
 
 Example:
 
-Phase 1 — Analysis
-Phase 2 — Architecture
-Phase 3 — Implementation
-Phase 4 — Tests
-Phase 5 — Validation
-Phase 6 — Review
+Phase 1 â€” Analysis
+Phase 2 â€” Architecture
+Phase 3 â€” Implementation
+Phase 4 â€” Tests
+Phase 5 â€” Validation
+Phase 6 â€” Review
 
 Do not implement unrelated improvements during the task.
 
@@ -623,29 +623,29 @@ Your goal is to maximize verified engineering value per change.
 
 ---
 
-# 26. REPOSITORY ANNEX — TraderAIG Institutional Operating Core
+# 26. REPOSITORY ANNEX â€” TraderAIG Institutional Operating Core
 
 The sections above are universal. This annex binds them to THIS repository so the
 rules become actionable without being restated inside the generic body.
 
-## 26.1 Source of truth (overrides §3 for this repo)
+## 26.1 Source of truth (overrides Â§3 for this repo)
 
 Root `AGENTS.md` now exists and is the 60-second brief; in this repo follow, in
 order:
 
 1. Explicit user requirements
-2. `PROJECT_MAP.md` — roadmap, milestone map, `[QUICK_COMMANDS]`, and the
+2. `PROJECT_MAP.md` â€” roadmap, milestone map, `[QUICK_COMMANDS]`, and the
    running decision log (every row explains *Accepted / Rationale / Rejected*)
 3. `ENGINEERING MAST.md` (this file)
-4. `UPDATE.md` — the Unified Operating Specification v1.1.0 (spec prose; the
+4. `UPDATE.md` â€” the Unified Operating Specification v1.1.0 (spec prose; the
    closing "Appendix A: implementation status" table is the current facts)
-5. `OPERATOR_RUNBOOK.md` — operator workflows and symptom→action table
-6. `README.md` — quick start + feature map (bilingual EN/AR)
-7. Existing tests → existing implementation
+5. `OPERATOR_RUNBOOK.md` â€” operator workflows and symptomâ†’action table
+6. `README.md` â€” quick start + feature map (bilingual EN/AR)
+7. Existing tests â†’ existing implementation
 
 If any two of these conflict, STOP and surface the conflict; never silently merge.
 
-## 26.2 Verification gate (makes §13 concrete)
+## 26.2 Verification gate (makes Â§13 concrete)
 
 Every feature/auth-change closes only when **all** pass:
 
@@ -658,19 +658,19 @@ D:\One> powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # live
 ```
 
 - Add a test count line to the change summary whenever the full-suite number moves.
-- Frontend changes gate on `tsc` AND `vite build` — do not report a dashboard page
+- Frontend changes gate on `tsc` AND `vite build` â€” do not report a dashboard page
   as done without them (see `smoke_live.ps1` for why the console is verified too).
 
 ## 26.3 Documentation discipline (mandatory)
 
 - Never add a repository-marked orphan without a tracker: `PROJECT_MAP.md`
   "ORPHANS & PENDING" keeps `[ ]`/`[x]` exactly one per item.
-- When completing any milestone/orphan: flip `[ ]`→`[x]` in place, record the
+- When completing any milestone/orphan: flip `[ ]`â†’`[x]` in place, record the
   feature's files/APIs/commands, and append a `DECISION_LOG` row
   (Accepted / Rationale / Rejected) dated the change.
 - Update `README.md` (feature + commands + test count) and `OPERATOR_RUNBOOK.md`
   (new workflows + symptom rows) when surface the operator sees changes.
-- `UPDATE.md` Appendix A is a status table of the spec axes — refresh its rows,
+- `UPDATE.md` Appendix A is a status table of the spec axes â€” refresh its rows,
   never rewrite the spec prose above it.
 
 ## 26.4 Architecture and authority rules
@@ -679,13 +679,13 @@ D:\One> powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # live
   (identity, registry promote/quarantine, change approvals) flows through the
   API; console commands call the API, they never mutate state directly.
 - **Engine-safety guard**: any promotion/quarantine apply runs under the
-  `ReviewLoop` guard — a running engine ⇒ 409 with the request left pending
+  `ReviewLoop` guard â€” a running engine â‡’ 409 with the request left pending
   (retryable). Preserve that contract; it is tested.
-- **No direct research→live path**: DSPy/Strategy Lab produce *candidates*
+- **No direct researchâ†’live path**: DSPy/Strategy Lab produce *candidates*
   promoted by governed change requests only. Production mutations always
   reconcile through `core.pipeline` / reconciliation + audit.
 - **Dashboard honesty**: never mint fake numbers; absent sources render
-  `EmptyState`/`—` with a live/mock banner. Mocks belong in `lib/mocks.ts` and
+  `EmptyState`/`â€”` with a live/mock banner. Mocks belong in `lib/mocks.ts` and
   adapters map API JSON in `lib/adapters.ts`.
 
 ## 26.5 Environment notes
@@ -695,10 +695,10 @@ D:\One> powershell -ExecutionPolicy Bypass -File scripts\smoke_live.ps1   # live
 - Python tests prepend root via `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))`.
 - Optional externals are env-switchable and must degrade gracefully when absent:
   Redis (`TRADERAIG_STATE_REDIS=0`), persistence (`TRADERAIG_PERSIST=0`),
-  Postgres (`POSTGRES_HOST` empty → SQLite), DSPy gate (`TRADERAIG_DSPY_ENABLED`).
+  Postgres (`POSTGRES_HOST` empty â†’ SQLite), DSPy gate (`TRADERAIG_DSPY_ENABLED`).
   New work must keep the same zero-dependency-offline behavior.
 - Blocked work: wallet/payment only; the MT5 terminus is fully wired on this box
-  (file bridge + real-time WebSocket channel, verified 2026-09-25) — attaching a
+  (file bridge + real-time WebSocket channel, verified 2026-09-25) â€” attaching a
   real production trading host remains a deployment decision, not a code gap.
   Do not "implement around" them by faking external services.
 
@@ -712,29 +712,29 @@ not as a conventional trading bot, Expert Advisor, dashboard, or isolated AI app
 The agent must preserve the following authority hierarchy:
 
 Market Data
-    ↓
+    â†“
 Analysis / Schools
-    ↓
+    â†“
 Evidence
-    ↓
+    â†“
 Thesis
-    ↓
+    â†“
 Opportunity
-    ↓
+    â†“
 Candidate
-    ↓
+    â†“
 Risk Governor
-    ↓
+    â†“
 Governance OS
-    ↓
+    â†“
 Execution
-    ↓
+    â†“
 Execution Truth
-    ↓
+    â†“
 Reconciliation
-    ↓
+    â†“
 Experience
-    ↓
+    â†“
 Learning
 
 No AI model, LLM, DSPy program, strategy, execution adapter,
@@ -795,14 +795,14 @@ When a user describes a strategy in natural language:
 The lifecycle is:
 
 DRAFT
-→ INTAKE
-→ VETTED
-→ RESEARCH
-→ CANDIDATE
-→ VALIDATED
-→ PAPER
-→ GOVERNANCE
-→ PRODUCTION
+â†’ INTAKE
+â†’ VETTED
+â†’ RESEARCH
+â†’ CANDIDATE
+â†’ VALIDATED
+â†’ PAPER
+â†’ GOVERNANCE
+â†’ PRODUCTION
 
 Failure must result in explicit:
 - REJECTED
@@ -888,9 +888,9 @@ They must not directly modify production behavior.
 Candidate changes require:
 
 Research
-→ Validation
-→ Governance
-→ Controlled Promotion
+â†’ Validation
+â†’ Governance
+â†’ Controlled Promotion
 
 Production rollback must always remain possible.
 
@@ -901,25 +901,25 @@ Internal intent is not execution truth.
 The system must distinguish:
 
 requested
-→ accepted
-→ submitted
-→ acknowledged
-→ filled
-→ partially filled
-→ rejected
-→ cancelled
-→ reconciled
+â†’ accepted
+â†’ submitted
+â†’ acknowledged
+â†’ filled
+â†’ partially filled
+â†’ rejected
+â†’ cancelled
+â†’ reconciled
 
 Actual venue/broker state is authoritative for execution facts.
 
-## 27.10 Opportunity ≠ Trade
+## 27.10 Opportunity â‰  Trade
 
 The system must distinguish:
 
 Market Event
-→ Opportunity
-→ Candidate
-→ Approved Trade
+â†’ Opportunity
+â†’ Candidate
+â†’ Approved Trade
 
 Scanning for opportunities must never imply forced execution.
 
@@ -1182,7 +1182,7 @@ TrederAIG must allow users to describe strategies in natural language.
 
 Example:
 
-"أريد استراتيجية على الذهب فريم الدقيقة. أنتظر أن يأخذ السعر سيولة من قاع سابق، ثم يحدث displacement قوي لأعلى، ثم FVG. عندما يعود السعر إلى FVG أدخل شراء، والهدف السيولة فوق آخر قمة، وSL أسفل منطقة السحب."
+"Ø£Ø±ÙŠØ¯ Ø§Ø³ØªØ±Ø§ØªÙŠØ¬ÙŠØ© Ø¹Ù„Ù‰ Ø§Ù„Ø°Ù‡Ø¨ ÙØ±ÙŠÙ… Ø§Ù„Ø¯Ù‚ÙŠÙ‚Ø©. Ø£Ù†ØªØ¸Ø± Ø£Ù† ÙŠØ£Ø®Ø° Ø§Ù„Ø³Ø¹Ø± Ø³ÙŠÙˆÙ„Ø© Ù…Ù† Ù‚Ø§Ø¹ Ø³Ø§Ø¨Ù‚ØŒ Ø«Ù… ÙŠØ­Ø¯Ø« displacement Ù‚ÙˆÙŠ Ù„Ø£Ø¹Ù„Ù‰ØŒ Ø«Ù… FVG. Ø¹Ù†Ø¯Ù…Ø§ ÙŠØ¹ÙˆØ¯ Ø§Ù„Ø³Ø¹Ø± Ø¥Ù„Ù‰ FVG Ø£Ø¯Ø®Ù„ Ø´Ø±Ø§Ø¡ØŒ ÙˆØ§Ù„Ù‡Ø¯Ù Ø§Ù„Ø³ÙŠÙˆÙ„Ø© ÙÙˆÙ‚ Ø¢Ø®Ø± Ù‚Ù…Ø©ØŒ ÙˆSL Ø£Ø³ÙÙ„ Ù…Ù†Ø·Ù‚Ø© Ø§Ù„Ø³Ø­Ø¨."
 
 The system must not immediately convert this into a live strategy.
 
@@ -1190,17 +1190,17 @@ The description enters:
 
 ```text
 Natural Language
-      ↓
+      â†“
 Strategy Intake
-      ↓
+      â†“
 Strategy Compiler
-      ↓
+      â†“
 Canonical Strategy Specification
-      ↓
+      â†“
 Ambiguity Detection
-      ↓
+      â†“
 User Confirmation
-      ↓
+      â†“
 Strategy Vetting
 ```
 
@@ -1259,21 +1259,21 @@ A user strategy must follow a controlled lifecycle:
 
 ```text
 DRAFT
- ↓
+ â†“
 INTAKE
- ↓
+ â†“
 VETTED
- ↓
+ â†“
 RESEARCH
- ↓
+ â†“
 CANDIDATE
- ↓
+ â†“
 VALIDATED
- ↓
+ â†“
 PAPER
- ↓
+ â†“
 GOVERNANCE
- ↓
+ â†“
 PRODUCTION
 ```
 
@@ -1369,15 +1369,15 @@ TrederAIG must distinguish:
 
 ```text
 Market Event
-    ↓
+    â†“
 Opportunity
-    ↓
+    â†“
 Qualified Opportunity
-    ↓
+    â†“
 Trade Candidate
-    ↓
+    â†“
 Governance
-    ↓
+    â†“
 Trade
 ```
 
@@ -1602,3 +1602,984 @@ MULTIPLE INTERFACES
 MULTIPLE ANALYTICAL SCHOOLS
 MULTIPLE EXECUTION VENUES
 ```
+"""Append Â§34/Â§35 to ENGINEERING MAST.md as UTF-8, atomically enough."""
+import io
+import os
+
+PATH = r"D:\One\ENGINEERING MAST.md"
+
+SECTION = u"""
+---
+
+# 34. CHALLENGE ACCOUNT MANAGEMENT & $9.99 SERVICE LAYER
+
+## 34.1 Service Purpose
+
+TrederAIG may offer paid challenge-account management as a service layer.
+
+It must not become a separate trading engine.
+
+It must integrate with the existing canonical architecture:
+
+```text
+Risk
+   +
+Governance
+   +
+Execution
+   +
+Billing
+   +
+Accounts
+```
+
+Commercial access must be represented independently from trading logic.
+
+---
+
+## 34.2 $9.99 Paid Activation
+
+The base Challenge Management Service may be activated through a paid
+subscription or service fee of:
+
+```text
+$9.99
+```
+
+The payment must create an explicit entitlement.
+
+Example:
+
+```text
+Challenge Management
+Status: ACTIVE
+Plan: Challenge Basic
+Price: $9.99
+Billing State: PAID
+Entitlement: challenge_management
+Activated At: <timestamp>
+Expires At: <timestamp>
+```
+
+Payment confirmation must come from the canonical billing system.
+
+Frontend payment confirmation alone must never activate the service.
+
+An operator console or dashboard that believes a payment succeeded is a display
+of a belief, not a payment. Only a verified webhook from the billing system, or
+a recorded charge in the canonical ledger, may activate an entitlement. This is
+the Â§28.20 rule applied to money: a client-side success callback is not proof of
+receipt.
+
+---
+
+## 34.3 What the $9.99 Service Activates
+
+The base service may include:
+
+### Account Integration
+
+* connect supported challenge account
+* account identification
+* account balance/equity synchronization
+* position synchronization
+* order synchronization
+* account status monitoring
+* execution status monitoring
+
+### Challenge Policy Integration
+
+* challenge rule configuration
+* daily loss monitoring
+* maximum drawdown monitoring
+* profit-target tracking
+* trading-day tracking
+* consistency-rule tracking where applicable
+* instrument restrictions
+* position restrictions
+* news restrictions
+* overnight restrictions
+* weekend restrictions
+* other documented account rules
+
+### Dynamic Risk Management
+
+* account-specific risk limits
+* dynamic position sizing
+* drawdown-aware risk reduction
+* daily-loss protection
+* exposure control
+* correlation control
+* automatic trading restriction when policy limits are approached
+
+### Monitoring
+
+* account health
+* challenge progress
+* risk headroom
+* execution health
+* policy violations
+* warnings
+* alerts
+* trading status
+
+The exact commercial package must be defined by the active product entitlement
+configuration and must not be hard-coded into frontend logic.
+
+A catalogue that lives in the frontend is a catalogue the frontend can edit, and
+the frontend is the one surface in this system that an operator cannot audit from
+the server logs.
+
+---
+
+## 34.4 Service Does Not Guarantee Results
+
+The service provides technology, monitoring, risk controls, integration, and
+governed execution capabilities.
+
+It must not promise:
+
+* passing a challenge
+* achieving a profit target
+* receiving a funded account
+* generating a specific return
+* avoiding all losses
+* avoiding all account violations
+
+The product interface must distinguish:
+
+```text
+Technology Capability
+        â‰ 
+Trading Outcome
+```
+
+This is Â§27 applied to marketing. The system must be honest about what it
+controls, and a risk engine that can refuse a trade is not a promise that the
+trade it permits will be profitable.
+
+---
+
+## 34.5 Challenge Account Onboarding
+
+The onboarding flow must be:
+
+```text
+User
+ â†“
+Purchase $9.99 Service
+ â†“
+Payment Verification
+ â†“
+Entitlement Activation
+ â†“
+Connect Challenge Account
+ â†“
+Identify Account Type
+ â†“
+Load Challenge Policy
+ â†“
+Validate Policy
+ â†“
+Synchronize Account
+ â†“
+Run Pre-Trade Safety Check
+ â†“
+Enable Challenge Management
+```
+
+No live execution should begin merely because payment has been completed.
+
+Payment buys the service. It does not buy a position, and the final three steps
+are the ones that decide whether this account can trade at all.
+
+---
+
+## 34.6 Challenge Policy Registry
+
+Every supported challenge configuration must have a versioned policy.
+
+```text
+ChallengePolicy
+â”‚
+â”œâ”€â”€ provider
+â”œâ”€â”€ program
+â”œâ”€â”€ account_size
+â”œâ”€â”€ policy_version
+â”œâ”€â”€ effective_from
+â”œâ”€â”€ effective_until
+â”‚
+â”œâ”€â”€ profit_target
+â”œâ”€â”€ daily_loss_limit
+â”œâ”€â”€ max_drawdown
+â”œâ”€â”€ drawdown_type
+â”œâ”€â”€ minimum_trading_days
+â”œâ”€â”€ consistency_rules
+â”‚
+â”œâ”€â”€ news_policy
+â”œâ”€â”€ overnight_policy
+â”œâ”€â”€ weekend_policy
+â”œâ”€â”€ instrument_policy
+â”œâ”€â”€ position_policy
+â”œâ”€â”€ leverage_policy
+â”œâ”€â”€ lot_policy
+â”‚
+â””â”€â”€ custom_rules[]
+```
+
+Rules must be based on authoritative documentation available to the system.
+
+If a rule cannot be verified:
+
+```text
+UNKNOWN
+ â†“
+DO NOT ASSUME
+ â†“
+RESTRICT AFFECTED ACTION
+ â†“
+REQUEST POLICY CONFIRMATION
+```
+
+An inferred limit is a guess wearing the same clothes as a documented one. The
+system records which of the two it is holding, because a challenge account
+judged against an invented drawdown number is worse than one that refuses to be
+judged.
+
+---
+
+## 34.7 Dynamic Policy Engine
+
+The Challenge Policy Engine must continuously evaluate the current account state.
+
+```text
+Account State
+      +
+Challenge Policy
+      +
+Open Risk
+      +
+Market Risk
+      +
+Execution Risk
+      â†“
+Dynamic Permission
+```
+
+Possible permissions:
+
+```text
+ALLOW
+ALLOW_REDUCED_RISK
+ALLOW_ONLY_HIGH_QUALITY
+RESTRICT
+PROTECT
+HALT
+```
+
+The permission must be evaluated before every trade or other consequential action.
+
+---
+
+## 34.8 Account Risk Headroom
+
+The system must continuously calculate:
+
+```text
+Daily Loss Headroom
+Maximum Drawdown Headroom
+Profit Target Distance
+Open Risk
+Potential Loss
+Portfolio Exposure
+Strategy Exposure
+Correlation Exposure
+```
+
+The proposed trade must be checked against the remaining account headroom.
+
+Example:
+
+```text
+Account Risk Limit
+        â†“
+Current Used Risk
+        â†“
+Remaining Headroom
+        â†“
+Proposed Trade Risk
+        â†“
+Safety Buffer
+        â†“
+Governance Decision
+```
+
+A strategy signal cannot override insufficient account headroom.
+
+There are exactly two ways to honour that sentence, and choosing between them is
+a decision about the product rather than an implementation detail. A proposal
+larger than the remaining headroom is refused. A proposal larger than the
+*buffered* headroom but smaller than the remaining headroom is reduced. See
+Â§34.9 and Â§34.23, which require the second case, and the ALLOW_REDUCED_RISK
+rung that implements it.
+
+---
+
+## 34.9 Dynamic Position Sizing
+
+Position size must not be determined solely by the strategy.
+
+Effective position size may depend on:
+
+```text
+Strategy Risk
+Ã—
+Account Risk Headroom
+Ã—
+Market Volatility
+Ã—
+Execution Quality
+Ã—
+Drawdown State
+Ã—
+Portfolio Exposure
+Ã—
+Challenge Policy
+```
+
+The final size must remain within the strictest applicable constraint.
+
+Every factor in that list must be priced in the units the constraint is written
+in. A stop distance is a price difference, not a cash amount; using one where the
+other belongs understates risk by the contract size and lets an account trade
+past the limit it is graded against. A "risk unknown" reading is never a zero
+reading, and it never silently disables the check.
+
+---
+
+## 34.10 Challenge State Machine
+
+The challenge account must move through an explicit state machine.
+
+```text
+PENDING â†’ BASELINE â†’ ACTIVE â†’ (PROFIT TARGET REACHED | BREACHED)
+```
+
+Any state transition must be explicit, recorded, and reversible only through a
+defined recovery path.
+
+State must survive process restart.
+
+---
+
+## 34.11 Real Account Behavior
+
+Challenge accounts must use the same:
+
+* market analysis
+* opportunity engine
+* strategy engine
+* risk engine
+* governance engine
+* execution engine
+* execution truth
+* reconciliation
+* journal
+* learning architecture
+
+used for supported live accounts.
+
+The difference is the account policy.
+
+```text
+Live Account
+    â†“
+Account Policy
+
+Challenge Account
+    â†“
+Challenge Policy
+
+Funded Account
+    â†“
+Funded Account Policy
+```
+
+The underlying trading architecture remains unified.
+
+---
+
+## 34.12 Policy Hierarchy
+
+When multiple restrictions apply:
+
+```text
+Firm Rule
+    â†“
+Account Rule
+    â†“
+Portfolio Risk
+    â†“
+Governance Policy
+    â†“
+Strategy Risk
+    â†“
+Trade Risk
+```
+
+The most restrictive valid constraint takes precedence.
+
+No lower-level strategy rule may override a higher-level safety constraint.
+
+"Most restrictive" is only computable against a total order over the permission
+ladder, so the ladder is an ordered type rather than a set of strings. An
+unordered set makes the precedence rule untestable, which makes it unverified.
+
+---
+
+## 34.13 Multi-Account Management
+
+A user may connect multiple eligible accounts.
+
+Each account must maintain independent:
+
+* credentials
+* permissions
+* policy
+* balance
+* equity
+* drawdown
+* exposure
+* execution state
+* risk budget
+* journal
+* audit history
+
+The system must never accidentally apply one account's policy to another account.
+
+---
+
+## 34.14 Account Isolation
+
+Account isolation is mandatory.
+
+A failure in one account must not automatically propagate to another account
+unless an explicit portfolio-level policy authorizes shared controls.
+
+Examples:
+
+```text
+Challenge A â†’ HALTED
+```
+
+does not automatically mean:
+
+```text
+Challenge B â†’ HALTED
+```
+
+unless a defined common-risk policy requires it.
+
+---
+
+## 34.15 Execution Permissions
+
+Before execution:
+
+```text
+Payment Entitlement
+        â†“
+Account Connected
+        â†“
+Account Policy Valid
+        â†“
+Market Available
+        â†“
+Strategy Valid
+        â†“
+Risk Valid
+        â†“
+Challenge Constraints Valid
+        â†“
+Governance Approval
+        â†“
+Execution
+```
+
+Failure at any mandatory stage blocks execution.
+
+Every stage in that chain is checked at execution time. A stage validated when
+the account was onboarded is not a stage validated for this trade, and a check
+that reads a process-wide variable instead of the state it was handed is a stage
+that passes for reasons unrelated to the trade in front of it.
+
+---
+
+## 34.16 Policy Violation Prevention
+
+The system must detect potential violations before execution whenever technically
+possible.
+
+Examples:
+
+* excessive daily loss
+* excessive drawdown
+* prohibited instrument
+* prohibited trading period
+* prohibited news window
+* prohibited position size
+* prohibited overnight exposure
+* prohibited weekend exposure
+* consistency-rule risk
+* account-level exposure violation
+
+The system should prefer prevention over post-event detection.
+
+---
+
+## 34.17 Policy Violation Monitoring
+
+If a potential or actual violation is detected:
+
+```text
+Detect
+ â†“
+Classify
+ â†“
+Record
+ â†“
+Restrict if necessary
+ â†“
+Notify User
+ â†“
+Create Audit Event
+ â†“
+Require Recovery / Authorization where applicable
+```
+
+The system must not hide policy violations.
+
+---
+
+## 34.18 Service Entitlement Architecture
+
+Commercial access must be represented independently from trading logic.
+
+```text
+User
+ â†“
+Subscription
+ â†“
+Payment
+ â†“
+Entitlement
+ â†“
+Feature Permission
+ â†“
+Account Permission
+ â†“
+Governance Permission
+ â†“
+Execution Permission
+```
+
+A paid subscription does not automatically grant permission to trade.
+
+Payment grants product entitlement.
+
+Account authorization and governance remain separate controls.
+
+Institutional subscription tiers must not include the challenge product
+entitlement. One gate, one source of truth: if a plan also carried
+`challenge_management`, then an institutional customer would have two answers to
+"is this service active", and the two would eventually disagree. The plan answers
+what the platform may do; the product answers what was paid for.
+
+---
+
+## 34.19 Upgrade Architecture
+
+The base $9.99 service should be extensible.
+
+Potential future entitlements may include:
+
+```text
+Challenge Basic
+Challenge Pro
+Multi-Account Management
+Advanced Risk
+Automated Execution
+Portfolio Management
+Institutional Controls
+API Access
+Copy Trading
+Advanced Research
+```
+
+These must be entitlement-driven rather than implemented as unrelated products.
+
+---
+
+## 34.20 Billing Failure
+
+If a subscription expires, fails, or is cancelled:
+
+```text
+Billing State
+      â†“
+Entitlement State
+      â†“
+Feature Access
+```
+
+The system must distinguish:
+
+```text
+ACTIVE
+GRACE_PERIOD
+EXPIRED
+CANCELLED
+SUSPENDED
+```
+
+Billing failure must not corrupt account state or execution records.
+
+For safety-sensitive trading functionality, loss of entitlement must trigger the
+predefined service policy rather than an uncontrolled shutdown.
+
+Losing the service stops new challenge-authorised risk. It never rewrites, halts,
+or closes what the trading engine was already doing, because a billing timeout is
+not a reason to forget a position exists. The gate refuses the next trade; the
+record of the last one stays exactly as the venue reported it.
+
+---
+
+## 34.21 Audit Requirements
+
+Every consequential challenge operation must record:
+
+* user
+* account
+* provider
+* program
+* policy version
+* entitlement
+* timestamp
+* account state
+* risk state
+* proposed action
+* governance decision
+* execution result
+* policy result
+* violation result where applicable
+
+This creates a complete Challenge Account Audit Trail.
+
+---
+
+## 34.22 User Dashboard
+
+The user should see:
+
+```text
+Challenge Account
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Account ID
+Provider
+Program
+Policy Version
+Status
+Balance / Equity
+Daily Loss Headroom
+Max Drawdown Headroom
+Profit Target Progress
+Trading Days
+Open Risk
+Exposure
+Risk Headroom
+Execution Health
+Violations
+Warnings
+Service Status / Entitlement Status
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+```
+
+Every figure shown must be traceable to the system that produced it.
+
+Absent data renders as unknown, never as zero.
+
+---
+
+## 34.23 Challenge Service Golden Rule
+
+Payment enables the service.
+
+The service does not bypass governance.
+
+The strategy generates opportunities.
+
+Risk determines allowable exposure.
+
+The Challenge Policy determines account-specific constraints.
+
+Governance authorizes execution.
+
+Execution reports truth.
+
+Reconciliation confirms truth.
+
+Learning evaluates the result.
+
+Therefore:
+
+```text
+$9.99
+   â†“
+Service Entitlement
+   â†“
+Account Integration
+   â†“
+Challenge Policy
+   â†“
+Dynamic Risk
+   â†“
+Governance
+   â†“
+Controlled Execution
+   â†“
+Execution Truth
+   â†“
+Audit + Learning
+```
+
+The $9.99 service must never become a shortcut around the institutional control
+architecture.
+
+Challenge conditions are additional constraints on a decision, not the decision
+itself. The chain is:
+
+```text
+Strategy = BUY XAUUSD
+        â†“
+Opportunity = Valid
+        â†“
+Strategy Risk = $700
+        â†“
+Challenge allows only $420 remaining risk
+        â†“
+Risk Engine
+        â†“
+Resize to â‰¤ $420
+        â†“
+Governance
+        â†“
+Approve / Reject
+```
+
+A strategy wanting $700 where the challenge allows $420 produces a $420 position,
+not a refusal and not a $700 position. The resize is what makes the challenge
+policy a constraint instead of a veto, and a layer that refuses every oversized
+signal is a layer operators switch off.
+
+---
+
+# 35. ACCOUNT EXPERIENCE & ADAPTIVE LEARNING ENGINE
+
+## 35.1 Purpose
+
+Every account develops its own operating experience.
+
+Experience must be measured, bounded, and applied.
+
+It must never become an unbounded self-modification of the trading system.
+
+## 35.2 Account Experience Model
+
+Account experience must include:
+
+* trade history
+* instrument performance
+* time-of-day performance
+* strategy performance
+* risk adherence
+* error patterns
+* rule compliance
+
+Experience must be scoped to the account.
+
+## 35.3 Hierarchical Learning
+
+Learning must be scoped at three levels:
+
+```text
+Global
+   â†“
+Account
+   â†“
+Strategy
+```
+
+A strategy that fails on one account is not thereby a failure everywhere, and a
+lesson learned on one account is not a rule imposed on every other account.
+
+## 35.4 Account Replay
+
+The system must be able to replay an account's history against the current
+architecture.
+
+Replay must be read-only.
+
+Replay must not mutate live account state.
+
+Replay exists to answer "what would this account have done", which is a question
+about history and must not be answerable by writing to history.
+
+## 35.5 Adaptive Risk
+
+Risk parameters may adapt only within governance-approved bounds.
+
+Adaptation must never exceed the account policy, the account plan, or any hard
+limit.
+
+The bounds are set by governance; learning may move within them and may not move
+them.
+
+## 35.6 Adaptations
+
+Adaptations must be:
+
+* recorded
+* bounded
+* reversible
+* explained in human-readable terms
+
+An explanation the operator cannot read is not an explanation, and an
+irreversible adaptation cannot be reviewed after the loss that motivated it.
+
+## 35.7 Learning Must Not Break Governance
+
+Learning must never:
+
+* grant entitlements
+* bypass governance
+* modify production risk limits directly
+* change policy
+* change execution paths
+
+Learning may propose. Governance disposes. This is Â§27's AI authority boundary
+applied to a system's memory of itself: the part that learned from the losses is
+not the part that decides the next trade may run.
+
+## 35.8 Performance Adaptation
+
+Performance adaptation must reduce risk for repeated failure patterns.
+
+Adaptation must never increase risk based only on recent success.
+
+A run of wins is the least informative input in the system. Sizing up after a
+winning streak is how a small system becomes the reason a large account is
+closed.
+"""
+
+---
+
+
+---
+
+# 29. TREDERAIG RESEARCH & MARKET INTELLIGENCE FACTORY (ROW 746)
+
+## 29.1 Purpose
+
+TrederAIG becomes a Research & Market Intelligence Factory fed by exterior
+sources (arXiv, SSRN, GitHub, Macro, Sentiment). The factory produces
+institutional knowledge (evidence) that Strategy Lab turns into candidates,
+and candidates reach the market only through the governed lifecycle
+(§27.3). The factory is a *knowledge* system; it is never a trading system.
+
+```text
+External Source (arXiv / SSRN / GitHub / Macro / Sentiment)
+        |
+        v                          n8n NEVER writes the database
+      n8n  ----------------------->  POST /evidence/intake
+        |                                (the ONE seam, TrederAIG API)
+        v
+   Evidence Plane  (evidence_items, trust ladder 0..9, monotonic UP)
+        |
+        v
+   Strategy Lab  --> candidates --> validation --> governance --> production
+```
+
+## 29.2 The delivery rule (n8n and any channel)
+
+* External reality enters TrederAIG only through the TrederAIG API.
+* `External Source -> n8n -> TrederAIG API -> Canonical State`.
+* n8n NEVER writes PostgreSQL/SQLite. A channel that writes the database
+  directly is a second authority and is a blocking defect (single-authority
+  rule, §26).
+* Adapting is not authorising: nothing on the evidence surface is ever read as
+  permission to trade (rows 741/742/744/745).
+
+## 29.3 Evidence Plane
+
+* `evidence_items` is the **23rd** persistence table, self-contained (no foreign
+  keys), keyed by `content_hash` (SHA-256 de-duplication): the same inbound
+  matter is stored once; a re-delivery returns the stored row with
+  `is_new: False` (the idempotency the intake contract requires).
+* Trust ladder 0..9: 0 AI idea, 1 external evidence, 2 reproducible research,
+  3 backtest, 4 walk-forward, 5 Monte Carlo, 6 stress, 7 paper, 8 governance
+  approval, 9 production. The ladder labels *evidence about the evidence*, it
+  only moves UP, and no level ever converts a row into trading authority.
+* External kinds arrive at level 1; an `internal` idea starts at level 0.
+* `source_kind` is validated (arxiv/ssrn/github/macro/sentiment/internal); a
+  source enters the plane only through a normaliser, never as raw bytes.
+* Honest absence: a macro print not yet reported is `None`, never zero; a
+  missing sentiment composite is never fabricated (fusing raw components is a
+  research decision).
+* `is_authorisation: False` rides on every outgoing row and summary; the
+  working authority of a ladder level by itself is none.
+
+## 29.4 No research-to-live shortcut
+
+Research -> candidate -> validation -> governance -> production is the ONLY
+path to the live account. Evidence maturity (the ladder) and promotion stage
+(§27.3) are different facts and stay different (§26). AI/LLMs/DSPy propose;
+governance disposes.
+
+## 29.5 Truthfulness
+
+Dashboards surface evidence with its source, ladder level and is_authorisation:
+False; absent sources render as absent. No fabricated numbers, no invented
+composites, no "pending" reported as "measured" (§28.4).
+
+## 29.6 Research Knowledge Factory
+
+A research mission's conclusion returns INTO the canonical core as a Research Package (MASTER_ARCHITECTURE s9: Paperclip -> Research Mission -> CrewAI -> Research Package -> TrederAIG Research API). `research_packages` (the 24th table) is a self-contained knowledge row: title, hypothesis, method, stated limits, status (`recorded`/`retired`), and the `evidence_ids` it builds on. The lineage rule is load-bearing and fail-closed: a package may only cite evidence rows that already exist in `evidence_items`, enforced at record time, so a knowledge entry is never indexed on top of fabrication. A package NEVER promotes and never reads a trade permission: no trade-permission column exists on the table, invoking a package equals reading institutional research reference, and the Strategy Lab promotion ladder (§27.3) is the only road to production. Reads enrich every package with the resolved evidence lineage and `backed_trust` (the highest ladder among the cited evidence) so a claim's maturity is read off its evidence, never asserted by the package.
+
+## 29.7 Evidence-Backed Growth
+
+Growth surfaces report ONLY what exists. Per source family: `evidence_count`, `package_count` and `content_ready` (at least one evidence row AND one package citing that family). A family with no evidence, or evidence with no package, is reported honestly as not content-ready; packages whose evidence disappeared out-of-band are flagged (`claimed_by_no_evidence`) and reported by the consistency checker as `research_packages_drift` (an 8th checker kind). No invented demand numbers: inventing a number to fill a shape is fabrication (§28.4). `External Source -> n8n -> API -> Canonical State` holds here too: a mission's conclusion returns via the Research API, never as a direct DB write (§29.3).
+## 29.8 RMI Source Registry and Research Queue (row 749)
+
+**A registered source is reference data; a queue item is a problem ledger; neither is a permission.** The most important part of the Research & Market Intelligence Factory per the operator (§29.6) is that the AI does NOT pick at random what to research: sources enter the formal `source_registry` (25th table), and problems enter `research_queue_items` (26th table) scored deterministically and worked top-down. Three rules bind them:
+
+1. **Everything is registered, or it is not ingested.** A source enters with a canonical lowercase slug, one of the seven `source_type` categories and a plane family `kind`. Unknown type/kind/status/cost, an out-of-range reliability, an empty provider and a duplicate source_id are all refused at the door — no agent invents a source on the fly, and the ledger is idempotent reference data (§28.4: an invented source is the same fabrication as an invented number).
+2. **Priority is scored, deterministic and fail-closed.** `ResearchPriorityScorer` weights the six bounded 0..1 dimensions as expected_value 0.30, data_availability 0.20, reproducibility 0.20, research_cost 0.15 (INVERTED — cheap research scores higher), novelty 0.10, risk 0.05 (INVERTED — low risk scores higher), into a 0..100 score with high/medium/low labels; the same inputs always give the same score, and an out-of-range dimension is a rejection, never a silent re-clamp. Reads order by score descending, so the lab studies what is worth the cost of research first.
+3. **Grounding is provenance, never a requirement.** A queue item MAY cite evidence (each cited id validated fail-closed against the plane — a ghost id refuses the item), but an un-grounded problem is allowed because the queue holds matters still to be studied. The lifecycle is `queued -> active -> completed | queued -> superseded`; a terminal item is never re-opened, and rows stay as provenance rather than being deleted.
+
+Bursts enqueue with per-candidate receipts, `External Source -> n8n -> API -> Canonical State` holds unchanged, every payload carries `is_authorisation: False` and names the Risk Governor, and neither table carries a trade-permission column or a foreign key. There is deliberately NO checker kind for the registry or the queue: registry `kind`s are broader than plane kinds, so auditing them would alarm on every ssrn/news/market row that §29.4's plane checker already governs.
+## 29.9 SSRN and News delivery seams (row 750, RMI-02)
+
+**New families join the Evidence Plane through the same door; they never get a second door.** The External Intelligence expansion (operator roadmap: RMI-01 -> RMI-02 -> TAIG Dash -> RMI-03) adds `POST /webhooks/ssrn` and `POST /webhooks/news` beside macro and sentiment; all four share `_deliver_webhook` and `EvidenceIntakeBus`, so the URL fixes the source family (a payload claiming another `source_kind` is refused with `kind_mismatch`), a dict is one raw item and a list is a burst, and every receipt carries `is_authorisation: False` naming the Risk Governor.
+
+`providers/sources.py` gains `normalize_ssrn_paper` and `normalize_news_article` under the row-746 honesty rules: the abstract IS the paper's claim and lands in `hypothesis`; a news story is NOT a hypothesis -- only the publisher's own summary becomes one, never the body; markets come only from explicit tags against `KNOWN_MARKET_SYMBOLS` and never from scanned prose; unreported provenance is carried as "no provenance reported"; `payload_hash` is deterministic so re-delivery stores once. `KNOWN_SOURCE_KINDS` gains `news` (the registry already named it; the plane could not receive it), evidence enters at trust ladder 1 as external, and the flow stays External Intelligence -> Evidence -> Research Queue: no new table, no trade-permission column, no new checker kind, and no path to a Strategy.
+## 29.10 The dashboard's research surfaces read the factory (row 751, TAIG Dash)
+
+**A dashboard surface is a mirror, never a second source.** The five research surfaces -- Research Sources, Research Queue, New Intelligence, Evidence, Active Research -- live in one `IntelligencePage` whose every tab reads through `lib/api.ts` against routes FastAPI actually registers; an absent store renders `EmptyState` under the live/mock banner with `--` for absent fields, and no tab carries an inline row literal or imports the mock catalogue (the source guards in `tests/test_operations/test_dashboard_honesty.py` pin exactly that, because the old Research page shipped a full fabricated evidence board that looked wired while no backend was ever read).
+
+The row also closes the drift row 750 opened: `GET /evidence` validated its `source_kind` filter against a hard-coded tuple that had no `news` in it, so a family the plane could receive could not be read back through the filter. The filter now reads `KNOWN_SOURCE_KINDS` -- one vocabulary for what the store holds and what the read accepts -- while an unknown family is still refused as `invalid_filter`. Read-only, `is_authorisation: False` on every payload, no new table, no trade authority; the ladder labels and trust buckets come from `GET /research/trust`, never from the browser.
+
+## 29.11 The Research Mission loop lands (row 752, RMI-03)
+A governed mission object with deterministic 4-role crew; deliver fail-closed via ResearchKnowledgeFactory; 9th checker drift; report-only Ollama router (never calls model).
+
+## 29.12 The Unified Interface System (row 753)
+One system, three surfaces (User/Control/Developer), spec D:\Unified Interface System; no UI->DB; UI never source of truth; TAIG Dash kept as Control Center base; UX-01..UX-14 roadmap.

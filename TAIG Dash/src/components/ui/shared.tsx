@@ -393,29 +393,12 @@ export function StatusDot({ color, label }: { color: string; label?: string }) {
   );
 }
 
-export function EmptyState({
-  title,
-  hint,
-}: {
-  title: string;
-  hint?: string;
-}) {
-  return (
-    <div
-      style={{
-        border: "1px dashed var(--border)",
-        borderRadius: 8,
-        padding: "2.5rem 1.5rem",
-        textAlign: "center",
-        color: "var(--muted-foreground)",
-      }}
-    >
-      <div style={{ fontSize: "1.4rem", marginBottom: 8, opacity: 0.7 }}>∅</div>
-      <div style={{ fontSize: "0.85rem", color: "var(--foreground)", marginBottom: 4 }}>{title}</div>
-      {hint && <div style={{ fontSize: "0.75rem" }}>{hint}</div>}
-    </div>
-  );
-}
+export {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  StatusChip,
+} from "../../design";
 
 export function Timeline({
   items,

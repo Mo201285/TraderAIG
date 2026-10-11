@@ -60,6 +60,12 @@ async def _lifespan(_app: FastAPI):
             log.info(f"market bridge poller started: {market_bridge.status()}")
     except Exception:  # noqa: BLE001
         log.exception("market bridge poller failed to start")
+    try:
+        from providers.seed import seed_default_providers
+
+        seed_default_providers()
+    except Exception:  # noqa: BLE001
+        log.exception("external provider seed failed to start")
     yield
 
 
@@ -442,6 +448,108 @@ def system_health() -> Dict:
     }
 
 
+@app.get("/system/routes")
+def system_routes() -> Dict:
+    """Route catalogue and contract docs, generated from the registered app.
+
+    The Developer Hub documents what the server actually mounts, never what a
+    hand-written list claims: every entry is derived from ``app.openapi()``,
+    which FastAPI builds from the route registrations themselves, so the
+    catalogue cannot drift from the API it describes (Unified Interface
+    System, section 8; PROJECT_MAP M11.3). Read-only, like ``/system/health``.
+    """
+    import datetime as _dt
+
+    spec = app.openapi()
+    method_names = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
+
+    def _type_of(schema: Any) -> Optional[str]:
+        """Compact contract name: a $ref collapses to its bare schema name."""
+        if not isinstance(schema, dict):
+            return None
+        ref = schema.get("$ref")
+        if isinstance(ref, str) and "/" in ref:
+            return ref.rsplit("/", 1)[-1]
+        if schema.get("type") == "array":
+            inner = _type_of(schema.get("items", {}))
+            return f"{inner}[]" if inner else "array"
+        return schema.get("type")
+
+    routes: List[Dict] = []
+    by_method: Dict[str, int] = {}
+    tags_seen: List[str] = []
+
+    for path, item in spec.get("paths", {}).items():
+        shared = list(item.get("parameters") or [])
+        for method, op in item.items():
+            if method.upper() not in method_names or not isinstance(op, dict):
+                continue
+            parameters = []
+            for p in shared + list(op.get("parameters") or []):
+                if not isinstance(p, dict) or not p.get("name"):
+                    continue
+                parameters.append({
+                    "name": p.get("name", ""),
+                    "location": p.get("in", ""),
+                    "required": bool(p.get("required", False)),
+                    "type": _type_of(p.get("schema")),
+                })
+            request_body = None
+            rb = op.get("requestBody")
+            if isinstance(rb, dict):
+                content = rb.get("content") or {}
+                ctype = next(iter(content), None)
+                if ctype:
+                    request_body = {
+                        "content_type": ctype,
+                        "required": bool(rb.get("required", False)),
+                        "type": _type_of((content.get(ctype) or {}).get("schema")),
+                    }
+            responses: Dict[str, Dict] = {}
+            for code, resp in (op.get("responses") or {}).items():
+                if not isinstance(resp, dict):
+                    continue
+                content = resp.get("content") or {}
+                ctype = next(iter(content), None)
+                responses[str(code)] = {
+                    "description": resp.get("description", ""),
+                    "type": _type_of((content.get(ctype) or {}).get("schema"))
+                    if ctype else None,
+                }
+            op_tags = [str(x) for x in (op.get("tags") or [])]
+            for tag in op_tags:
+                if tag not in tags_seen:
+                    tags_seen.append(tag)
+            by_method[method.upper()] = by_method.get(method.upper(), 0) + 1
+            routes.append({
+                "path": path,
+                "method": method.upper(),
+                "operation_id": op.get("operationId"),
+                "summary": op.get("summary"),
+                "description": op.get("description"),
+                "tags": op_tags,
+                "parameters": parameters,
+                "request_body": request_body,
+                "responses": responses,
+            })
+
+    info = spec.get("info") or {}
+    return {
+        "ok": True,
+        "generated_at": _dt.datetime.now(
+            _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "title": info.get("title", ""),
+        "api_version": info.get("version", ""),
+        "counts": {
+            "operations": len(routes),
+            "paths": len(spec.get("paths") or {}),
+            "methods": by_method,
+        },
+        "tags": tags_seen,
+        "routes": routes,
+    }
+
+
 def _tenancy_report() -> Dict:
     """State the deployment's tenancy boundary out loud (28.4 Dashboard Honesty).
 
@@ -483,12 +591,168 @@ def _tenancy_report() -> Dict:
             "POST /payments/refund (owner resolved from charge_id)",
             "GET /accounts (filtered to the acting principal's own rows)",
             "GET /accounts/{account_id} (403 unless the acting principal owns it)",
+            "GET /accounts/{account_id}/bindings (403 unless the acting "
+            "principal owns it)",
+            "GET /referrals/{referral_id} (sponsor of the code, or the owner "
+            "of its attributed account)",
+            "GET /users/{user_id}/referrals (403 unless it is the acting "
+            "principal's own code list)",
+            "POST /referrals/{referral_id}/attribute (own_record_access on the "
+            "account being attributed)",
+            "POST /referrals/{referral_id}/verify|decline (the code's sponsor)",
+            "POST /referral-events + POST /referral-events/{id}/attribute "
+            "(own_record_access on the account being attributed)",
+            "GET /referral-events/{id} (the code's sponsor, or the referred "
+            "user)",
+            "POST /evidence/intake + POST /evidence/{id}/classify + "
+            "POST /evidence/{id}/trust + GET /evidence + GET /evidence/{id} + "
+            "GET /research/trust (every evidence route needs an acting "
+            "principal)",
+            "POST /webhooks/macro + POST /webhooks/sentiment (delivery seams "
+            "for external feeds; they need an acting principal too, row 747) "
+            "+ POST /webhooks/ssrn + POST /webhooks/news (the SSRN/News "
+            "seams, row 750)",
+            "POST /research/packages + GET /research/packages + "
+            "GET /research/packages/{id} + GET /research/knowledge + "
+            "GET /research/growth (the Research Knowledge Factory needs an "
+            "acting principal too, row 748)",
+            "POST /research/sources + GET /research/sources + "
+            "GET /research/sources/{id} + POST /research/sources/{id}/sync + "
+            "POST /research/queue + GET /research/queue + "
+            "GET /research/queue/{id} + its start/complete/supersede "
+            "transitions + GET /research/queue/summary (the RMI source ledger "
+            "and the scored research queue need an acting principal too, "
+            "row 749)",
+            "POST /research/missions + GET /research/missions + "
+            "GET /research/missions/{id} + its start/deliver/fail "
+            "transitions + GET /research/missions/summary + "
+            "GET /research/intelligence (the Paperclip/CrewAI mission loop "
+            "and the Ollama router report need an acting principal too, "
+            "row 752)",
         ],
         "guard_account_called_by_any_route": False,
         "still_open_by_design": [
             "POST /payments/webhook — provider-signed; a public endpoint by "
             "design, and the only one that must stay reachable without a session",
         ],
+        "external_provider_registry": (
+            "GET /providers + GET /providers/{provider_id} — read-only catalog "
+            "of external providers (ForTraders et al.); NOT ownership-scoped: a "
+            "provider is not a user record, so the whole catalog is a public "
+            "read, and every entry carries is_authorisation: False (row 742)"
+        ),
+        "referral_attribution": (
+            "POST /referrals (issue a code against a REGISTERED provider "
+            "programme; the sponsor is the acting principal) + "
+            "GET /referrals/{id} + GET /users/{uid}/referrals (ownership-scoped "
+            "reads) + POST /referrals/{id}/attribute (only the recorded owner "
+            "of the account) + POST /referrals/{id}/verify|decline (only the "
+            "code's sponsor). Attribution answers WHERE an account came from — "
+            "it never grants or reads a trade permission: every referral payload "
+            "carries is_authorisation: False (row 744)"
+        ),
+        "referral_rewards": (
+            "POST /referral-events (intake an external registration under an "
+            "issued, PENDING code; (provider_id, external_registration_id) is "
+            "unique so a re-sent registration cannot double-reward) + "
+            "POST /referral-events/{id}/attribute (binds the event to the "
+            "account whose recorded owner used the code; own_record_access) + "
+            "GET /referral-events/{id} (scoped to the code's sponsor or the "
+            "referred user) + POST /referrals/{id}/verify grants the reward "
+            "product (snapshotted at intake) through products.grant with "
+            "actor=referral_rewards and price_usd=0.0 -- the promotion path, "
+            "distinct from payments.charge_product. An event and a reward are "
+"commercial facts: none of them grants or reads a trade permission, "
+             "and every payload carries is_authorisation: False (row 745)"
+        ),
+        "evidence_plane": (
+            "POST /evidence/intake (the ONE seam the external world feeds -- "
+            "n8n and any channel deliver by POSTing here and NEVER write the "
+            "database; source_kind is validated, and the same inbound matter "
+            "with the same digest returns the stored row with is_new=False) + "
+            "POST /evidence/{id}/classify (structured reading; absent fields "
+            "are left absent, never zeroed) + POST /evidence/{id}/trust "
+            "(0..9 ladder, monotonic UP only) + GET /evidence (filters) + "
+            "GET /evidence/{id} + GET /research/trust (per-source and "
+            "per-level surface). Evidence is institutional knowledge: nothing "
+            "on this surface grants or reads a trade permission, every payload "
+            "carries is_authorisation: False, and the working authority of the "
+            "ladder by itself is none -- research -> candidate -> validation -> "
+            "governance -> production still governs any use (row 746); "
+            "POST /webhooks/macro + POST /webhooks/sentiment + "
+            "POST /webhooks/ssrn + POST /webhooks/news (raw-shaped "
+            "delivery seams, rows 747+750: the URL fixes the source family, "
+            "so a sentiment snapshot cannot be mislabelled as a macro print, "
+            "and a news story cannot be delivered as an SSRN paper; every "
+            "delivery returns a receipt of accepted/duplicates/rejected with "
+            "is_authorisation: False)"
+        ),
+        "research_knowledge_factory": (
+            "POST /research/packages (a Research Package that Paperclip/"
+            "CrewAI delivers back into the canonical core (MASTER_ARCHITECTURE "
+            "s9); lineage is fail-closed -- every cited evidence_id must "
+            "already exist in the plane, else 400 invalid_package, so no "
+            "knowledge entry is fabricated from thin air) + GET "
+            "/research/packages (status/evidence filters) + "
+            "GET /research/packages/{id} (distinct 404) + "
+            "GET /research/knowledge (per-status + citation coverage) + "
+            "GET /research/growth (the Evidence-Backed Growth compliance "
+            "surface: per source, evidence_count + package_count + "
+            "content_ready, and NO papering over a family that has no "
+            "evidence or no package). Nothing on this surface grants or reads "
+            "a trade permission: every payload carries is_authorisation: "
+            "False, and a package never promotes -- the Strategy Lab promotion "
+"ladder (s27.3) is the only road to production (row 748)"
+        ),
+        "research_sources": (
+            "POST /research/sources (a registered RMI source enters a "
+            "durable ledger with a canonical slug, one of seven source "
+            "categories and a plane family; unknown type/kind/status/cost, "
+            "malformed slug and duplicate id are 400, so no agent invents a "
+            "source on the fly) + GET /research/sources (filters) + "
+            "GET /research/sources/{id} (distinct 404) + "
+            "POST /research/sources/{id}/sync (an ingestion run reported "
+            "in). The ledger is reference data -- nothing here grants or "
+            "reads a trade permission: every payload carries "
+            "is_authorisation: False (row 749)"
+        ),
+        "research_queue": (
+            "POST /research/queue (a list enqueues a burst with per-candidate "
+            "receipts -- one bad candidate is refused with its reason and "
+            "never kills the rest; a dict enqueues one scored problem; "
+            "dimensions are validated 0..1, cited evidence must exist, and "
+            "priority_score + priority_label come from "
+            "research.queue.priority.ResearchPriorityScorer so the lab works "
+            "the ledger top-down instead of picking at random) + "
+            "GET /research/queue (scored desc) + GET /research/queue/{id} + "
+            "GET /research/queue/summary (per-status counts, average queued "
+            "priority, next-up) + POST /research/queue/{id}/"
+            "start|complete|supersede (the queued->active->completed / "
+            "queued->superseded lifecycle, terminal rows stay as "
+            "provenance). Nothing here grants or reads a trade permission: "
+            "every payload carries is_authorisation: False (row 749)"
+        ),
+        "research_missions": (
+            "POST /research/missions (Paperclip issues a Research Mission "
+            "against a queue problem the ledger already holds, with the "
+            "canonical four-role CrewAI crew -- researcher / quant / data "
+            "analyst / reviewer -- composed deterministically; an unknown "
+            "queue item is 404, an empty brief, a terminal problem or an "
+            "already-open mission on the item is 400) + "
+            "GET /research/missions?status + GET /research/missions/{id} "
+            "(distinct 404) + GET /research/missions/summary + "
+            "POST /research/missions/{id}/start|deliver|fail (the "
+            "assigned -> running -> delivered | failed lifecycle; deliver "
+            "records the Research Package FIRST through the fail-closed "
+            "knowledge factory and only then stamps the mission delivered "
+            "and completes the queue item) + GET /research/intelligence "
+            "(the Ollama intelligence router report: which tier would run "
+            "each task class from the configured model and the local "
+            "catalogue, probed best-effort -- never a model call, never an "
+            "invented model name). Nothing here grants or reads a trade "
+            "permission: every payload carries is_authorisation: False "
+            "(row 752)"
+        ),
         "note": ("This deployment is safe only as a single-operator box. Do not "
                  "expose :8000 beyond localhost. The entitlement gate is "
                  "evaluated against the principal the SERVER names, so with no "
@@ -502,6 +766,49 @@ def _tenancy_report() -> Dict:
                  "canonical state, ledgers, engines, and an authenticated "
                  "caller) is an open ORPHAN, not a feature of this build."),
     }
+
+
+# ---------------------------------------------------------------------------
+# Developer verification
+# ---------------------------------------------------------------------------
+
+
+@app.get("/system/verification")
+def system_verification() -> Dict:
+    """The last *measured* gate run, for the Developer Hub (spec section 8).
+
+    Developer Home shows Build PASS + the measured test count **from the live
+    run, never a hard-coded number**. That run happens in
+    ``scripts/verify_all.ps1``; this route only reads the artifact it wrote
+    (``operations.verification.latest``). No run recorded => ``present: False``
+    and the surface shows an absent state, because a green the server never
+    measured is the exact lie section 8 forbids. Read-only, like
+    ``/system/health`` and ``/system/routes``.
+    """
+    from operations.verification import latest
+
+    return latest()
+
+
+# ---------------------------------------------------------------------------
+# Roadmap (live from PROJECT_MAP.md)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/roadmap/status")
+def roadmap_status() -> Dict:
+    """The live roadmap, read from ``PROJECT_MAP.md`` (spec section 8 / UX-12).
+
+    The Roadmap Explorer is "live from PROJECT_MAP": this route parses the map
+    at request time into the milestone phases, the recent DECISION_LOG rows and
+    the open work list (``operations.roadmap.build``). Every count is a sum over
+    the rows the file actually carries -- nothing is hard-coded, so the surface
+    can never drift from the map. A missing file returns ``present: False`` and
+    the surface shows an absent state. Read-only.
+    """
+    from operations.roadmap import build
+
+    return build()
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +925,1534 @@ def get_account_record(account_id: str) -> Dict:
     return {"ok": True, "account": account,
             "isolation": {"caller_authenticated": access["caller_authenticated"],
                           "ownership_verified": access["ownership_verified"]}}
+
+
+@app.get("/accounts/{account_id}/bindings")
+def get_account_bindings(account_id: str) -> Dict:
+    """One account's strategy bindings, if the acting principal owns it.
+
+    The same ownership gate as `GET /accounts/{account_id}`: a bindings row names
+    the account's running risk context, so handing it to a caller who does not
+    own the account would leak another user's strategies and overrides. The guard
+    is `own_record_access()` and not `guard_account()`, for the same reason that
+    route uses it — `TRADERAIG_AUTH` is off, so an authentication-denial would
+    403 every live challenge route (decision D5 in the impact report), and the
+    honest narrower claim is "the row is the acting principal's own".
+
+    The body is `AccountStrategyBindings.summary()`: the bindings plus a live
+    registry stage per strategy (so a quarantine shows up without a backfill) and
+    an explicit `is_authorisation: False` that names the Risk Governor as the
+    only trade authority.
+    """
+    from accounts import isolation
+    from accounts.strategy_bindings import AccountStrategyBindings
+
+    principal = identity.principal_user_id()
+    access = isolation.own_record_access(principal, account_id)
+    if access["reason"] == "unknown_account":
+        return JSONResponse(status_code=404,
+                            content={"ok": False, "account_id": account_id,
+                                     "reason": "unknown_account",
+                                     "detail": "no such account in the registry"})
+    if not access["allowed"]:
+        return JSONResponse(status_code=403,
+                            content={"ok": False, "account_id": account_id,
+                                     "reason": access["reason"],
+                                     "detail": access["detail"],
+                                     "caller_authenticated":
+                                         access["caller_authenticated"]})
+
+    summary = AccountStrategyBindings.summary(account_id)
+    return {"ok": True, **summary,
+            "isolation": {"caller_authenticated": access["caller_authenticated"],
+                          "ownership_verified": access["ownership_verified"]}}
+
+
+@app.get("/providers")
+def list_external_providers() -> Dict:
+    """The External Provider Registry: every provider the platform can adopt.
+
+    Read of the `external_providers` catalog (row 742). Each entry carries the
+    provider's contract (venues, account kinds, referral programme, tracking /
+    verification methods, policy_adapter) as a **registry row** -- and an
+    explicit `is_authorisation: False` so a catalog listing is never read as a
+    trade permission list. The Risk Governor remains the only trade authority.
+    """
+    from persistence.repositories_accounts import ExternalProviderRepository
+
+    try:
+        rows = ExternalProviderRepository().list_all()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the provider registry could not be read",
+            "error": str(exc)})
+    return {"ok": True, "providers": rows,
+            "count": len(rows),
+            "is_authorisation": False,
+            "trade_authority": "risk/governor.py",
+            "read_only": True}
+
+
+@app.get("/providers/{provider_id}")
+def get_external_provider(provider_id: str) -> Dict:
+    """One provider's registry entry, or 404.
+
+    Honest 404: an unknown provider is a different operator problem from an
+    unreachable store, so the two are not collapsed into one error body.
+    """
+    from persistence.repositories_accounts import ExternalProviderRepository
+
+    try:
+        row = ExternalProviderRepository().get(provider_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the provider registry could not be read",
+            "error": str(exc)})
+    if row is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "provider_id": provider_id,
+            "reason": "unknown_provider",
+            "detail": "no such provider in the external provider registry"})
+    return {"ok": True, "provider": row,
+            "is_authorisation": False,
+            "trade_authority": "risk/governor.py",
+            "read_only": True}
+
+
+# ---------------------------------------------------------------------------
+# Referral attribution (P2): WHICH ACCOUNT CAME FROM WHICH CODE
+# ---------------------------------------------------------------------------
+#
+# The first link of the row-742 chain `Referral -> Provider Registry -> Account
+# Registry -> ... -> Entitlement`. A code may only be issued against a provider
+# that has a *registered* referral programme (the registry is the single owner
+# of that fact), an account may only be attributed by its OWN owner, a code may
+# only be verified once it has an account, and nothing in this surface ever
+# grants or reads a trade permission -- every payload carries
+# `is_authorisation: False` and names the Risk Governor as the only trade
+# authority.
+#
+# Ownership follows the account-family rule exactly: reads and writes are
+# scoped to the acting principal, who on a single-operator deployment (`AUTH`
+# off) is the only person who can sponsor codes and attribute their own
+# accounts. A referral that claims attribution without that proof is refused.
+
+
+@app.post("/referrals")
+def issue_referral(payload: Dict) -> Dict:
+    """Issue a referral code against an external provider's programme.
+
+    The sponsor is the acting principal, taken from the server, never from the
+    body: a caller cannot mint a code in somebody else's name.
+    """
+    from accounts.referral_attribution import ReferralAttribution
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to sponsor a referral code; "
+                       "create a user first")})
+    provider_id = str(payload.get("provider_id") or "").strip()
+    code = str(payload.get("referral_code") or "").strip()
+    note = str(payload.get("note") or "").strip()
+    try:
+        referral = ReferralAttribution().issue(
+            provider_id=provider_id, referral_code=code,
+            owner_user_id=actor, note=note)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_referral", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the referral registry could not be written",
+            "error": str(exc)})
+    return {"ok": True, "referral": referral, "action": "issued",
+            "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/referrals/{referral_id}")
+def get_referral(referral_id: str) -> Dict:
+    """One referral, scoped to its sponsor or its attributed account's owner.
+
+    Attribution is user data, not the providers catalog: a row is only shown to
+    the principal who sponsored it, or -- once attributed -- to the owner of
+    the account it names. Handing a referral to whoever asks would publish who
+    sponsors which code.
+    """
+    from accounts import isolation
+    from accounts.referral_attribution import ReferralAttribution
+
+    actor = _acting_actor()
+    try:
+        referral = ReferralAttribution().get(referral_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the referral registry could not be read",
+            "error": str(exc)})
+    if referral is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "referral_id": referral_id,
+            "reason": "unknown_referral",
+            "detail": "no such referral in the attribution registry"})
+    if actor is not None and actor == referral["owner_user_id"]:
+        return {"ok": True, "referral": referral, "read_only": True,
+                "is_authorisation": False,
+                "trade_authority": "risk/governor.py"}
+    account_id = referral.get("account_id")
+    if actor is not None and account_id and isolation.owns_account(
+            actor, account_id):
+        return {"ok": True, "referral": referral, "read_only": True,
+                "is_authorisation": False,
+                "trade_authority": "risk/governor.py"}
+    return JSONResponse(status_code=403, content={
+        "ok": False, "reason": "not_owner",
+        "detail": "this referral belongs to another user's programme, or its "
+                  "account is another user's"})
+
+
+@app.get("/users/{user_id}/referrals")
+def list_user_referrals(user_id: str) -> Dict:
+    """The acting principal's own issued codes, or a 403.
+
+    `_own(user_id)` is the accounts-family ownership rule: this deployment has
+    one acting principal, so the list it returns is that principal's programme,
+    not a way to read what codes somebody else sponsors.
+    """
+    from accounts.referral_attribution import ReferralAttribution
+
+    _own(user_id, action="read the referral codes of")
+    try:
+        rows = ReferralAttribution().for_owner(user_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the referral registry could not be read",
+            "error": str(exc)})
+    return {"ok": True, "user_id": user_id, "referrals": rows,
+            **ReferralAttribution.summary(rows), "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.post("/referrals/{referral_id}/attribute")
+def attribute_referral(referral_id: str, payload: Dict) -> Dict:
+    """Link the acting principal's OWN account to a pending referral code.
+
+    The gate is `own_record_access(actor, account_id)`, the same ownership
+    question the account routes use: an anonymous caller aiming this at an
+    account registered to somebody else gets a 403, and an account that does
+    not exist gets a 404. The referred person is not taken from the body -- the
+    account registry already records who owns the account, and that recorded
+    owner IS the referred person, so a body cannot claim a referral on behalf
+    of someone else's account.
+    """
+    from accounts import isolation
+    from accounts.referral_attribution import ReferralAttribution
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to attribute an account; "
+                       "create a user first")})
+    account_id = str(payload.get("account_id") or "").strip()
+    if not account_id:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_attribute",
+            "detail": "an attribution needs the account being attributed"})
+    access = isolation.own_record_access(actor, account_id)
+    if not access["allowed"]:
+        if access["reason"] == "unknown_account":
+            return JSONResponse(status_code=404, content={
+                "ok": False, "reason": "unknown_account",
+                "detail": "no such account in the registry"})
+        return JSONResponse(status_code=403, content={
+            "ok": False, "reason": access["reason"],
+            "detail": access.get("detail") or "this account is not yours to "
+                      "attribute"})
+    try:
+        referral = ReferralAttribution().attribute(
+            referral_id, account_id,
+            note=str(payload.get("note") or "").strip())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_attribute", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the referral registry could not be written",
+            "error": str(exc)})
+    return {"ok": True, "referral": referral, "action": "attributed",
+            "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.post("/referrals/{referral_id}/verify")
+def verify_referral(referral_id: str, payload: Optional[Dict] = None) -> Dict:
+    """Confirm a purchase for an attributed code: sponsor-only, once.
+
+    The P2 hook for a provider confirmation: a code may only be verified once
+    it has an attributed account (there is nothing to confirm a purchase for
+    otherwise), and a verified attribution is final. Verification is the
+    sponsor's act, not the account owner's -- the sponsor is who the programme
+    reports against.
+    """
+    from accounts.referral_attribution import ReferralAttribution
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to verify a referral; "
+                       "create a user first")})
+    payload = payload or {}
+    try:
+        referral = ReferralAttribution().get(referral_id)
+        if referral is None:
+            return JSONResponse(status_code=404, content={
+                "ok": False, "referral_id": referral_id,
+                "reason": "unknown_referral",
+                "detail": "no such referral in the attribution registry"})
+        if referral["owner_user_id"] != actor:
+            return JSONResponse(status_code=403, content={
+                "ok": False, "reason": "not_owner",
+                "detail": "only the sponsor of a code may verify its "
+                          "attribution"})
+        referral = ReferralAttribution().verify(
+            referral_id, note=str(payload.get("note") or "").strip())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_verification", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the referral registry could not be written",
+            "error": str(exc)})
+    # The commercial consequence (T2, row 745): if an external registration
+    # event was attributed to this code, the promised reward product is granted
+    # through `products.grant` (promotion path, actor=referral_rewards). The
+    # block is additive, so a programme without a reward contract still verifies
+    # cleanly, and a grant failure is *reported*, never raised into the caller.
+    from accounts.referral_rewards import RewardsService
+
+    reward = None
+    try:
+        reward = RewardsService().issue_reward(referral_id)
+    except Exception as exc:  # noqa: BLE001
+        reward = {"referral_id": referral_id, "granted": False,
+                  "reward_status": "failed", "reward_product": "",
+                  "error_detail": f"{type(exc).__name__}: {exc}"}
+    return {"ok": True, "referral": referral, "action": "verified",
+            "reward": reward, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.post("/referrals/{referral_id}/decline")
+def decline_referral(referral_id: str, payload: Optional[Dict] = None) -> Dict:
+    """Refuse or cancel a code -- the sanctioned removal for provenance rows.
+
+    Attribution is a fact once written, so a confirmed (verified) referral is
+    deliberately not reversible here; a code that the sponsor no longer wants
+    is `declined`, which keeps the row (and the audit history) instead of
+    pretending it never happened. Sponsor-only, like verify.
+    """
+    from accounts.referral_attribution import ReferralAttribution
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to decline a referral; "
+                       "create a user first")})
+    payload = payload or {}
+    try:
+        referral = ReferralAttribution().get(referral_id)
+        if referral is None:
+            return JSONResponse(status_code=404, content={
+                "ok": False, "referral_id": referral_id,
+                "reason": "unknown_referral",
+                "detail": "no such referral in the attribution registry"})
+        if referral["owner_user_id"] != actor:
+            return JSONResponse(status_code=403, content={
+                "ok": False, "reason": "not_owner",
+                "detail": "only the sponsor of a code may decline its "
+                          "attribution"})
+        referral = ReferralAttribution().decline(
+            referral_id, note=str(payload.get("note") or "").strip())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_decline", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the referral registry could not be written",
+            "error": str(exc)})
+    return {"ok": True, "referral": referral, "action": "declined",
+            "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+# ---------------------------------------------------------------------------
+# Referral rewards (T2, row 745): the commercial loop ForTraders runs on.
+# ---------------------------------------------------------------------------
+
+
+@app.post("/referral-events")
+def record_referral_event(payload: Optional[Dict] = None) -> Dict:
+    """Record one external registration under a TrederAIG-issued code.
+
+    The intake seam of the T2 loop: an external programme reports "a signup
+    used code X". The event is stored once -- `(provider_id,
+    external_registration_id)` is unique, so a channel that re-sends a
+    registration cannot create a second reward chance. The code must be an
+    issued, still-pending code for a registered provider. A registration event
+    is a commercial fact; it never grants or reads a trade permission
+    (`is_authorisation: False`).
+    """
+    from accounts.referral_rewards import RewardsService
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to record a registration "
+                       "event; create a user first")})
+    payload = payload or {}
+    provider_id = str(payload.get("provider_id") or "").strip()
+    referral_code = str(payload.get("referral_code") or "").strip()
+    registration_id = str(payload.get("external_registration_id") or "").strip()
+    if not provider_id or not referral_code or not registration_id:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_event",
+            "detail": "an event needs provider_id, referral_code and "
+                      "external_registration_id"})
+    try:
+        event = RewardsService().record_event(
+            provider_id=provider_id, referral_code=referral_code,
+            external_registration_id=registration_id,
+            channel=str(payload.get("channel") or "external").strip(),
+            note=str(payload.get("note") or "").strip())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_event", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the referral event registry could not be written",
+            "error": str(exc)})
+    return {"ok": True, "event": event, "action": "received",
+            "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.post("/referral-events/{event_id}/attribute")
+def attribute_referral_event(event_id: str,
+                             payload: Optional[Dict] = None) -> Dict:
+    """Bind a received event to the account whose owner used the code.
+
+    Same ownership gate as referral attribution: `own_record_access` on the
+    account being bound (only its recorded owner may attribute it), and the
+    referred user IS that recorded owner -- a caller cannot invent one. The
+    referral is attributed first so its own pending/origin gates apply, then
+    the event records the same binding.
+    """
+    from accounts.referral_rewards import RewardsService
+    from accounts import isolation
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to attribute an event; "
+                       "create a user first")})
+    payload = payload or {}
+    account_id = str(payload.get("account_id") or "").strip()
+    if not account_id:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_attribute",
+            "detail": "an attribution needs the account being attributed"})
+    access = isolation.own_record_access(actor, account_id)
+    if not access["allowed"]:
+        if access["reason"] == "unknown_account":
+            return JSONResponse(status_code=404, content={
+                "ok": False, "reason": "unknown_account",
+                "detail": "no such account in the registry"})
+        return JSONResponse(status_code=403, content={
+            "ok": False, "reason": access["reason"],
+            "detail": access.get("detail") or "this account is not yours to "
+                      "attribute"})
+    try:
+        event = RewardsService().attribute_event(
+            event_id=event_id, account_id=account_id,
+            note=str(payload.get("note") or "").strip())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_attribute", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the referral event registry could not be written",
+            "error": str(exc)})
+    return {"ok": True, "event": event, "action": "attributed",
+            "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/referral-events/{event_id}")
+def get_referral_event(event_id: str) -> Dict:
+    """Read one registration event, scoped to the people it concerns.
+
+    The sponsors the code (its owner) and the referred user both have a
+    legitimate reason to see the event that binds them; everyone else gets
+    403. An event that exists but has no readable owner is a 404, so "not
+    yours" and "does not exist" stay distinct.
+    """
+    from accounts.referral_attribution import ReferralAttribution
+    from accounts.referral_rewards import RewardsService
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to read an event; "
+                       "create a user first")})
+    try:
+        event = RewardsService().get_event(event_id)
+        if event is None:
+            return JSONResponse(status_code=404, content={
+                "ok": False, "event_id": event_id, "reason": "unknown_event",
+                "detail": "no such registration event"})
+        allowed = {event.get("referred_user_id") or ""}
+        referral = ReferralAttribution().get(event.get("referral_id") or "")
+        if referral is not None:
+            allowed.add(referral.get("owner_user_id") or "")
+        if actor not in allowed:
+            return JSONResponse(status_code=403, content={
+                "ok": False, "reason": "not_owner",
+                "detail": "this registration event is not yours to read"})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the referral event registry could not be read",
+            "error": str(exc)})
+    return {"ok": True, "event": event, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+# ---------------------------------------------------------------------------
+# Evidence Plane (row 746, P1 slice)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/evidence/intake")
+def evidence_intake(payload: Optional[Dict] = None) -> Dict:
+    """The ONE intake seam for the external world (row 746).
+
+    n8n -- or any channel -- is the delivery arm of the Research &
+    Market Intelligence Factory; it NEVER writes the database, it POSTs here.
+    This route accepts either an already-normalised evidence payload (with its
+    `source_kind`), or a `{kind, raw}` bundle it normalises through
+    `providers.sources`. Same inbound matter with the same digest returns the
+    stored row with ``is_new=False`` (idempotent de-duplication). External
+    kinds arrive at trust level 1 (external evidence); an `internal` idea at
+    level 0. Evidence is institutional knowledge: it never grants or reads a
+    trade permission (`is_authorisation: False`).
+    """
+    from research.evidence_plane import EvidencePlaneService
+    from providers.sources import normalize
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to intake evidence; "
+                       "create a user first")})
+    payload = payload or {}
+    if payload.get("source_kind"):
+        normalized = payload
+    else:
+        kind = str(payload.get("kind") or "").strip()
+        raw = payload.get("raw")
+        if not kind or raw is None:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "reason": "invalid_intake",
+                "detail": ("intake needs either a normalised evidence payload "
+                           "with source_kind, or {kind, raw} to normalise")})
+        try:
+            normalized = normalize(kind, raw)
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "reason": "invalid_intake", "detail": str(exc)})
+    content_hash = str(normalized.get("payload_hash") or "").strip() or None
+    if not content_hash:
+        content_hash = str(payload.get("content_hash") or "").strip() or None
+    if not content_hash:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_intake",
+            "detail": ("intake needs a de-duplication key: the normalised "
+                       "payload_hash, or an explicit content_hash")})
+    try:
+        evidence = EvidencePlaneService().ingest(
+            source_kind=str(normalized.get("source_kind") or "").strip(),
+            external_id=str(normalized.get("external_id") or "").strip(),
+            source_uri=str(normalized.get("source_uri") or "").strip(),
+            topic=str(normalized.get("topic") or "").strip(),
+            headline=str(normalized.get("headline") or "").strip(),
+            payload=normalized, content_hash=content_hash,
+            relevance=normalized.get("relevance"),
+            confidence=normalized.get("confidence"),
+            source_quality=normalized.get("source_quality"),
+            markets=normalized.get("markets"),
+            timeframes=normalized.get("timeframes"),
+            regimes=normalized.get("regimes"),
+            hypothesis=str(normalized.get("hypothesis") or "").strip(),
+            note=str(normalized.get("note") or "").strip())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_intake", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the evidence plane could not be written",
+            "error": str(exc)})
+    return {"ok": True, "evidence": evidence,
+            "is_new": evidence.get("is_new", False),
+            "action": "intaken", "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.post("/evidence/{evidence_id}/classify")
+def evidence_classify(evidence_id: str,
+                      payload: Optional[Dict] = None) -> Dict:
+    """Attach the structured reading of an evidence row.
+
+    relevance/confidence/source_quality plus markets/timeframes/regimes/
+    hypothesis. Omitted fields stay untouched; "no context reported" must be
+    written explicitly as empty lists/string -- an absence is never a zero.
+    Classification is institutional context, never trading authority.
+    """
+    from research.evidence_plane import EvidencePlaneService
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to classify evidence; "
+                       "create a user first")})
+    payload = payload or {}
+    try:
+        svc = EvidencePlaneService()
+        if svc.get(evidence_id) is None:
+            return JSONResponse(status_code=404, content={
+                "ok": False, "evidence_id": evidence_id,
+                "reason": "unknown_evidence",
+                "detail": "no such evidence row"})
+        evidence = svc.classify(
+            evidence_id,
+            relevance=payload.get("relevance"),
+            confidence=payload.get("confidence"),
+            source_quality=payload.get("source_quality"),
+            markets=payload.get("markets"),
+            timeframes=payload.get("timeframes"),
+            regimes=payload.get("regimes"),
+            hypothesis=payload.get("hypothesis"))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_classify", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the evidence plane could not be classified",
+            "error": str(exc)})
+    return {"ok": True, "evidence": evidence, "action": "classified",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/evidence/{evidence_id}/trust")
+def evidence_advance_trust(evidence_id: str,
+                           payload: Optional[Dict] = None) -> Dict:
+    """Move a claim UP the 0..9 trust ladder (monotonic, row 746).
+
+    A backtested claim does not become an idea again: downward moves are
+    refused (400). Each level labels *evidence about the evidence*; no level
+    ever converts a row into trading authority.
+    """
+    from research.evidence_plane import EvidencePlaneService
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to advance trust; "
+                       "create a user first")})
+    payload = payload or {}
+    level = payload.get("level")
+    if not isinstance(level, int) or isinstance(level, bool):
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_trust",
+            "detail": "trust advance needs an integer level 0..9"})
+    try:
+        svc = EvidencePlaneService()
+        if svc.get(evidence_id) is None:
+            return JSONResponse(status_code=404, content={
+                "ok": False, "evidence_id": evidence_id,
+                "reason": "unknown_evidence",
+                "detail": "no such evidence row"})
+        evidence = svc.advance_trust(evidence_id, level)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_trust", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the evidence plane could not be advanced",
+            "error": str(exc)})
+    return {"ok": True, "evidence": evidence, "action": "trust_moved",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/evidence")
+def list_evidence(source_kind: str = "", topic: str = "",
+                  market: str = "", regime: str = "",
+                  min_trust: Optional[int] = None,
+                  limit: int = 10_000) -> Dict:
+    """List evidence rows, filtered. Institutional knowledge, never a signal
+    of permission (`is_authorisation: False` ride on every row)."""
+    from research.evidence_plane import EvidencePlaneService
+
+    from persistence.repositories_accounts import KNOWN_SOURCE_KINDS
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to read evidence; "
+                       "create a user first")})
+    if source_kind and source_kind not in KNOWN_SOURCE_KINDS:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_filter",
+            "detail": f"unknown source_kind {source_kind!r}"})
+    if min_trust is not None and not (0 <= min_trust <= 9):
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_filter",
+            "detail": "min_trust must be in 0..9"})
+    try:
+        rows = EvidencePlaneService().list_all(
+            source_kind=source_kind, topic=topic, market=market,
+            regime=regime, min_trust=min_trust, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the evidence plane could not be read",
+            "error": str(exc)})
+    return {"ok": True, "evidence": rows, "count": len(rows),
+            "read_only": True, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/evidence/{evidence_id}")
+def get_evidence(evidence_id: str) -> Dict:
+    """Read one evidence row, or a distinct 404."""
+    from research.evidence_plane import EvidencePlaneService
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to read evidence; "
+                       "create a user first")})
+    try:
+        row = EvidencePlaneService().get(evidence_id)
+        if row is None:
+            return JSONResponse(status_code=404, content={
+                "ok": False, "evidence_id": evidence_id,
+                "reason": "unknown_evidence", "detail": "no such evidence row"})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the evidence plane could not be read",
+            "error": str(exc)})
+    return {"ok": True, "evidence": row, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/trust")
+def research_trust_surface() -> Dict:
+    """The ladder's live state: per-source and per-level buckets plus the
+    labels. A research overview, never an authority."""
+    from research.evidence_plane import EvidencePlaneService
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to read the trust surface; "
+                       "create a user first")})
+    try:
+        summary = EvidencePlaneService().summary()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the trust surface could not be read",
+            "error": str(exc)})
+    return {"ok": True, "trust": summary, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+# ---------------------------------------------------------------------------
+# External delivery seams (row 747, P2; SSRN/News join in row 750): the
+# webhook URLs fix the source family, so n8n hands over raw-shaped items and
+# cannot mislabel one family as another. Every delivery returns a receipt, not
+# a list of exceptions.
+# ---------------------------------------------------------------------------
+
+
+def _deliver_webhook(payload: Any, *, kind: str, label: str):
+    """Run one webhook body through the EvidenceIntakeBus and return its receipt.
+
+    A dict is one raw item; a list is a burst. The response is the delivery
+    receipt (accepted / duplicates / rejected per item) with
+    `is_authorisation: False`, and bad shapes are refused before the bus runs
+    (400), a missing acting principal is 409, and an unreachable store is 503.
+    """
+    from operations.bus import EvidenceIntakeBus
+
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to receive {label} "
+                       "deliveries; create a user first").format(label=label)})
+    if payload is None:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_delivery",
+            "detail": f"a {label} delivery carries a payload"})
+    if isinstance(payload, dict):
+        batch = [payload]
+    elif isinstance(payload, list) and payload and all(
+            isinstance(item, dict) for item in payload):
+        batch = payload
+    else:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_delivery",
+            "detail": (f"the {label} webhook body is a raw {label} event or a "
+                       "list of them; an empty delivery stores nothing")})
+    try:
+        receipt = EvidenceIntakeBus().deliver(batch, kind=kind,
+                                              delivered_by=actor)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_delivery", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the evidence plane could not receive the delivery",
+            "error": str(exc)})
+    return {"ok": True, **receipt}
+
+
+@app.post("/webhooks/macro")
+def webhook_macro(payload: Any = Body(None)) -> Dict:
+    """Raw-shaped macro-calendar seam (row 747).
+
+    The URL is the contract: an item posted here is a macro print (code,
+    region, currency, actual/forecast/previous, period, datetime) and is
+    normalised *as* a macro event -- a payload that claims a different
+    `source_kind` is refused (kind_mismatch), never silently re-read. Each
+    delivery returns a receipt; evidence never grants a trade permission.
+    """
+    return _deliver_webhook(payload, kind="macro", label="macro")
+
+
+@app.post("/webhooks/sentiment")
+def webhook_sentiment(payload: Any = Body(None)) -> Dict:
+    """Raw-shaped sentiment seam (row 747).
+
+    An item posted here is a sentiment snapshot (market, datetime, optional
+    numeric components and an optional composite). A missing composite is kept
+    missing -- fusing components is a research decision, not a webhook's job.
+    Each delivery returns a receipt; evidence never grants a trade permission.
+    """
+    return _deliver_webhook(payload, kind="sentiment", label="sentiment")
+
+
+@app.post("/webhooks/ssrn")
+def webhook_ssrn(payload: Any = Body(None)) -> Dict:
+    """Raw-shaped SSRN seam (row 750).
+
+    An item posted here is an SSRN paper (id, title, abstract, authors,
+    keywords, posted, url) and is normalised *as* an SSRN paper -- a payload
+    that claims a different `source_kind` is refused (kind_mismatch), never
+    silently re-read. Evidence enters the plane, never a Strategy; each
+    delivery returns a receipt; evidence never grants a trade permission.
+    """
+    return _deliver_webhook(payload, kind="ssrn", label="ssrn")
+
+
+@app.post("/webhooks/news")
+def webhook_news(payload: Any = Body(None)) -> Dict:
+    """Raw-shaped news seam (row 750).
+
+    An item posted here is a news article (title, url or id, source,
+    published, optional summary and explicit markets) and is normalised *as*
+    news -- a payload that claims a different `source_kind` is refused
+    (kind_mismatch), never silently re-read. A story is not a hypothesis: only
+    the publisher's own summary becomes one. Evidence never grants a trade
+    permission.
+    """
+    return _deliver_webhook(payload, kind="news", label="news")
+
+
+# ---------------------------------------------------------------------------
+# Research Knowledge Factory (row 748, P3): the package objects a research
+# mission returns into the canonical core. A package may only cite existing
+# evidence, and nothing here grants or reads a trade permission.
+# ---------------------------------------------------------------------------
+
+
+def _research_factory():
+    from research.knowledge import ResearchKnowledgeFactory
+    return ResearchKnowledgeFactory()
+
+
+def _guard_factory(actor: Optional[str]):
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to use the research "
+                       "factory; create a user first")})
+    return None
+
+
+@app.post("/research/packages")
+def research_record_package(payload: Optional[Dict] = None) -> Dict:
+    """Record a Research Knowledge Factory package (row 748).
+
+    The lineage rule is load-bearing: every cited `evidence_ids` entry must
+    name an evidence row that already exists, or the package is refused
+    (fail-closed -- a knowledge entry is never fabricated from thin air). The
+    response carries the resolved evidence lineage and `backed_trust` (the
+    highest ladder among the cited evidence); evidence maturity lives on the
+    evidence, never on the package.
+    """
+    factory = _research_factory()
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    payload = payload or {}
+    try:
+        package = factory.record_package(
+            title=payload.get("title", ""),
+            evidence_ids=payload.get("evidence_ids") or [],
+            hypothesis=payload.get("hypothesis", ""),
+            method=payload.get("method", ""),
+            limits=payload.get("limits", ""),
+            note=payload.get("note", ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_package", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the research factory could not be written",
+            "error": str(exc)})
+    return {"ok": True, "package": package, "action": "recorded",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/packages")
+def research_list_packages(status: str = "", evidence_id: str = "") -> Dict:
+    """List recorded research packages; filter by status or citing evidence."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        rows = _research_factory().list_all(status=status,
+                                            evidence_id=evidence_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_filter", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the research factory could not be read",
+            "error": str(exc)})
+    return {"ok": True, "count": len(rows), "packages": rows,
+            "read_only": True, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/packages/{package_id}")
+def research_get_package(package_id: str) -> Dict:
+    """Read one research package, or a distinct 404."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        package = _research_factory().get(package_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the research factory could not be read",
+            "error": str(exc)})
+    if package is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "package_id": package_id,
+            "reason": "unknown_package", "detail": "no such research package"})
+    return {"ok": True, "package": package, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/knowledge")
+def research_knowledge_surface() -> Dict:
+    """The factory's summary: per-status buckets and citation coverage."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        summary = _research_factory().summary()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the research factory could not be read",
+            "error": str(exc)})
+    return {"ok": True, "knowledge": summary, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/growth")
+def research_growth_surface() -> Dict:
+    """Evidence-Backed Growth compliance surface (row 748).
+
+    Reports ONLY what exists: per source family, how many evidence rows and
+    how many packages reference it, and whether it is content-ready (at least
+    one evidence row AND one package citing that family). No evidence, no
+    package -- never papered over with an invented demand number.
+    """
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        growth = _research_factory().growth()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the growth surface could not be read",
+            "error": str(exc)})
+    return {"ok": True, "growth": growth, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+# ---------------------------------------------------------------------------
+# RMI Factory -- formal source registry + scored research queue (row 749,
+# RMI-01). The AI does NOT pick at random what to research: sources are
+# registered and the lab works the queue top-down. Neither surface grants or
+# reads a trade permission.
+# ---------------------------------------------------------------------------
+
+
+def _research_sources_service():
+    from research.sources.registry import SourceRegistryService
+    return SourceRegistryService()
+
+
+def _research_queue_service():
+    from research.queue.research_queue import ResearchQueueService
+    return ResearchQueueService()
+
+
+def _guard_factory(actor: Optional[str]):
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": ("no acting principal exists to use the research "
+                       "factory; create a user first")})
+    return None
+
+
+@app.post("/research/sources")
+def research_register_source(payload: Optional[Dict] = None) -> Dict:
+    """Register one RMI source in the formal source ledger (row 749).
+
+    A source enters the ledger with a canonical slug, one of the seven
+    `source_type` categories, the plane family it feeds (`kind`) and a
+    provider; unknown type/kind/status/cost, a malformed slug and a duplicate
+    source_id are refused (400). The registry is reference data -- never a
+    permission.
+    """
+    service = _research_sources_service()
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    payload = payload or {}
+    try:
+        source = service.register(
+            source_id=payload.get("source_id", ""),
+            source_type=payload.get("source_type", ""),
+            provider=payload.get("provider", ""),
+            kind=payload.get("kind", ""),
+            url_or_feed=payload.get("url_or_feed", ""),
+            frequency=payload.get("frequency", ""),
+            markets=payload.get("markets"),
+            topics=payload.get("topics"),
+            reliability=payload.get("reliability", 0.0),
+            cost=payload.get("cost", "free"),
+            license=payload.get("license", ""),
+            status=payload.get("status", "active"),
+            note=payload.get("note", ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_source", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the source registry could not be written",
+            "error": str(exc)})
+    return {"ok": True, "source": source, "action": "registered",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/sources")
+def research_list_sources(source_type: str = "", kind: str = "",
+                          status: str = "") -> Dict:
+    """List the registered sources; filter by type, kind or status."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        rows = _research_sources_service().list_all(
+            source_type=source_type, kind=kind, status=status)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_filter", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the source registry could not be read",
+            "error": str(exc)})
+    return {"ok": True, "count": len(rows), "sources": rows,
+            "read_only": True, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/sources/{source_id}")
+def research_get_source(source_id: str) -> Dict:
+    """Read one registered source, or a distinct 404."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        source = _research_sources_service().get(source_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the source registry could not be read",
+            "error": str(exc)})
+    if source is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "source_id": source_id,
+            "reason": "unknown_source", "detail": "no such registered source"})
+    return {"ok": True, "source": source, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/research/sources/{source_id}/sync")
+def research_mark_source_synced(source_id: str) -> Dict:
+    """Mark a source as just synced (an ingestion run reported in)."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        source = _research_sources_service().mark_synced(source_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "source_id": source_id,
+            "reason": "unknown_source", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the source registry could not be updated",
+            "error": str(exc)})
+    return {"ok": True, "source": source, "action": "synced",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/research/queue")
+def research_enqueue(payload: Optional[Any] = Body(None)) -> Dict:
+    """Enqueue one research problem (dict) or a burst (list) into the queue.
+
+    A dict enqueues a single scored problem and returns the stored, enriched
+    item; a list returns per-candidate receipts -- one bad candidate (a missing
+    problem, an out-of-range dimension, a ghost evidence id) is refused with
+    its reason and never kills the rest of the burst (bus contract, row 747).
+    """
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    service = _research_queue_service()
+    if isinstance(payload, list):
+        try:
+            return {"ok": True, **service.enqueue_batch(payload)}
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse(status_code=503, content={
+                "ok": False, "reason": "store_unavailable",
+                "detail": "the research queue could not be written",
+                "error": str(exc)})
+    payload = payload or {}
+    try:
+        item = service.enqueue(
+            problem=payload.get("problem", ""),
+            expected_value=payload.get("expected_value", 0.0),
+            data_availability=payload.get("data_availability", 0.0),
+            research_cost=payload.get("research_cost", 0.0),
+            risk=payload.get("risk", 0.0),
+            novelty=payload.get("novelty", 0.0),
+            reproducibility=payload.get("reproducibility", 0.0),
+            evidence_ids=payload.get("evidence_ids"),
+            note=payload.get("note", ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_problem", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the research queue could not be written",
+            "error": str(exc)})
+    return {"ok": True, "item": item, "action": "enqueued",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/queue")
+def research_list_queue(status: str = "") -> Dict:
+    """List the scored queue top-down (highest priority first)."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        rows = _research_queue_service().list_all(status=status)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_filter", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the research queue could not be read",
+            "error": str(exc)})
+    return {"ok": True, "count": len(rows), "items": rows, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/queue/summary")
+def research_queue_summary_surface() -> Dict:
+    """Queue summary: per-status counts, average queued priority, next-up."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        summary = _research_queue_service().summary()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the research queue could not be read",
+            "error": str(exc)})
+    return {"ok": True, "queue": summary, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/queue/{item_id}")
+def research_get_queue_item(item_id: str) -> Dict:
+    """Read one queue item, or a distinct 404."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        item = _research_queue_service().get(item_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the research queue could not be read",
+            "error": str(exc)})
+    if item is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "item_id": item_id,
+            "reason": "unknown_queue_item", "detail": "no such queue item"})
+    return {"ok": True, "item": item, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+def _queue_transition_route(item_id: str, to: str) -> Dict:
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    service = _research_queue_service()
+    try:
+        if service.get(item_id) is None:
+            return JSONResponse(status_code=404, content={
+                "ok": False, "item_id": item_id,
+                "reason": "unknown_queue_item", "detail": "no such queue item"})
+        item = getattr(service, to)(item_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "item_id": item_id,
+            "reason": "invalid_transition", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the research queue could not be updated",
+            "error": str(exc)})
+    return {"ok": True, "item": item, "action": to,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/research/queue/{item_id}/start")
+def research_queue_start(item_id: str) -> Dict:
+    """Move a queued problem into active (a mission picked it up)."""
+    return _queue_transition_route(item_id, "start")
+
+
+@app.post("/research/queue/{item_id}/complete")
+def research_queue_complete(item_id: str) -> Dict:
+    """Complete an active problem (a mission finished it)."""
+    return _queue_transition_route(item_id, "complete")
+
+
+@app.post("/research/queue/{item_id}/supersede")
+def research_queue_supersede(item_id: str) -> Dict:
+    """Retire a queued/active problem; the row stays as provenance."""
+    return _queue_transition_route(item_id, "supersede")
+
+
+# ---------------------------------------------------------------------------
+# RMI-03 (row 752): the Paperclip -> Research Mission -> CrewAI -> Research
+# Package loop (MASTER_ARCHITECTURE s8/s9) plus the Ollama intelligence
+# router report (s6). A mission is a research assignment: it grants nothing,
+# reads nothing about authority, and every payload names the Risk Governor.
+# ---------------------------------------------------------------------------
+
+
+def _research_mission_service():
+    from research.missions.service import ResearchMissionService
+    return ResearchMissionService()
+
+
+@app.post("/research/missions")
+def research_create_mission(payload: Optional[Dict] = None) -> Dict:
+    """Paperclip issues a Research Mission against an existing queue problem.
+
+    The queue decides what may be studied (row 749); the mission assigns it
+    to the canonical four-role CrewAI crew. An unknown queue item is a
+    distinct 404, a refused creation (empty brief, terminal problem, an
+    already-open mission on the same item) is a 400 `invalid_mission`.
+    """
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    payload = payload or {}
+    queue_item_id = str(payload.get("queue_item_id", "")).strip()
+    if _research_queue_service().get(queue_item_id) is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "item_id": queue_item_id,
+            "reason": "unknown_queue_item", "detail": "no such queue item"})
+    try:
+        mission = _research_mission_service().create(
+            queue_item_id=queue_item_id,
+            brief=payload.get("brief", ""),
+            model=payload.get("model", ""),
+            note=payload.get("note", ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_mission", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the mission ledger could not be written",
+            "error": str(exc)})
+    return {"ok": True, "mission": mission, "action": "created",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/missions")
+def research_list_missions(status: str = "") -> Dict:
+    """List research missions, newest first; optional lifecycle filter."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        rows = _research_mission_service().list_all(status=status)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_filter", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the mission ledger could not be read",
+            "error": str(exc)})
+    return {"ok": True, "count": len(rows), "missions": rows,
+            "read_only": True, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/missions/summary")
+def research_missions_summary_surface() -> Dict:
+    """Mission summary: per-status counts, open missions, known statuses."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        summary = _research_mission_service().summary()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the mission ledger could not be read",
+            "error": str(exc)})
+    return {"ok": True, "missions": summary, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/missions/{mission_id}")
+def research_get_mission(mission_id: str) -> Dict:
+    """Read one research mission (with its queue item and delivered package),
+    or a distinct 404."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        mission = _research_mission_service().get(mission_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the mission ledger could not be read",
+            "error": str(exc)})
+    if mission is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "mission_id": mission_id,
+            "reason": "unknown_mission", "detail": "no such research mission"})
+    return {"ok": True, "mission": mission, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/research/missions/{mission_id}/start")
+def research_mission_start(mission_id: str) -> Dict:
+    """assigned -> running; picks a still-queued queue item up (queued ->
+    active) and reports which queue transition was performed."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    service = _research_mission_service()
+    try:
+        if service.get(mission_id) is None:
+            return JSONResponse(status_code=404, content={
+                "ok": False, "mission_id": mission_id,
+                "reason": "unknown_mission",
+                "detail": "no such research mission"})
+        mission = service.start(mission_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_transition", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the mission ledger could not be updated",
+            "error": str(exc)})
+    return {"ok": True, "mission": mission, "action": "started",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/research/missions/{mission_id}/deliver")
+def research_mission_deliver(mission_id: str,
+                             payload: Optional[Dict] = None) -> Dict:
+    """running -> delivered: record the crew's Research Package first
+    (fail-closed lineage -- a package citing nothing or citing a ghost is
+    refused and the mission stays running), then stamp the mission and
+    complete the queue item."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    service = _research_mission_service()
+    payload = payload or {}
+    try:
+        if service.get(mission_id) is None:
+            return JSONResponse(status_code=404, content={
+                "ok": False, "mission_id": mission_id,
+                "reason": "unknown_mission",
+                "detail": "no such research mission"})
+        mission = service.deliver(
+            mission_id=mission_id,
+            title=payload.get("title", ""),
+            evidence_ids=payload.get("evidence_ids") or [],
+            hypothesis=payload.get("hypothesis", ""),
+            method=payload.get("method", ""),
+            limits=payload.get("limits", ""),
+            note=payload.get("note", ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_delivery", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the mission ledger could not be updated",
+            "error": str(exc)})
+    return {"ok": True, "mission": mission, "action": "delivered",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/research/missions/{mission_id}/fail")
+def research_mission_fail(mission_id: str,
+                          payload: Optional[Dict] = None) -> Dict:
+    """assigned|running -> failed, with the stated reason kept on the row; the
+    queue item stays as provenance (the problem remains in the ledger)."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    service = _research_mission_service()
+    payload = payload or {}
+    try:
+        if service.get(mission_id) is None:
+            return JSONResponse(status_code=404, content={
+                "ok": False, "mission_id": mission_id,
+                "reason": "unknown_mission",
+                "detail": "no such research mission"})
+        mission = service.fail(mission_id, payload.get("note", ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_transition", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the mission ledger could not be updated",
+            "error": str(exc)})
+    return {"ok": True, "mission": mission, "action": "failed",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/intelligence")
+def research_intelligence_router() -> Dict:
+    """The Ollama intelligence router report (MASTER_ARCHITECTURE s6).
+
+    Which tier (fast local / strong local) would run each task class and with
+    which model, from what is actually known: the configured model (env) and
+    the local Ollama catalogue, probed best-effort with a short timeout. No
+    model is ever called from this route, and an offline server yields the
+    honest `unavailable` source -- never an invented model name.
+    """
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        from research.missions.intelligence import router_report
+        report = router_report()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the intelligence router could not be read",
+            "error": str(exc)})
+    return {"ok": True, "router": report, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
 
 
 # ---------------------------------------------------------------------------
@@ -1730,10 +3565,17 @@ def paper_engine_start(payload: Dict) -> Dict:
     `paper=True` is not a label: each symbol gets a `PaperExecutor` desk, so an
     approved candidate is filled on paper and no order path to the venue is
     ever constructed.
+
+    Starting the paper desk stops a running live desk. One account is traded
+    once: leaving both up over the same symbols would consume each opportunity
+    twice and report paper fills against a live account that never took them.
     """
     _guard(Entitlement.CAN_TRADE)
-    from operations.live_engine import paper_engine
+    from operations.live_engine import live_engine, paper_engine
     interval = float(payload.get("interval", 30))
+    if live_engine is not None and live_engine is not paper_engine:
+        if live_engine.status().get("running"):
+            live_engine.stop()
     started = paper_engine.start(interval)
     st = paper_engine.status()
     return {"started": started, "interval": interval,
@@ -1746,6 +3588,98 @@ def paper_engine_stop() -> Dict:
     from operations.live_engine import paper_engine
     paper_engine.stop()
     return {"stopped": True, "status": paper_engine.status()}
+
+
+# ---------------------------------------------------------------------------
+# Live MT5 execution (real venue orders) -- OFF unless explicitly armed
+# ---------------------------------------------------------------------------
+
+@app.get("/mt5/engine")
+def mt5_engine_status() -> Dict:
+    """Whether real MT5 execution is armed, and what would let it trade.
+
+    Read-only and not entitlement-gated, for the same reason as
+    `/paper/engine`: an operator must be able to see that live trading is NOT
+    armed without holding CAN_TRADE. The payload carries arm state, the
+    promotion-cleared strategies and engine status -- no position, credential
+    or order data.
+
+    `armed` and `promotion_cleared` are reported separately on purpose. Either
+    one alone refuses the start, and a single "ready" boolean would hide which
+    of the two is missing.
+    """
+    from operations.live_engine import (ORDER_ELIGIBLE_STAGES, live_engine,
+                                        mt5_live_armed,
+                                        promotion_cleared_strategies)
+    cleared = promotion_cleared_strategies()
+    armed = mt5_live_armed()
+    return {
+        "armed": armed,
+        "arm_flag": "MT5_LIVE_TRADING",
+        "promotion_cleared": cleared,
+        "promotion_cleared_count": len(cleared),
+        "eligible_stages": list(ORDER_ELIGIBLE_STAGES),
+        "would_start": bool(armed and cleared),
+        "refusals": ([] if armed else
+                     ["MT5_LIVE_TRADING is not enabled"]) + (
+                         [] if cleared else
+                         ["no strategy is at the paper/production stage"]),
+        "status": live_engine.status(),
+    }
+
+
+@app.post("/mt5/engine/start")
+def mt5_engine_start(payload: Dict) -> Dict:
+    """Start the live MT5 decision loop, placing real venue orders.
+
+    Gated three ways, and the refusal reasons are returned rather than logged
+    and swallowed: CAN_TRADE, the `MT5_LIVE_TRADING` arm flag, and at least one
+    promotion-cleared strategy. The engine re-checks the last two itself, so
+    this route is convenience rather than the security boundary.
+    """
+    _guard(Entitlement.CAN_TRADE)
+    from operations.live_engine import (live_engine, mt5_live_armed,
+                                        promotion_cleared_strategies)
+    if not mt5_live_armed():
+        raise HTTPException(
+            status_code=403,
+            detail="MT5_LIVE_TRADING is not enabled. Real venue orders stay off "
+                   "until the operator arms them explicitly; this is the same "
+                   "default-off convention as CEX_LIVE_ALLOWED.")
+    cleared = promotion_cleared_strategies()
+    if not cleared:
+        raise HTTPException(
+            status_code=403,
+            detail="no strategy is at the paper/production stage, so the "
+                   "governor would veto every candidate. Promote a validated "
+                   "strategy first.")
+    interval = float(payload.get("interval", 30))
+    # One account, one desk. Stop the paper desk here as well as inside the
+    # engine, so the rule is visible at the route and does not depend on the
+    # engine's internals: a paper fill reported against a live account that
+    # never took it is worse than either desk being plainly off.
+    from operations.live_engine import paper_engine
+
+    if paper_engine is not None and paper_engine is not live_engine:
+        if paper_engine.status().get("running"):
+            paper_engine.stop()
+    started = live_engine.start(interval)
+    if not started:
+        raise HTTPException(status_code=409,
+                            detail=f"live engine refused to start: "
+                                   f"{live_engine.status().get('errors')}")
+    st = live_engine.status()
+    return {"started": True, "interval": interval, "live": True,
+            "promotion_cleared": cleared,
+            "symbols": st.get("symbols"), "status": st}
+
+
+@app.post("/mt5/engine/stop")
+def mt5_engine_stop() -> Dict:
+    _guard(Entitlement.CAN_TRADE)
+    from operations.live_engine import live_engine
+    live_engine.stop()
+    return {"stopped": True, "status": live_engine.status()}
 
 
 # ---------------------------------------------------------------------------
@@ -1774,6 +3708,82 @@ def payments_wallet(user_id: str) -> Dict:
         if identity.get_user(user_id) is None:
             raise HTTPException(status_code=404, detail="user not found")
     return wallet
+
+
+@app.get("/payments/products")
+def payments_products(user_id: str = "") -> Dict:
+    """The catalogue of things that can be bought, and what the caller holds.
+
+    Separate from `/payments/status` on purpose: that one is the provider's
+    view of the deployment, this one is a shopping list. They were merged for a
+    while and the result was a route whose answer changed meaning depending on
+    who asked.
+
+    §34.19 is why this is a catalogue and not a boolean: `challenge_management`
+    has to be the same thing the operator buys and the thing the governor
+    checks, or one of the two is describing a service that does not exist.
+    """
+    from governance.products import products
+
+    actor = user_id or _acting_actor() or ""
+    if user_id:
+        _own(user_id, action="read the product holdings of")
+    return {"ok": True, "catalog": products.catalog(),
+            "actor": actor or None,
+            "entitlements": (products.status(actor)
+                              if actor else {"entitlements": []})}
+
+
+@app.post("/payments/product")
+def payments_product_charge(payload: Dict) -> Dict:
+    """Buy a product at the server's price and activate it on confirmation (§34.2).
+
+    Deliberately NOT `/payments/charge` with a plan name. A plan goes through
+    `activate_subscription`, which REPLACES the user's entitlements: routing a
+    $9.99 challenge purchase through that path would remove `can_trade` from the
+    operator who just paid, which is the silent downgrade this codebase already
+    shipped once and had to fix. The separate route is the fix.
+
+    The request carries `product_id` and nothing about money. Price, duration
+    and the entitlement itself are read from `governance.products`, so a caller
+    cannot buy the service at a price it chooses, and cannot buy an entitlement
+    it chooses.
+
+    The entitlement is granted by the billing service, never by this route:
+    sandbox confirms inline, live providers leave the charge PENDING until a
+    verified webhook arrives. §34.20 is the reason — a failed payment must not
+    leave a half-activated service behind.
+    """
+    from governance.payments import PaymentLockedError, PaymentProviderKind
+    from governance.payments import payments_service as svc
+    from governance.products import get_product
+
+    user_id = str(payload.get("user_id", "") or "")
+    _own(user_id, action="buy a product for")
+    product_id = str(payload.get("product_id", "") or "").strip()
+    product = get_product(product_id)
+    if product is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown product {product_id!r}; "
+                   "price and entitlement come from the catalogue")
+    if identity.get_user(user_id) is None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    prov = None
+    provider_name = str(payload.get("provider", "") or "")
+    if provider_name and provider_name != PaymentProviderKind.SANDBOX.value:
+        prov = build_payment_provider_for_name(provider_name)
+    try:
+        result = svc.charge_product(user_id, product.product_id, provider=prov)
+    except PaymentLockedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result.status.value == "failed":
+        raise HTTPException(status_code=400,
+                            detail=result.message or "charge failed")
+    return {"ok": True, **result.as_dict(),
+            "entitlement": product.entitlement.value,
+            "grants_trade_permission": product.grants_trade_permission}
 
 
 @app.post("/payments/charge")
@@ -2513,6 +4523,98 @@ def research_summary() -> Dict:
         "by_stage": by_stage,
         "bottlenecks": bottlenecks,
         "template": "work the highest-fail gate first in the Strategy Lab",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Research Factory pipeline (UX-14, row 768). One honest live read that walks
+# the WebInterface spec's Research Factory (section 8, line 140): External
+# World -> n8n -> Normalization -> Deduplication -> Ollama -> Evidence ->
+# Research Queue -> Paperclip/CrewAI -> Research Mission -> Strategy Lab ->
+# Validation -> Governance. Every figure is a live count read from the same
+# canonical service the individual surfaces read -- never a hard-coded number,
+# never a guess for an empty store. A stage whose store cannot be read, or
+# that is a processing step rather than a ledger (the Ollama layer reports
+# reachability, not a count), carries count=null; the UI renders "--".
+# ---------------------------------------------------------------------------
+
+RESEARCH_FACTORY_STAGES = (
+    "external_world",
+    "n8n",
+    "normalization",
+    "deduplication",
+    "ollama",
+    "evidence",
+    "research_queue",
+    "paperclip_crewai",
+    "research_mission",
+    "strategy_lab",
+    "validation",
+    "governance",
+)
+
+
+def _research_factory_pipeline() -> List[Dict]:
+    from research.evidence_plane import EvidencePlaneService
+
+    def _safe_summary(reader) -> Dict:
+        try:
+            value = reader()
+        except Exception:  # noqa: BLE001
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _safe_entries(reader):
+        try:
+            value = reader()
+        except Exception:  # noqa: BLE001
+            return None
+        return value if isinstance(value, list) else None
+
+    sources = _safe_summary(lambda: _research_sources_service().summary())
+    evidence = _safe_summary(EvidencePlaneService().summary)
+    queue = _safe_summary(lambda: _research_queue_service().summary())
+    missions = _safe_summary(lambda: _research_mission_service().summary())
+    mission_status = missions.get("per_status") or {}
+    lab_entries = _safe_entries(_lab_registry_entries)
+    lab_total = None if lab_entries is None else len(lab_entries)
+    validated = (None if lab_entries is None
+                 else sum(1 for e in lab_entries if e.get("validation")))
+    cr_rows = _safe_entries(lambda: _cr_store().list())
+    governance = None if cr_rows is None else len(cr_rows)
+
+    return [
+        {"stage": "external_world", "count": sources.get("total")},
+        {"stage": "n8n", "count": sources.get("synced")},
+        {"stage": "normalization", "count": sources.get("active")},
+        {"stage": "deduplication", "count": evidence.get("total")},
+        {"stage": "ollama", "count": None},
+        {"stage": "evidence", "count": evidence.get("total")},
+        {"stage": "research_queue", "count": queue.get("total")},
+        {"stage": "paperclip_crewai",
+         "count": mission_status.get("running")},
+        {"stage": "research_mission", "count": missions.get("total")},
+        {"stage": "strategy_lab", "count": lab_total},
+        {"stage": "validation", "count": validated},
+        {"stage": "governance", "count": governance},
+    ]
+
+
+@app.get("/research/factory")
+def research_factory_surface() -> Dict:
+    """UX-14 (row 768): one live read over the whole Research Factory.
+
+    Walks the WebInterface pipeline (spec section 8, line 140) from the
+    External World through n8n, normalization, deduplication, the Ollama
+    layer, the Evidence Plane, the research queue and missions, the Strategy
+    Lab, validation and governance. Read-only: no mutation, no authorisation.
+    """
+    return {
+        "ok": True,
+        "stages": _research_factory_pipeline(),
+        "read_only": True,
+        "is_authorisation": False,
+        "trade_authority": "risk/governor.py",
     }
 
 
@@ -3876,3 +5978,108 @@ def challenge_recover(account_id: str, payload: Dict) -> Dict:
     except Exception:  # noqa: BLE001
         pass
     return {"ok": True, **result}
+
+
+# ---------------------------------------------------------------------------
+# Execution truth (UX-16, M11.17): intent -> order -> acknowledgement -> fill
+# -> position -> close -> real PnL, with latency / slippage / fill ratio /
+# rejection / venue / broker / ticket / strategy / decision id -- the Execution
+# Truth Plane (spec section 7, line 118). A read-only overlay over the one
+# canonical state plus the filled experience ledger; it never fabricates a row
+# and every figure derives from a store the server can show for itself.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/execution/truth")
+def execution_truth() -> Dict:
+    """Read-only Execution Truth plane (spec section 7 line 118)."""
+    from core.contracts import OrderStatus  # noqa: PLC0415
+
+    orders = [o.as_dict() for o in sorted(
+        state.orders.values(), key=lambda o: o.created_at, reverse=True)]
+    positions = [p.as_dict() for p in state.open_positions()]
+    account = state.account.as_dict()
+
+    counts: Dict[str, int] = {}
+    filled, rejected, partial = 0, 0, 0
+    total_volume = 0.0
+    slippages: List[float] = []
+    for o in orders:
+        st_raw = o.get("status")
+        st = str(getattr(st_raw, "value", None) or st_raw or "")
+        counts[st] = counts.get(st, 0) + 1
+        total_volume += float(o.get("volume") or 0.0)
+        if st == OrderStatus.FILLED.value:
+            filled += 1
+            slippages.append(float(o.get("slippage") or 0.0))
+        elif st == OrderStatus.REJECTED.value:
+            rejected += 1
+        elif st == OrderStatus.PARTIAL.value:
+            partial += 1
+
+    terminal = filled + partial + rejected
+    fill_ratio = (filled / terminal) if terminal else 0.0
+
+    venues = sorted({str(o.get("venue") or "") for o in orders}
+                    | {str(account.get("broker") or "")})
+    venues = [v for v in venues if v]
+
+    open_realized = sum(float(p.get("realized_pnl") or 0.0) for p in positions)
+    open_unrealized = sum(
+        float(p.get("unrealized_pnl") or 0.0) for p in positions)
+
+    # The Execution Truth learning surface: the experience ledger's *filled*
+    # records (slippage, latency, fees, fill quality, realized PnL). A missing
+    # or unreadable ledger is null, never a zero -- an empty store is visible.
+    learning: Optional[Dict[str, Any]] = None
+    try:
+        ledger.load_from_db()  # lazy: refill from persistence after a restart
+        from learning.learning_split import execution_learning  # noqa: PLC0415
+        learning = execution_learning(list(ledger.all()))
+    except Exception:  # noqa: BLE001
+        learning = None
+
+    lc = learning or {}
+    lc_count = int(lc.get("count") or 0)
+    metrics = {
+        "avg_slippage": (round(sum(slippages) / len(slippages), 4)
+                         if slippages
+                         else (float(lc.get("avg_slippage") or 0.0)
+                               if lc_count else None)),
+        "avg_latency_ms": (float(lc.get("avg_delay_ms") or 0.0)
+                           if lc_count else None),
+        "fees": (float(lc.get("avg_fees") or 0.0) if lc_count else None),
+        "realized_pnl": (float(lc.get("net_pnl") or 0.0)
+                         if lc_count else None),
+        "unrealized_pnl": round(open_unrealized, 4),
+        "total_volume": round(total_volume, 4),
+    }
+    lifecycle = {
+        "intents": len(orders),
+        "pending": counts.get(OrderStatus.PENDING.value, 0),
+        "submitted": counts.get(OrderStatus.SUBMITTED.value, 0),
+        "filled": filled,
+        "partial": partial,
+        "rejected": rejected,
+        "cancelled": counts.get(OrderStatus.CANCELLED.value, 0),
+        "expired": counts.get(OrderStatus.EXPIRED.value, 0),
+        "fill_ratio": round(fill_ratio, 4),
+        "rejections": rejected,
+        "positions_open": len(positions),
+        "positions_closed": (None if not lc_count else lc_count),
+        "open_realized_pnl": round(open_realized, 4),
+    }
+
+    return {
+        "generated_at": time.time(),
+        "read_only": True,
+        "is_authorisation": False,
+        "source": "overlay",
+        "account": account,
+        "orders": orders,
+        "positions": positions,
+        "venues": venues,
+        "lifecycle": lifecycle,
+        "metrics": metrics,
+        "learning": learning,
+    }

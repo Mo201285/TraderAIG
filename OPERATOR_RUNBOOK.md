@@ -276,7 +276,7 @@ python tools\tradraig.py portfolio clear --strategy s1             # حذف سق
 ## الصلاحيات جهة الخادم (Entitlements، 28.17)
 
 نقاط القرار (سياسة المخاطر، محرك/تنفيذ CEX وMT5، تخصيص رأس المال،
-`research promote/quarantine/revalidate`، `ops/review/apply`، طلبات التغيير،
+`research promote/quarantine/revalidate`، ونقاط RMI (`research/sources` السجل، `research/queue` قائمة البحث)، ومجاهر التغذية الخارجية (`webhooks/macro|sentiment|ssrn|news`)، `ops/review/apply`، طلبات التغيير،
 ترقية/اختبار استراتيجيات المستخدم) تقفل على اشتراك **الهوية المُشغِّلة** قبل
 أي تغيير دائم؛ اللوحة تعكس فقط ولا تمنح. لا هوية بعد = وضع bootstrap: البوابة تُبلَّغ `inactive`
 وتمر بصدق (لا "مفتوحة مزيفة")؛ بمجرد وجود هوية تصبح صلبة.
@@ -518,6 +518,51 @@ python tools\tradraig.py opportunity reject --id OPP-XXXX --reason "جلسة م�
 `CAN_MANAGE_RISK`. كلا القرارين موثّق في `/audit` (`opportunity.approve/reject`).
 لوحة `decision/data/opportunities.json` محدودة (250) ومكتوبة بتأخير، والانتقالات المحكومة
 تُكتب فورًا.
+## خدمة إدارة حسابات التحديات (Challenge Management، 34)
+
+الخدمة تُشترى كمنتج مستقل بـ **$9.99** (`challenge_basic`)، وهي **ليست** خطة اشتراك ولا
+تمنح صلاحية التداول (`grants_trade_permission=false`). الخطة المؤسسية لا تشمل
+`challenge_management` عمدًا: مصدر واحد للحقيقة، وإلا صار لدى العميل المؤسسي جوابان لسؤال
+«هل الخدمة مُفعّلة؟» (34.18).
+
+الدفع وحده **لا يكفي** لبدء أي تنفيذ: التفعيل يأتي من نظام الفوترة فقط — sandbox يسجّل
+`SUCCEEDED` مباشرة، والمزوّد الحي يترك الشحن `PENDING` حتى يصل **webhook موثّق التوقيع**
+(34.2). لا تفعّل الخدمة يدويًا بعد أن يقول لك متصفحك أن الدفع نجح.
+
+```powershell
+python tools\tradraig.py products                              # الكتالوج + ما هو مملوك
+python tools\tradraig.py challenge status                      # الحالة التجارية + headroom
+python tools\tradraig.py challenge policy                      # ملخص السجل + الحسابات
+python tools\tradraig.py challenge policy --provider-name DemoProp --program "Classic 2-Step"
+python tools\tradraig.py challenge buy --user <user_id>        # شراء 34.19 بالسعر من الخادم
+```
+
+- السعر والمدة والصلاحية تُقرأ من `governance/products.py` على الخادم؛ لا يمكن للعميل أن
+  يشتري بسعر يختاره أو صلاحية يختارها.
+- `challenge buy` يطلب `user_id` صراحةً. على هذا المضيف (single-tenant) الشراء لهوية غير
+  الهية الفاعلة يرجع **403 ownership denied** — وهذا هو السلوك الصحيح.
+- **لا تحذّر من `bootstrap=True`**: يعني أنه لا توجد هوية فاعلة بعد، فليس هناك من ندفع له.
+  يمرّ التهيئة الأولى، ويبقى `Risk Governor` رافضًا حتى الدفع.
+- `challenge status` يعرض أيضًا `trade permission: no` — هذا مقصود: الخدمة تحمي حسابًا ولا
+  تمنح تفويضًا بالتداول.
+
+### البوابة عند الصفقة، لا عند اللوحة
+
+الحكم الحقيقي يقع في `RiskGovernor` قبل كل صفقة على حسابChallenge مُسجَّل
+(`TRADERAIG_CHALLENGE_PROGRAM`). سلّم الأذونات (§34.7) يُطبَّق الإقلاع الأكثر تقييدًا:
+
+| الإذن | على الصفقة | المعنى |
+| --- | --- | --- |
+| `allow` | تمر | الطلب داخل كل الحدود |
+| `allow_reduced_risk` | تمر **مُصغَّرة** | الطلب يتجاوز الغرفة الآمنة لكنه يبقى داخل الغرفة المتبقية، فيُعاد التحجيم (34.9/34.23) |
+| `allow_only_high_quality` / `restrict` / `protect` / `halt` | تُرفض | راجع `risk_vetoes` |
+| — | ترفض | لم تُشترَ الخدمة، أو لا سياسة، أو أساس خط أساس غير موثوق |
+
+مثال 34.23 بالحروف: استراتيجية تريد **$700** والحساب يسمح بـ **$420** ← يُعاد التحجيم إلى
+≤ $420 ثم تحكم الحوكمة. والمقاس النهائي ملتزم **أضيق** قيد (34.9).
+
+> **إن كان خط الأساس مفترضًا (غير موثوق)** أو كانت السياسة غير موثّقة، فالغرفة **لا تُقدَّر كـ 0**؛ تُعرض
+> `unknown` ويُرفض التداول. رقم مبني على خط أساس مفترض «دقيق» هو أخطر رقم في هذه الشاشة.
 
 ## عرَض → إجراء (Symptom → Action)
 
@@ -528,6 +573,7 @@ python tools\tradraig.py opportunity reject --id OPP-XXXX --reason "جلسة م�
 | `GET /bridge/market` يعرض `rejected` غير صفر | إطار طرفية مرفوض بسببه (رمز مفقود/إطار غير معروف/قيمة مبتورة/عرض أحادي الجانب/بلا وقت تكة) | الحقل `reason` في آخر الرفضات يذكر السبب بالضبط — لا تُصلح بإدخال قيمة تقديرية، بل أصلح مُنتِج الإطار في الطرفية |
 | الطرفية لا تنشر أي إطار والـExperts log نظيف | ثلاثة أسباب صامتة تعلّمها ربط حقيقي: (1) المسار المطلق تحت Common خارج صندوق MQL5 فيعيد `err 5002` — يجب أن يكون المسار **نسبيًا** مع `FILE_COMMON`، والنتيجة على القرص `<TERMINAL_COMMONDATA_PATH>\Files\market\<SYMBOL>.json`؛ (2) الرمز يجب أن يكون رمز الـchart لا `InpSymbolFilter`؛ (3) الرمز الذي يملأ bid/ask فقط (BTCUSD) يُنشر بعد إصلاح شرط `last > 0` | تحقق من `Experts` log: TraderAIG يطبع `cannot write ... (err N)` مرة واحدة لكل جلسة مع `commonRootWritable`. واضبط `MT5_COMMON_DATA` على `<TERMINAL_COMMONDATA_PATH>\Files` |
 | لا تصل إطارات السوق من الطرفية رغم أن التداول يعمل | قناة السوق مغلقة افتراضيًا، أو الرمز غائب | اضبط `TRADERAIG_BRIDGE_TOKEN` على الطرفين (وإلا فالقناة مفتوحة محليًا) وشغّل `python scripts\mt5_bridge_proxy.py --market`، وللاستطلاع المنفصل شغّل الخادم بـ `TRADERAIG_MARKET_BRIDGE=1` |
+| ردّم `Risk governor` يقول `challenge management not entitled` | الحساب على حساب تحدي والخدمة لم تُشترى | `python tools\tradraig.py products` → `challenge buy --user <id>` — الدفع عبر المحافظة إلا الخارجًا (؛ 34.15) |
 | `shadowed` يظهر مصدرًا مثل `bridge:file` تحت نافذة `mt5` | هذا هو السلوك الصحيح: مصدر أدنى رتبة لا يزيح مالك النافذة | لا إجراء — الوصول إلى `GET /market/data` يعرض `single_source` و`source` الحقيقيين |
 | `start backend` لا يستجيب | فشل في الإقلاع | اقرأ `logs\backend.err.log` ثم `stop backend` + `start backend` |
 | شارة `MOCK PREVIEW` باللوحة | الواجهة متوقفة | `start backend` ثم حدّث الصفحة |
@@ -590,3 +636,58 @@ python scripts\mt5_live_session.py --no-trade   # إثبات التغذية ال
 - `ai/dspy/README.md` — تفاصيل طبقة الذكاء
 - `UPDATE.md` §50 — مواصفة المقاطع التشغيلية IIOS
 - `ENGINEERING MAST.md` §27 (قواعد ذكاء واستثمار TrederAIG) و§28 (قواعد المنتج/الموقع) و§3.1 (تسلسل مصدر الحقيقة الاستثماري) — العقد المؤسسي الحاكم
+
+## Live MT5 execution (production entry)
+
+Live MT5 trading is explicitly gated and starts only under the following conditions:
+
+- Environment flag: MT5_LIVE_TRADING must be set to an affirmative value (1, 	rue, yes, on) in the API process environment. Default is off.
+- Promotion-cleared strategies: at least one strategy must be at stage paper or production (promotion-cleared). Read-only check: GET /mt5/engine.
+- Strategy linkage: candidates must carry strategy_id (resolved live-stage prior). Unlinked candidates are vetoed at the adapter gate before order_send.
+- Mutual exclusion: one desk at a time. Starting live stops any running paper desk; starting paper stops any running live desk.
+- Identity/entitlements: caller must hold can_trade (user active, account linked, challenge binding active).
+
+Endpoints:
+- GET /mt5/engine (read-only): returns {armed, arm_flag, promotion_cleared, promotion_cleared_count, eligible_stages, would_start, refusals[], status{...}} — no PII/credentials. Use to verify readiness before starting.
+- POST /mt5/engine/start (requires CAN_TRADE): starts live loop. Refuses (403) if not armed or nothing promotion-cleared; returns 409 if engine refuses internally.
+- POST /mt5/engine/stop (requires CAN_TRADE): stops live loop.
+
+Verification:
+- GET /mt5/engine → would_start=true, rmed=true, promotion_cleared_count>=1, status.running reflects thread state.
+- GET /mt5/status shows MT5 connection/trade_allowed; last_error may appear transiently but is not a hard gate by itself.
+- One desk: after starting live, GET /paper/engine should show unning=false (and vice versa).
+
+Safe shutdown:
+- Stop live via POST /mt5/engine/stop before starting paper, or rely on mutual exclusion. Never run both simultaneously.
+
+Notes: The engine re-checks gates internally; the route is convenience. The adapter enforces 
+equire_strategy_linkage=True at execution time (fail-closed before order_send).
+
+## Account ↔ Strategy bindings (P1 — records + one read-only surface)
+
+The Research↔Account seam (`account_strategy_bindings`, row 741) exists as a
+**record layer**: one research strategy can run on N accounts without forking,
+keyed `(account_id, strategy_id, variant_hash)`. It has no console command, no
+write route and no engine hook yet, and nothing in it can authorise a trade
+(the Risk Governor remains the only trade authority).
+
+Status for an operator today:
+- `dashboard /system/health` isolation report now includes `orphaned_strategy_bindings`
+  (bindings whose account no longer exists — investigation wins, not silent rows).
+- Live smoke path: `accounts/strategy_bindings.py` binds only strategies the real
+  `registry.json` produced at/above `validated`, and stores the registry's own
+  variant digest by default.
+- **Read-only surface (landed):** `GET /accounts/{account_id}/bindings` is
+  ownership-guarded via `own_record_access()`, not `guard_account()` (D5 — the
+  latter stays unwired while `TRADERAIG_AUTH=0`). Returns `AccountStrategyBindings.summary()`
+  for the owner; `403 no_principal` in a bare uvicorn, `404` for an unknown
+  account. Covered by `tests/test_operations/test_account_binding_routes.py` (9).
+
+Not exposed by design: any write surface and multi-account *execution* — these
+stay explicitly out of P1. The post-P1 direction (row 742) adds an External Provider
+Registry + a read-only ForTraders adapter (verification/referral sits on the
+`Referral → Provider → Account → Policy → Binding → Entitlement` chain) before any
+entitlement wiring, and never introduces a `grants_trade_permission`.
+
+No operator workflow changes until those land; this section exists so the
+runbook's map matches the code.

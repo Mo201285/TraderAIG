@@ -1,4 +1,4 @@
-"""Repositories for the venue-neutral trade schema.
+﻿"""Repositories for the venue-neutral trade schema.
 
 Every method scopes by `account_id` in the WHERE clause, including the ones that
 a single-account deployment will only ever call with one value. That is
@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from persistence.db import make_live_session
 from persistence.models_trades import (
+    AccountStrategyBindingRecord,
     RoundTripRecord,
     TradeCycleRecord,
     TradeDealRecord,
@@ -698,3 +699,193 @@ class TradeCycleRepository(_ScopedRepository):
     @staticmethod
     def _row_to_dict(row: TradeCycleRecord) -> Dict[str, Any]:
         return {c.name: getattr(row, c.name) for c in row.__table__.columns}
+
+
+class AccountStrategyBindingRepository:
+    """Which approved strategy may run on which account.
+
+    **This is a permission record, not an execution authority.** Nothing here
+    grants the right to place an order, and no method returns a boolean named
+    like one. Whether a strategy may trade is decided by the Risk Governor against
+    the promotion stage, the challenge window and the account policy; a cached
+    `grants_trade_permission` column would be a second, staler answer to that
+    question and would still read `True` after a challenge had expired.
+
+    What lives here is the durable half of that decision: the operator said this
+    account may run this strategy version, with these overrides, in these sessions.
+    The governor's verdict is computed fresh every time.
+
+    **Bind only what the registry already cleared.** `bind()` takes the caller's
+    `variant_hash` and checks it against
+    `research/strategy_lab/data/registry.json` when a stage is supplied, so a
+    binding cannot name a variant the research plane has never heard of. A
+    mismatch raises rather than being recorded, because a binding to an unknown
+    variant is exactly the kind of row that later reads as "already approved".
+
+    The error discipline matches `AccountRegistryRepository`: a definite answer or
+    an exception. There is no "return empty because the store was unreachable"
+    path, because that ambiguity is how "this account may run nothing" becomes
+    indistinguishable from an outage.
+    """
+
+    def __init__(self, session: Optional[Session] = None) -> None:
+        self._injected = session
+        self._session = session
+
+    @contextmanager
+    def _db(self):
+        if self._injected is not None:
+            yield self._injected
+            return
+        session = self._session or make_live_session()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    @staticmethod
+    def _row_to_dict(row: AccountStrategyBindingRecord) -> Dict[str, Any]:
+        return {c.name: getattr(row, c.name) for c in row.__table__.columns}
+
+    def bind(self, *, account_id: str, strategy_id: str, variant_hash: str = "",
+             status: str = "pending", governance_state: str = "",
+             risk_override_json: Optional[str] = None,
+             allowed_sessions_json: Optional[str] = None,
+             bound_by_user_id: Optional[str] = None) -> Dict[str, Any]:
+        """Record (or correct) the binding of one strategy version to one account.
+
+        Upsert on `(account_id, strategy_id, variant_hash)`, so binding the same
+        version twice is a correction rather than a duplicate row.
+        """
+        account_id = str(account_id or "").strip()
+        strategy_id = str(strategy_id or "").strip()
+        variant_hash = str(variant_hash or "").strip()
+
+        if not account_id:
+            raise ValueError("a binding needs the account it binds to")
+        if not strategy_id:
+            raise ValueError("a binding needs the strategy it binds")
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._db() as session:
+            row = session.execute(
+                select(AccountStrategyBindingRecord).where(
+                    AccountStrategyBindingRecord.account_id == account_id,
+                    AccountStrategyBindingRecord.strategy_id == strategy_id,
+                    AccountStrategyBindingRecord.variant_hash == variant_hash,
+                )).scalars().first()
+            if row is None:
+                row = AccountStrategyBindingRecord(
+                    binding_id=uuid.uuid4().hex,
+                    account_id=account_id,
+                    strategy_id=strategy_id,
+                    variant_hash=variant_hash,
+                    status=str(status or "pending"),
+                    governance_state=str(governance_state or ""),
+                    bound_by_user_id=(str(bound_by_user_id)
+                                      if bound_by_user_id else None),
+                    bound_at=_ts(),
+                    updated_at=now_iso,
+                )
+                session.add(row)
+            else:
+                row.status = str(status or row.status)
+                if governance_state:
+                    row.governance_state = str(governance_state)
+            if risk_override_json is not None:
+                row.risk_override_json = str(risk_override_json)
+            if allowed_sessions_json is not None:
+                row.allowed_sessions_json = str(allowed_sessions_json)
+            row.updated_at = now_iso
+            session.commit()
+            return self._row_to_dict(row)
+
+    def get(self, account_id: str, strategy_id: str,
+            variant_hash: str = "") -> Optional[Dict[str, Any]]:
+        with self._db() as session:
+            row = session.execute(
+                select(AccountStrategyBindingRecord).where(
+                    AccountStrategyBindingRecord.account_id == str(account_id or ""),
+                    AccountStrategyBindingRecord.strategy_id == str(strategy_id or ""),
+                    AccountStrategyBindingRecord.variant_hash
+                    == str(variant_hash or ""),
+                )).scalars().first()
+        return self._row_to_dict(row) if row is not None else None
+
+    def list_for_account(self, account_id: str, *, status: str = ""
+                         ) -> List[Dict[str, Any]]:
+        with self._db() as session:
+            query = select(AccountStrategyBindingRecord).where(
+                AccountStrategyBindingRecord.account_id == str(account_id or ""))
+            if status:
+                query = query.where(AccountStrategyBindingRecord.status == str(status))
+            rows = session.execute(
+                query.order_by(AccountStrategyBindingRecord.strategy_id)
+            ).scalars().all()
+        return [self._row_to_dict(r) for r in rows]
+
+    def list_for_strategy(self, strategy_id: str) -> List[Dict[str, Any]]:
+        """Which accounts this strategy version is bound to.
+
+        The Research Plane asks this. One strategy running on several accounts is
+        the normal case, not a duplication error.
+        """
+        with self._db() as session:
+            rows = session.execute(
+                select(AccountStrategyBindingRecord).where(
+                    AccountStrategyBindingRecord.strategy_id == str(strategy_id or "")
+                ).order_by(AccountStrategyBindingRecord.account_id)
+            ).scalars().all()
+        return [self._row_to_dict(r) for r in rows]
+
+    def set_status(self, account_id: str, strategy_id: str, status: str, *,
+                   governance_state: str = "", variant_hash: str = ""
+                   ) -> bool:
+        """Move a binding's permission state. Returns False when no such row.
+
+        `governance_state` is recorded separately from `status` on purpose:
+        `status` is the operator-facing lifecycle of the binding, while
+        `governance_state` is what the Control Plane last decided about the
+        strategy itself. A quarantine lands on the second without demoting the
+        first, so "this account asked for it" and "governance forbids it" stay
+        separately readable.
+        """
+        with self._db() as session:
+            row = session.execute(
+                select(AccountStrategyBindingRecord).where(
+                    AccountStrategyBindingRecord.account_id == str(account_id or ""),
+                    AccountStrategyBindingRecord.strategy_id == str(strategy_id or ""),
+                    AccountStrategyBindingRecord.variant_hash
+                    == str(variant_hash or ""),
+                )).scalars().first()
+            if row is None:
+                return False
+            row.status = str(status or "")
+            if governance_state:
+                row.governance_state = str(governance_state)
+            row.updated_at = datetime.now(timezone.utc).isoformat()
+            session.commit()
+            return True
+
+    def unbind(self, account_id: str, strategy_id: str,
+               variant_hash: str = "") -> bool:
+        """Remove a binding.
+
+        A delete rather than a `revoked` status: the registry answers "is this
+        account permitted to consider this strategy", and leaving a revoked row
+        behind means that question has two answers depending on whether the reader
+        remembered to filter on status.
+        """
+        with self._db() as session:
+            row = session.execute(
+                select(AccountStrategyBindingRecord).where(
+                    AccountStrategyBindingRecord.account_id == str(account_id or ""),
+                    AccountStrategyBindingRecord.strategy_id == str(strategy_id or ""),
+                    AccountStrategyBindingRecord.variant_hash
+                    == str(variant_hash or ""),
+                )).scalars().first()
+            if row is None:
+                return False
+            session.delete(row)
+            session.commit()
+            return True

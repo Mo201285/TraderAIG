@@ -231,14 +231,14 @@ class ChallengeProgramBindingDB(Base):
 
 
 class ProductEntitlementDB(Base):
-    """Persisted paid-product entitlements (§34.2/§34.20).
+    """Persisted paid-product entitlements (�34.2/�34.20).
 
     A separate table, not a column on `users`, for the same reason the challenge
     state is a separate table from the challenge baseline: they are different
     facts with different lifecycles. A subscription expires on the plan's clock
     and a product expires on the charge's clock, and conflating them would mean
     one of them can silently rewrite the other. `charge_id` is stored so a
-    grant can always be traced back to the payment that caused it — a row with
+    grant can always be traced back to the payment that caused it � a row with
     no charge is a row nobody can explain, and `grant` is the only writer.
     """
 
@@ -261,6 +261,7 @@ class ProductEntitlementDB(Base):
 
 
 class AuditRecordDB(Base):
+    account_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     """Persisted governance audit trail."""
 
     __tablename__ = "audit"
@@ -296,3 +297,6 @@ def loads(text: str):
         return json.loads(text)
     except (TypeError, ValueError):
         return {}
+
+
+

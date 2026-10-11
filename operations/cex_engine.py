@@ -269,7 +269,25 @@ class CexLiveEngine:
         return self._cycles
 
     def _seed_account(self) -> None:
+        """Publish the paper desk's balances, unless a real venue owns the slot.
+
+        Canonical state holds ONE account, and the MT5 watcher is its authority
+        for a live login. Seeding over it replaces login 1400167 with login 0 --
+        so the challenge layer reads "unconnected", resolves no policy, and
+        refuses, while every log line still shows a healthy $100k account. The
+        symptom is a governance layer quietly switched off by a paper desk.
+
+        So the seed is conditional, and the condition is the one that matters:
+        a real venue account present means this desk does not get to speak for
+        the account. It keeps its own balances in `_paper_desks` either way;
+        only the single shared account slot is protected.
+        """
         from core.state import AccountState
+        existing = state.get_account()
+        if int(getattr(existing, "login", 0) or 0):
+            log.debug("CEX paper account not seeded: canonical account is "
+                      "held by venue login %s", existing.login)
+            return
         balances = {}
         try:
             result = self._venue.fetch_balances()

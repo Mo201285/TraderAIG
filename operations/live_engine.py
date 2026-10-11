@@ -9,6 +9,8 @@ Used by `python main.py --mt5` and by the API under lazy start.
 """
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 from typing import Any, Dict, List, Optional, Sequence
@@ -27,6 +29,51 @@ from schools.board import school_board
 
 
 log = get_logger("live")
+
+#: Stages the risk governor will accept a candidate from.
+#: Mirrors `RiskGovernor._stage_order` / `_PROMOTION_FLOOR`; kept as literals
+#: rather than imported so this module stays importable without the governor.
+ORDER_ELIGIBLE_STAGES = ("paper", "production")
+
+
+def mt5_live_armed() -> bool:
+    """Whether the operator has explicitly consented to real venue orders.
+
+    Default off, and read from the environment on every call rather than cached
+    at import, so arming is a deliberate, visible act and disarming does not need
+    a restart. Same convention as `CEX_LIVE_ALLOWED` / `PAYMENTS_LIVE_ALLOWED`.
+    """
+    raw = str(os.getenv("MT5_LIVE_TRADING", "") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def promotion_cleared_strategies() -> List[str]:
+    """Strategy ids the governor would let reach an order right now.
+
+    Reads the same persisted registry file, and the same stage vocabulary, that
+    `live_stage_resolver` gives the risk governor -- so a quarantine landed
+    through governance shows up here immediately rather than at the next
+    restart. Returns an empty list on any error: an unreadable registry must
+    never read as "cleared".
+    """
+    try:
+        from research.strategy_lab.priors import registry_path_for
+
+        path = registry_path_for()
+        if not path or not os.path.exists(path):
+            return []
+        with open(path, encoding="utf-8") as fh:
+            entries = json.load(fh)
+        out: List[str] = []
+        for entry in entries if isinstance(entries, list) else []:
+            sid = str(entry.get("strategy_id") or "").strip()
+            stage = str(entry.get("stage") or "").strip().lower()
+            if sid and stage in ORDER_ELIGIBLE_STAGES:
+                out.append(sid)
+        return out
+    except Exception:  # noqa: BLE001
+        return []
+
 
 
 class LiveEngine:
@@ -246,6 +293,45 @@ class LiveEngine:
     def start(self, interval: float = 30.0) -> bool:
         if self._thread and self._thread.is_alive():
             return True
+        if not self._paper:
+            # The arming check lives HERE, not only on the route, because this
+            # object is a module-level singleton with a real LiveMT5Executor
+            # already built. Anything that can reach `start()` -- a route, a
+            # script, a test, an interactive shell -- would otherwise be one
+            # call away from sending venue orders on a challenge account whose
+            # drawdown limit is 10%.
+            #
+            # Two conditions, and both are refusals rather than warnings:
+            # MT5_LIVE_TRADING is the operator's explicit consent (same shape as
+            # CEX_LIVE_ALLOWED / PAYMENTS_LIVE_ALLOWED, default off), and at
+            # least one strategy must have climbed to a stage the governor
+            # permits. A live loop with nothing promotion-cleared would burn
+            # cycles producing candidates the strategy gate vetoes on their
+            # merits, while looking like a running system.
+            if not mt5_live_armed():
+                log.error("LiveEngine live start refused: MT5_LIVE_TRADING is "
+                          "not enabled, so real venue orders stay off")
+                self._errors.append("live start refused: MT5_LIVE_TRADING not enabled")
+                return False
+            cleared = promotion_cleared_strategies()
+            if not cleared:
+                log.error("LiveEngine live start refused: no strategy is at the "
+                          "`paper` or `production` stage, so nothing is "
+                          "promotion-cleared and the governor would veto every "
+                          "candidate anyway")
+                self._errors.append("live start refused: no promotion-cleared strategy")
+                return False
+            log.info(f"LiveEngine LIVE start: {len(cleared)} promotion-cleared "
+                     f"strategies {cleared}")
+            # One process, one execution loop. A paper desk and a live desk over
+            # the same symbols would both consume the same opportunities and
+            # count as two exposures, and the paper one would report fills the
+            # live account never took.
+            if paper_engine is not None and paper_engine is not self:
+                if paper_engine.status().get("running"):
+                    log.warning("LiveEngine live start: stopping the paper desk "
+                                "so the account is not traded twice")
+                    paper_engine.stop()
         self._stop.clear()
         if not self.connect():
             return False

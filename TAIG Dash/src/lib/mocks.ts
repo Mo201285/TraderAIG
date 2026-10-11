@@ -3,6 +3,7 @@ import type {
   ChangeRequest,
   CopyFollower,
   LearningExperience,
+  LearningSplitView,
   MarketRegime,
   ObservationRecord,
   OpsEvent,
@@ -255,6 +256,38 @@ export const mockRecommendations: Recommendation[] = [
   { id: "R-02", priority: "review", title: "Strategic lesson cluster waiting", detail: "4 recorded experiences; 'compression without sweep' cluster now has statistical support — read it before next setup.", cta: "Open Learning", page: "learning" },
   { id: "R-01", priority: "later", title: "XAU demand-zone thesis back in play", detail: "T-01 remains confirmed above 2388. Add fresh evidence before acting.", cta: "Open Research", page: "research" },
 ];
+
+export const mockLearningSplit: LearningSplitView = {
+  generated_at: 0,
+  research: {
+    track: "research",
+    count: 0,
+    win_rate: 0,
+    expected_value: 0,
+    profit_factor: 0,
+    by_regime_edge: {},
+    by_session_edge: {},
+    strategies: [],
+    storage: "strategy_lab observations (jsonl corpus)",
+  },
+  execution: {
+    track: "execution",
+    count: 0,
+    win_rate: 0,
+    wins: 0,
+    losses: 0,
+    net_pnl: 0,
+    avg_pnl: 0,
+    avg_slippage: 0,
+    avg_delay_ms: 0,
+    avg_fees: 0,
+    fill_count: 0,
+    error_counts: {},
+    storage: "experience_ledger (persistence DB)",
+  },
+  note:
+    "research and execution learning are recorded in separate stores and must not be merged for edge attribution",
+};
 
 export const mockSystemHealth: SystemHealthReport = {
   ok: false,

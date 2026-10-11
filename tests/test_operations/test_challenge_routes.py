@@ -246,10 +246,67 @@ def _policy():
         overnight=Restriction.ALLOWED, weekend=Restriction.DENIED)
 
 
+def test_a_conditional_instrument_policy_registered_over_http_protects(
+        client, monkeypatch):
+    """The defect reached this far because the wire format accepted the value.
+
+    `POST /challenge/policies` validates restrictions by enum membership, so
+    `"conditional"` was a 200 -- correctly, since a provider document may well
+    say "permitted subject to conditions". The failure was downstream: with only
+    UNKNOWN and DENIED handled, CONDITIONAL contributed no rung and the account
+    scored `allow` on a symbol whose conditions nothing had checked. This walks
+    the whole path so the acceptance and the evaluation cannot drift apart
+    again: whatever the wire accepts, the evaluator must give a rung for.
+    """
+    _operator(client, monkeypatch)
+    payload = _full_policy_payload(instruments_default="conditional")
+
+    created = client.post("/challenge/policies", json=payload)
+    assert created.status_code == 200, created.text
+    # Accepting it on the wire is correct -- a provider document may well say
+    # "permitted subject to conditions". The failure was always downstream, so
+    # this asserts the two ends separately: the POST must not 400, and a policy
+    # carrying that value must not evaluate to a permission. (No route reads a
+    # policy back in full -- `versions()` returns a compact summary -- so the
+    # stored value is checked at the object level below rather than claimed
+    # through an endpoint that does not exist.)
+    assert created.json()["ok"] is True
+
+    # And it must not evaluate to a permission.
+    from challenge.headroom import AccountSnapshot, Permission, permission_for
+    from challenge.policy import (ChallengePolicy as _CP, DrawdownType as _DT,
+                                  InstrumentPolicy as _IP, Restriction as _R,
+                                  RuleValue as _RV)
+
+    # Every other rule verified, so the conditional instrument policy is the
+    # only thing that can decide the outcome. Left under-specified, the policy
+    # halts for an unrelated reason and the test would pass without ever
+    # reaching the branch it exists to cover.
+    def _known(v):
+        return _RV.known(v, source=SOURCE)
+
+    registered = _CP(
+        provider="DemoProp", program="Classic 2-Step", account_size=100_000,
+        policy_version="2026.09", effective_from="2026-09-01",
+        profit_target=_known(0.08), daily_loss_limit=_known(0.05),
+        max_drawdown=_known(0.04), minimum_trading_days=_known(10),
+        max_leverage=_known(100), drawdown_type=_DT.STATIC,
+        instruments=_IP(default=_R.CONDITIONAL, source=SOURCE))
+    snap = AccountSnapshot(account_id="probe", equity=100_000.0,
+                           balance=100_000.0, start_equity=100_000.0,
+                           day_start_equity=100_000.0)
+    AccountSnapshot.observe(snap)
+
+    decision = permission_for(registered, snap, symbol="XAUUSD")
+    assert decision["permission"] == Permission.PROTECT.value, (
+        "a conditional permission nobody evaluated must protect, not allow; "
+        f"got {decision['permission']}")
+
+
 def test_a_watched_account_is_not_graded_against_an_inferred_opening_balance():
     """The defect this milestone exists for, in the shape the live account hit it.
 
-    Real account 1787174 on FTTrading-Server: 10,473 deals over five days, net
+    Real account TEST-ACCT-OBSERVED on FTTrading-Server: 10,473 deals over five days, net
     -6,221.32, balance 95,975.13. The process restarted, the first reading was
     taken, and a baseline was built from 95,975.13 -- the account's *current*
     value. Every drawdown is measured from the opening balance, so an account
@@ -829,6 +886,75 @@ def test_reads_still_answer_when_nobody_has_paid(client, monkeypatch):
     assert payload["commercial"]["price_usd"] == pytest.approx(9.99)
 
 
+def test_buying_the_product_activates_it_and_costs_nothing_but_the_price(
+        client, monkeypatch):
+    """The happy path, end to end, through the real billing service."""
+    from governance.identity import Entitlement, identity
+    from governance.products import products
+
+    email = f"buyer{time.time_ns()}@x.co"
+    uid = client.post("/users", json={"email": email}).json()["user_id"]
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", email)
+    client.post(f"/users/{uid}/subscription/activate", json={"plan": "institutional"})
+    assert products.has(uid, Entitlement.CHALLENGE_MANAGEMENT) is False
+
+    response = client.post("/payments/product",
+                           json={"user_id": uid, "product_id": "challenge_basic"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["amount_usd"] == pytest.approx(9.99)
+    assert body["entitlement"] == "challenge_management"
+    assert body["grants_trade_permission"] is False
+    assert body["product_activated"] is True
+    assert products.has(uid, Entitlement.CHALLENGE_MANAGEMENT) is True
+
+    # Which unblocks the route that was refusing a moment ago.
+    assert client.post("/challenge/policies",
+                       json=_full_policy_payload()).status_code == 200
+    assert "product.grant" in [e.action for e in identity.audit_log(limit=80)]
+
+
+def test_a_purchase_cannot_change_the_price_or_the_entitlement(client, monkeypatch):
+    """The caller names a product. Everything else is the server's answer."""
+    email = f"cheater{time.time_ns()}@x.co"
+    uid = client.post("/users", json={"email": email}).json()["user_id"]
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", email)
+
+    from governance.identity import Entitlement, identity
+
+    body = client.post("/payments/product", json={
+        "user_id": uid, "product_id": "challenge_basic",
+        "amount_usd": 0.01, "price_usd": 0.01, "plan": "free",
+        "entitlement": "can_trade", "duration_days": 3650}).json()
+
+    assert body["amount_usd"] == pytest.approx(9.99)
+    assert body["plan"] == ""
+    assert body["entitlement"] == "challenge_management"
+
+    user = identity.get_user(uid)
+    assert user.plan.value == "free", "a product purchase changed the plan"
+    assert Entitlement.CAN_TRADE not in user.entitlements
+    assert Entitlement.CHALLENGE_MANAGEMENT not in user.entitlements
+
+
+def test_an_unknown_product_is_refused_before_any_money_moves(client, monkeypatch):
+    from governance.payments import payments_service
+
+    email = f"nosuch{time.time_ns()}@x.co"
+    uid = client.post("/users", json={"email": email}).json()["user_id"]
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", email)
+    before = len(payments_service.wallet(uid)["entries"])
+
+    response = client.post("/payments/product",
+                           json={"user_id": uid, "product_id": "challenge_gold"})
+
+    assert response.status_code == 400
+    assert "unknown product" in response.json()["detail"]
+    assert len(payments_service.wallet(uid)["entries"]) == before
+
+
 def test_an_expired_entitlement_stops_the_service_and_reports_the_state(
         client, monkeypatch):
     """§34.20: expiry is a state, and it takes the service with it.
@@ -855,6 +981,57 @@ def test_an_expired_entitlement_stops_the_service_and_reports_the_state(
     assert products.get(uid, "challenge_basic").state == "expired"
     assert client.post("/challenge/policies",
                        json=_full_policy_payload()).status_code == 403
+
+
+def test_a_failed_activation_leaves_no_entitlement_behind(client, monkeypatch):
+    """§34.20: a billing failure must not corrupt operational state.
+
+    Simulated by a provider that refuses, which is the sandbox provider's only
+    other behaviour -- a half-granted service is the state this rule forbids.
+    """
+    from governance.identity import Entitlement
+    from governance.payments import ChargeResult, PaymentStatus, payments_service
+    from governance.products import products
+
+    _purchased_but_no_risk(client, monkeypatch)
+    from governance.identity import identity
+    uid = identity.principal_user_id()
+
+    class _Declining:
+        name = "sandbox"
+
+        def configured(self) -> bool:
+            return True
+
+        def charge(self, amount_usd, description="", metadata=None):
+            return {"ok": False, "status": "failed", "error": "card declined"}
+
+        def refund(self, charge_id):
+            return {"ok": False, "error": "not refundable"}
+
+        def verify_webhook(self, payload, signature=""):
+            return False
+
+    result = payments_service.charge_product(uid, "challenge_basic",
+                                             provider=_Declining())
+
+    assert isinstance(result, ChargeResult)
+    assert result.status == PaymentStatus.FAILED
+    assert result.product_activated is False
+    assert products.has(uid, Entitlement.CHALLENGE_MANAGEMENT) is False
+
+
+# --- the fields the registration endpoint could not express ------------------------
+#
+# `ChallengePolicy` could hold 29 terms. The endpoint could set 21, and the eight
+# it could not were not obscure: the broker's UTC offset (which decides when the
+# daily allowance resets), the source on the stop-out (which decides whether it
+# can be source-confirmed at all), and all three weekend fields. So the per-symbol
+# weekend behaviour was correct in the engine and unreachable from the only
+# supported way to configure it, and the policy could never become fully
+# specified -- an API that silently omits a field reads exactly like an operator
+# who has not supplied it, and the second is visible in the completeness report
+# while the first never is.
 
 
 def test_the_offset_and_the_weekend_terms_survive_registration(client, monkeypatch):

@@ -65,7 +65,14 @@ class Backend:
             [sys.executable, "-m", "uvicorn", "operations.api:app",
              "--host", "127.0.0.1", "--port", str(self.port), "--log-level", "warning"],
             cwd=str(ROOT), env=self.env(), stdout=handle, stderr=handle)
-        self.wait_healthy()
+        try:
+            self.wait_healthy()
+        except Exception:
+            # A boot that never turns healthy still owns a process. The fixture
+            # yields only after a successful start, so teardown would never see
+            # it and the uvicorn would outlive the run -- kill it here.
+            self.kill()
+            raise
 
     def wait_healthy(self, budget: float = 90.0) -> None:
         deadline = time.time() + budget

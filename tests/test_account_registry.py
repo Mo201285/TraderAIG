@@ -67,13 +67,17 @@ def session():
         AccountConnectionRecord,
         AccountIdentityRecord,
         AccountRecord,
+        ExternalReferralEvent,
     )
 
     # Only the account tables. A registry test that also cleaned the trade
     # tables would be asserting that the trade schema exists, in a file whose
     # subject is the registry -- so the trade tests own their own cleanup and
-    # each half of P1 can be read, and broken, on its own.
-    for model in (AccountConnectionRecord, AccountIdentityRecord, AccountRecord):
+    # each half of P1 can be read, and broken, on its own. Referral events are
+    # account-family rows (they reference the registry) and must not leak
+    # across the shared StaticPool database either.
+    for model in (AccountConnectionRecord, AccountIdentityRecord, AccountRecord,
+                  ExternalReferralEvent):
         s.execute(delete(model))
 
     for user_id, email in (("op-1", "op1@test.local"),

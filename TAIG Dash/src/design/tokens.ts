@@ -1,1 +1,140 @@
-﻿export const tokens = {};
+import type { Language } from "../types";
+
+export const statusLanguage = [
+  "LIVE",
+  "PAPER",
+  "RESEARCH",
+  "WATCH",
+  "BLOCKED",
+  "VETOED",
+  "PENDING",
+  "VALIDATED",
+  "QUARANTINED",
+  "FAILED",
+  "HEALTHY",
+  "DEGRADED",
+  "EMPTY",
+  "LOADING",
+  "ERROR",
+] as const;
+export type StatusLanguage = (typeof statusLanguage)[number];
+
+export type Tone = "ok" | "info" | "warn" | "danger" | "muted";
+
+export const toneColors: Record<Tone, string> = {
+  ok: "#22c55e",
+  info: "#3b82f6",
+  warn: "#f59e0b",
+  danger: "#ef4444",
+  muted: "#64748b",
+};
+
+export const statusTone: Record<string, Tone> = {
+  LIVE: "ok",
+  PAPER: "info",
+  RESEARCH: "info",
+  WATCH: "warn",
+  BLOCKED: "danger",
+  VETOED: "danger",
+  PENDING: "warn",
+  VALIDATED: "ok",
+  QUARANTINED: "danger",
+  FAILED: "danger",
+  HEALTHY: "ok",
+  DEGRADED: "warn",
+  EMPTY: "muted",
+  LOADING: "muted",
+  ERROR: "danger",
+  active: "ok",
+  queued: "info",
+  paused: "warn",
+  completed: "ok",
+  superseded: "muted",
+  retired: "danger",
+  recorded: "ok",
+  error: "danger",
+  scan: "muted",
+  qualified: "info",
+  approved: "ok",
+  rejected: "danger",
+  expired: "muted",
+};
+
+const STATUS_LABELS: Record<Language, Record<string, string>> = {
+  en: {
+    LIVE: "LIVE",
+    PAPER: "PAPER",
+    RESEARCH: "RESEARCH",
+    WATCH: "WATCH",
+    BLOCKED: "BLOCKED",
+    VETOED: "VETOED",
+    PENDING: "PENDING",
+    VALIDATED: "VALIDATED",
+    QUARANTINED: "QUARANTINED",
+    FAILED: "FAILED",
+    HEALTHY: "HEALTHY",
+    DEGRADED: "DEGRADED",
+    EMPTY: "EMPTY",
+    LOADING: "LOADING",
+    ERROR: "ERROR",
+    active: "active",
+    queued: "queued",
+    paused: "paused",
+    completed: "completed",
+    superseded: "superseded",
+    retired: "retired",
+    recorded: "recorded",
+    error: "error",
+    scan: "scan",
+    qualified: "qualified",
+    approved: "approved",
+    rejected: "rejected",
+    expired: "expired",
+  },
+  ar: {
+    LIVE: "مباشر",
+    PAPER: "ورقي",
+    RESEARCH: "بحث",
+    WATCH: "مراقبة",
+    BLOCKED: "محظور",
+    VETOED: "مرفوض",
+    PENDING: "معلّق",
+    VALIDATED: "مُتحقق",
+    QUARANTINED: "معزول",
+    FAILED: "فاشل",
+    HEALTHY: "سليم",
+    DEGRADED: "متدهور",
+    EMPTY: "فارغ",
+    LOADING: "جارٍ التحميل",
+    ERROR: "خطأ",
+    active: "نشط",
+    queued: "في الانتظار",
+    paused: "متوقف",
+    completed: "مكتمل",
+    superseded: "مستبدل",
+    retired: "مسحوب",
+    recorded: "مسجَّل",
+    error: "خطأ",
+    scan: "مسح",
+    qualified: "مؤهّل",
+    approved: "معتمد",
+    rejected: "مرفوض",
+    expired: "منتهٍ",
+  },
+};
+
+export function statusLabel(status: string, lang: Language): string {
+  return STATUS_LABELS[lang][status] ?? status;
+}
+
+export const tokens = {
+  spacing: { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 24 },
+  radius: { sm: 4, md: 6, lg: 8, xl: 12 },
+  typography: {
+    family: "var(--font-body)",
+    display: "var(--font-display)",
+    mono: "var(--font-mono)",
+    arabic: "var(--font-arabic)",
+  },
+  direction: { ltr: "ltr" as const, rtl: "rtl" as const },
+} as const;

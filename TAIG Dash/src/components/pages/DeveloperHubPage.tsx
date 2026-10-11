@@ -1,1 +1,2 @@
-﻿export function DeveloperHubPage() { return <div>DeveloperHubPage</div>; }
+﻿export default function DeveloperHubPage() { return <div>DeveloperHubPage</div>; }
+export { DeveloperHubPage };

@@ -1,1 +1,2 @@
-﻿export function ExecutionCenterPage() { return <div>ExecutionCenterPage</div>; }
+﻿export default function ExecutionCenterPage() { return <div>ExecutionCenterPage</div>; }
+export { ExecutionCenterPage };

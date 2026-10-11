@@ -1,1 +1,2 @@
-﻿export function EconomyPage() { return <div>EconomyPage</div>; }
+﻿export default function EconomyPage() { return <div>EconomyPage</div>; }
+export { EconomyPage };

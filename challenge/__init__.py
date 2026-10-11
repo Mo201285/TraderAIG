@@ -1,4 +1,4 @@
-"""Challenge Account Management: policy, headroom and state, as one layer.
+﻿"""Challenge Account Management: policy, headroom and state, as one layer.
 
 This is a domain/policy layer, not a service of its own. 34.11 requires
 challenge accounts to use the same market, opportunity, strategy, risk,
@@ -70,3 +70,8 @@ __all__ = [
     "registry",
     "trading_days_headroom",
 ]
+
+from .mt5_sessions import *  # noqa: F401
+from .weekend import *  # noqa: F401
+from .live import *  # noqa: F401
+

@@ -1,4 +1,4 @@
-"""AIProgramCompiler facade.
+﻿"""AIProgramCompiler facade.
 
 Public API for the DSPy evolution layer:
 
@@ -8,13 +8,13 @@ Public API for the DSPy evolution layer:
 - ``evaluate``     -> score the current program against corpus examples with
                       the professional trading metric.
 
-This facade is what TEST-RESEARCH hooks, pipeline and backtests call — never
+This facade is what TEST-RESEARCH hooks, pipeline and backtests call â€” never
 dspy directly.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+# # from pathlib import Path  # unused
 from typing import Any, Dict, Optional
 
 
@@ -188,3 +188,5 @@ class AIProgramCompiler:
 
 
 __all__ = ["AIProgramCompiler", "AIProgramsDisabled"]
+
+

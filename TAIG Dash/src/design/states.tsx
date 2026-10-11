@@ -1,4 +1,4 @@
-﻿export function EmptyState({ title, description, hint }: { title: string; description?: string; hint?: string }) {
+﻿export function EmptyState({ title, description, hint, lang }: any) {
   return <div>{title}{description ? <p>{description}</p> : null}{hint ? <small>{hint}</small> : null}</div>;
 }
 export function ErrorState({ message }: { message: string }) {
@@ -7,4 +7,6 @@ export function ErrorState({ message }: { message: string }) {
 export function LoadingState() {
   return <div>Loading...</div>;
 }
-export const StatusChip = ({ status }: { status: string }) => <span>{status}</span>;
+export function StatusChip({ status, lang }: any) {
+  return <span>{status}</span>;
+}

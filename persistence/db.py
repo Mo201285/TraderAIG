@@ -107,6 +107,14 @@ def _required_schema() -> dict[str, dict[str, str]]:
         # supplied it -- an unattributed row stays unattributed.
         "source_registry": {"partner_id": "TEXT"},
         "evidence_items": {"partner_id": "TEXT"},
+        # The referral reward contract: the commercial product a referral
+        # program pays out in, added to the ExternalProviderRecord model
+        # without a migration entry, so databases created before it existed
+        # never gained the column on their old external_providers table (a
+        # fresh CREATE still has it). Additive and nullable; a provider
+        # registered before the contract existed has no product to name, and
+        # inventing one would fabricate a commercial term.
+        "external_providers": {"referral_reward_product": "TEXT"},
     }
 
 

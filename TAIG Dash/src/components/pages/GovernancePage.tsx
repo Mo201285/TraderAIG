@@ -206,6 +206,12 @@ export default function GovernancePage({ lang }: { lang: Language }) {
     </Card>
   );
 
+  const unreachableCard = (
+    <Card>
+      <ErrorState title={t.requestsUnreachable} hint={t.requestsUnreachableHint} lang={lang} />
+    </Card>
+  );
+
   const TABS: Array<[Tab, string]> = [
     ["requests", t.tabRequests],
     ["audit", t.tabAudit],
@@ -288,9 +294,7 @@ export default function GovernancePage({ lang }: { lang: Language }) {
         changes.source === "loading" ? (
           loadingCard
         ) : changes.source !== "live" ? (
-          <Card>
-            <ErrorState title={t.requestsUnreachable} hint={t.requestsUnreachableHint} lang={lang} />
-          </Card>
+          unreachableCard
         ) : rows.length === 0 ? (
           <EmptyState title={t.empty} hint={t.emptyHint} />
         ) : (
@@ -361,8 +365,10 @@ export default function GovernancePage({ lang }: { lang: Language }) {
           </div>
         )
       ) : tab === "audit" ? (
-        audit.source === "loading" || !audit.data ? (
+        audit.source === "loading" ? (
           loadingCard
+        ) : audit.source !== "live" || !audit.data ? (
+          unreachableCard
         ) : audit.data.length === 0 ? (
           <EmptyState title={t.auditEmpty} hint={t.auditEmptyHint} />
         ) : (
@@ -391,8 +397,10 @@ export default function GovernancePage({ lang }: { lang: Language }) {
           </div>
         )
       ) : tab === "gates" ? (
-        gates.source === "loading" || !gates.data ? (
+        gates.source === "loading" ? (
           loadingCard
+        ) : gates.source !== "live" || !gates.data ? (
+          unreachableCard
         ) : gates.data.length === 0 ? (
           <EmptyState title={t.gatesEmpty} hint={t.gatesEmptyHint} />
         ) : (
@@ -426,8 +434,10 @@ export default function GovernancePage({ lang }: { lang: Language }) {
             })}
           </div>
         )
-      ) : promos.source === "loading" || !promos.data ? (
+      ) : promos.source === "loading" ? (
         loadingCard
+      ) : promos.source !== "live" || !promos.data ? (
+        unreachableCard
       ) : promos.data.timeline.length === 0 && Object.keys(promos.data.by_stage).length === 0 ? (
         <EmptyState title={t.promosEmpty} hint={t.promosEmptyHint} />
       ) : (

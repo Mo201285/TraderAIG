@@ -211,7 +211,7 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>[];
       return { ok: true, data: raw.map(adaptStrategy), source: "live" };
     } catch (e) {
-      return { ok: false, data: mockStrategies, source: "mock", error: String(e) };
+      return { ok: false, data: [], source: "mock", error: String(e) };
     }
   },
   async getObservations(): Promise<Envelope<ObservationRecord[]>> {
@@ -223,7 +223,7 @@ export const api = {
       const raw = (Array.isArray(body) ? body : body.records ?? []) as Record<string, any>[];
       return { ok: true, data: raw.map(adaptObservation), source: "live" };
     } catch (e) {
-      return { ok: false, data: mockObservations, source: "mock", error: String(e) };
+      return { ok: false, data: [], source: "mock", error: String(e) };
     }
   },
   async getValidation(): Promise<Envelope<ValidationReport[]>> {
@@ -234,11 +234,11 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>[];
       return { ok: true, data: raw.map(adaptValidation), source: "live" };
     } catch (e) {
-      return { ok: false, data: mockValidation, source: "mock", error: String(e) };
+      return { ok: false, data: [], source: "mock", error: String(e) };
     }
   },
   async getPaperRequests(): Promise<Envelope<PaperRequest[]>> {
-    return resolve("paper", mockPaperRequests, "/paper/requests");
+    return resolve("paper", mockPaperRequests, "/paper/requests", []);
   },
   async getRegimes(): Promise<Envelope<MarketRegime[]>> {
     if (!health.live) return { ok: true, data: mockRegimes, source: "mock" };
@@ -248,7 +248,7 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>[];
       return { ok: true, data: raw.map(adaptRegime), source: "live" };
     } catch (e) {
-      return { ok: false, data: mockRegimes, source: "mock", error: String(e) };
+      return { ok: false, data: [], source: "mock", error: String(e) };
     }
   },
   async getTheses(): Promise<Envelope<Thesis[]>> {
@@ -259,7 +259,7 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>[];
       return { ok: true, data: raw.map(adaptThesis), source: "live" };
     } catch (e) {
-      return { ok: false, data: mockTheses, source: "mock", error: String(e) };
+      return { ok: false, data: [], source: "mock", error: String(e) };
     }
   },
   async promote(strategyId: string): Promise<Envelope<{ to: string }>> {
@@ -287,7 +287,14 @@ export const api = {
     return postJson("/research/revalidate", body);
   },
   async getRiskPolicy(): Promise<Envelope<RiskPolicy>> {
-    return resolve("riskPolicy", mockRiskPolicy, "/risk/state");
+    return resolve("riskPolicy", mockRiskPolicy, "/risk/state", {
+      maxDailyLossPct: 0,
+      maxDailyTrades: 0,
+      maxOpenPositions: 0,
+      maxPerTradeRiskPct: 0,
+      volatilityVeto: false,
+      allowedSessions: [],
+    });
   },
   async getRiskState(): Promise<Envelope<RiskStateView>> {
     const empty: RiskStateView = {
@@ -327,7 +334,7 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>[];
       return { ok: true, data: raw.map(adaptVeto), source: "live" };
     } catch (e) {
-      return { ok: false, data: mockRiskVetoes, source: "mock", error: String(e) };
+      return { ok: false, data: [], source: "mock", error: String(e) };
     }
   },
   async getPortfolioState(): Promise<Envelope<PortfolioStateView>> {
@@ -434,7 +441,7 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>[];
       return { ok: true, data: raw.map(adaptExperience), source: "live" };
     } catch (e) {
-      return { ok: false, data: mockExperiences, source: "mock", error: String(e) };
+      return { ok: false, data: [], source: "mock", error: String(e) };
     }
   },
   async getLearningStats(): Promise<Envelope<LearningStatsView>> {
@@ -456,17 +463,27 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>[];
       return { ok: true, data: raw.map(adaptAudit), source: "live" };
     } catch (e) {
-      return { ok: false, data: mockAudit, source: "mock", error: String(e) };
+      return { ok: false, data: [], source: "mock", error: String(e) };
     }
   },
   async getSubscriberPlan(): Promise<Envelope<SubscriberPlan>> {
-    return resolve("plan", mockSubscriber, "/users/current/plan");
+    return resolve("plan", mockSubscriber, "/users/current/plan", {
+      id: "",
+      name: "",
+      priceMonthly: 0,
+      featureSet: [],
+    });
   },
   async getRecommendations(): Promise<Envelope<Recommendation[]>> {
-    return resolve("recommendations", mockRecommendations, "/recommendations");
+    return resolve("recommendations", mockRecommendations, "/recommendations", []);
   },
   async getChartTimeframes(): Promise<Envelope<ChartTimeframes>> {
-    return resolve("chartTimeframes", { symbols: ["XAUUSD", "BTCUSD"], timeframes: ["M5", "M15", "H1"] }, "/chart/timeframes");
+    return resolve(
+      "chartTimeframes",
+      { symbols: ["XAUUSD", "BTCUSD"], timeframes: ["M5", "M15", "H1"] },
+      "/chart/timeframes",
+      { symbols: [], timeframes: [] },
+    );
   },
   async getChartContext(
     symbol: string,
@@ -526,13 +543,20 @@ export const api = {
     }
   },
   async getSystemHealth(): Promise<Envelope<SystemHealthReport>> {
+    const empty: SystemHealthReport = {
+      ok: false,
+      overall: "Disconnected",
+      generated_at: "",
+      governance: "",
+      components: {},
+    };
     if (!health.live) return { ok: false, data: mockSystemHealth, source: "mock" };
     try {
       const res = await authorizedFetch("/system/health");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return { ok: true, data: (await res.json()) as SystemHealthReport, source: "live" };
     } catch (e) {
-      return { ok: false, data: mockSystemHealth, source: "mock", error: String(e) };
+      return { ok: false, data: empty, source: "mock", error: String(e) };
     }
   },
   // -- Go-live readiness (S12 controlled launch): evidence-only gate ---------
@@ -696,10 +720,11 @@ export const api = {
       const raw = (await res.json()) as { events?: Record<string, any>[] };
       return { ok: true, data: (raw.events ?? []).map(adaptOpsEvent), source: "live" };
     } catch (e) {
-      return { ok: false, data: mockOpsEvents, source: "mock", error: String(e) };
+      return { ok: false, data: [], source: "mock", error: String(e) };
     }
   },
   async getCopyFollower(): Promise<Envelope<CopyFollower>> {
+    const empty: CopyFollower = { decisionsConsumed: 0, cursor: 0, strategies: {}, overrides: [] };
     if (!health.live) return { ok: true, data: mockCopyFollower, source: "mock" };
     try {
       const res = await authorizedFetch("/ops/copy/follower");
@@ -707,7 +732,7 @@ export const api = {
       const raw = (await res.json()) as { portfolio: Record<string, any> };
       return { ok: true, data: adaptCopyFollower(raw.portfolio), source: "live" };
     } catch (e) {
-      return { ok: false, data: mockCopyFollower, source: "mock", error: String(e) };
+      return { ok: false, data: empty, source: "mock", error: String(e) };
     }
   },
   // -- Research / Market Intelligence (rows 746-750) -------------------------
@@ -1053,14 +1078,14 @@ export const api = {
   },
 };
 
-async function resolve<T>(key: string, mock: T, livePath: string): Promise<Envelope<T>> {
+async function resolve<T>(key: string, mock: T, livePath: string, empty: T): Promise<Envelope<T>> {
   if (!health.live) return { ok: true, data: mock, source: "mock" };
   try {
     const res = await authorizedFetch(livePath);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return { ok: true, data: (await res.json()) as T, source: "live" };
   } catch (e) {
-    return { ok: false, data: mock, source: "mock", error: String(e) };
+    return { ok: false, data: empty, source: "mock", error: String(e) };
   }
 }
 

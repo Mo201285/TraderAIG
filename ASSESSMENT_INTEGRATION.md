@@ -8,4 +8,4 @@
 - عدد الاختبارات: pytest 2035 passed / 0 failed (2026-10-12).
 - البوابة الرسمية مع live smoke: ruff ✓، py_compile ✓، pytest ✓، tsc ✓، vite ✓،
   live smoke 7/7 → 6/6.
-- RMI-04 (الصف 773) و RMI-05 (الصف 774) مغلقتان؛ S1..S12 تخطيط فقط طبقًا لـ PROJECT_MAP.
+- RMI-04 (الصف 773) و RMI-05 (الصف 774) مغلقتان؛ S1 Strategy Factory نُفِّذ (الصف 775)؛ S3..S12 تخطيط فقط طبقًا لـ PROJECT_MAP.

@@ -608,7 +608,8 @@ class ResearchStrategyBridge:
 def run_research_validation(proposal: ResearchStrategyProposal, *,
                             source: str, count: int, cost_r: float,
                             data_dir: Path,
-                            registry_path: Optional[Path] = None) -> Dict:
+                            registry_path: Optional[Path] = None,
+                            obs_prefix: str = "research_obs") -> Dict:
     """Run a compiled research strategy through the real lab pipeline.
 
     Reuses exactly the candle -> features -> runner -> out-of-sample folds ->
@@ -678,7 +679,7 @@ def run_research_validation(proposal: ResearchStrategyProposal, *,
     if report.passed:
         promoted = registry.promote(strategy_id, report)  # RESEARCH -> CANDIDATE
 
-    obs_path = data_dir / f"research_obs_{slug}.jsonl"
+    obs_path = data_dir / f"{obs_prefix}_{slug}.jsonl"
     with open(obs_path, "w", encoding="utf-8") as fh:
         for obs in observations:
             fh.write(json.dumps(obs.as_dict(), ensure_ascii=False) + "\n")

@@ -12,10 +12,11 @@ Verified state (2026-10-11):
 - Official gate (incl. live smoke): 6/6 green; pytest 2035 passed / 0 failed.
 - Governance/roadmap: RMI-01/02/03 closed; RMI-04 (Research -> Strategy, row
   773) and RMI-05 (Strategy Asset / Economy, row 774) closed 2026-10-12;
-  S1..S12 not implemented.
+  S1 (Strategy Factory, row 775) implemented 2026-10-12; S3..S12 not
+  implemented (S2 covered by RMI-05).
 
 Run mode: single-operator paper mode (safe). Auth disabled locally by design
 (TRADERAIG_AUTH=0) for the local operator.
 
-NOT production-ready for live: live venue integration is not wired (RMI-04 and
-RMI-05 are closed; S1..S12 remain unimplemented).
+NOT production-ready for live: live venue integration is not wired (RMI-04,
+RMI-05 and S1 are closed/implemented; S3..S12 remain unimplemented).

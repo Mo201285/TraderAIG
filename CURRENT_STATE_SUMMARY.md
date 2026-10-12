@@ -10,7 +10,8 @@
 - RMI-01 (الصف 749/751) مغلق، RMI-02 (الصف 750) مغلق، RMI-03 (الصف 752) مغلق.
 - RMI-04 (Research → Strategy، الصف 773) و RMI-05 (Strategy Asset / Economy،
   الصف 774) أُغلقتا في 2026-10-12 عبر research_bridge.py و assets.py.
-- S1..S12 + حلقة التحسين الذاتي: تخطيط فقط (الصف 772)، بلا كود.
+- S1 Strategy Factory نُفِّذ (الصف 775، factory.py)؛ S2 مُغطّى بـ RMI-05 (الصف 774)؛
+  S2..S12 وبقية المراحل + حلقة التحسين الذاتي: تخطيط فقط (الصف 772).
 
 بوابة التحقق الرسمية (scripts\verify_all.ps1، 2026-10-12، مع live smoke):
 - ruff ✓، py_compile ✓، pytest ✓ (2035 passed, 0 failed)، tsc ✓، vite ✓، live smoke 7/7 → 6/6 أخضر.

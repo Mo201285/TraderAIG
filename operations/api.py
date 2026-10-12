@@ -4769,6 +4769,143 @@ def strategy_asset_metadata(strategy_id: str,
 
 
 # ---------------------------------------------------------------------------
+# S1 Strategy Factory
+#
+# One factory pipeline over the RMI-04 seam: a declarative StrategySpec is
+# compiled into a versioned build (lab genome DNA + content hash), registered
+# at RESEARCH, and driven through the single shared validation engine. The
+# factory never promotes past CANDIDATE and never grants a trade permission.
+# ---------------------------------------------------------------------------
+
+_FACTORY_BUILD_LOCK = _threading.Lock()
+_FACTORY_VALIDATE_LOCK = _threading.Lock()
+
+
+def _factory_layer():
+    from research.strategy_lab.factory import FactorySpecStore
+    from research.strategy_lab.registry import StrategyRegistry
+    registry = StrategyRegistry(str(LAB_DATA_DIR / "registry.json"))
+    registry.load()
+    store = FactorySpecStore(str(LAB_DATA_DIR / "factory_specs.json"))
+    return registry, store
+
+
+def _factory_spec(payload: Optional[Dict]):
+    from research.strategy_lab.factory import StrategySpec
+    return StrategySpec.from_dict(payload or {})
+
+
+@app.get("/strategy-factory/specs")
+def strategy_factory_specs(spec_id: str = "") -> Dict:
+    """List persisted factory builds (read-only), optional spec filter."""
+    _, store = _factory_layer()
+    rows = store.for_spec(spec_id) if spec_id else store.rows()
+    return {"ok": True, "count": len(rows), "specs": rows, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/strategy-factory/specs/{strategy_id}")
+def strategy_factory_spec_get(strategy_id: str) -> Dict:
+    """Read one persisted factory build, or a distinct 404."""
+    _, store = _factory_layer()
+    row = store.get(strategy_id)
+    if row is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "strategy_id": strategy_id,
+            "reason": "unknown_strategy",
+            "detail": "no factory build is persisted for that id"})
+    return {"ok": True, "spec": row, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/strategy-factory/compile")
+def strategy_factory_compile(payload: Optional[Dict] = None) -> Dict:
+    """Compile a StrategySpec into a build (dry run, read-only)."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    from research.strategy_lab.factory import StrategyFactory
+    build = StrategyFactory().compile(_factory_spec(payload))
+    return {"ok": build.ok, "build": build.as_dict(), "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/strategy-factory/build")
+def strategy_factory_build(payload: Optional[Dict] = None) -> Dict:
+    """Compile a spec and register it at RESEARCH (governed, never higher)."""
+    actor = _acting_actor()
+    guard = _guard_factory(actor)
+    if guard is not None:
+        return guard
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    from research.strategy_lab.factory import StrategyFactoryError, build_spec
+    try:
+        with _FACTORY_BUILD_LOCK:
+            registry, store = _factory_layer()
+            with _lab_lock:
+                result = build_spec(_factory_spec(payload), registry,
+                                    store=store)
+    except StrategyFactoryError as exc:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "not_built", "detail": str(exc)})
+    try:
+        identity.record_audit(actor, "strategy_factory.build",
+                              "strategy_factory", result["strategy_id"],
+                              {"stage": result["stage"]})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, **result, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.post("/strategy-factory/{strategy_id}/validate")
+def strategy_factory_validate(strategy_id: str,
+                              payload: Optional[Dict] = None) -> Dict:
+    """Run a persisted factory build through the shared lab pipeline.
+
+    Same candle -> features -> runner -> folds -> validation engine as RMI-04.
+    A passing report promotes RESEARCH -> CANDIDATE; nothing here reaches
+    VALIDATED or above.
+    """
+    actor = _acting_actor()
+    _guard(Entitlement.CAN_TRADE)
+    from research.strategy_lab.factory import StrategyFactory, run_spec
+    _, store = _factory_layer()
+    row = store.get(strategy_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="no factory build is persisted for that id")
+    build = StrategyFactory().compile(_factory_spec(row.get("spec")))
+    if not build.ok:
+        raise HTTPException(status_code=409, detail="; ".join(build.reasons))
+    payload = payload or {}
+    if not _FACTORY_VALIDATE_LOCK.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail="another factory validation is already running")
+    try:
+        result = run_spec(build,
+                          source=str(payload.get("source") or "mt5"),
+                          count=int(payload.get("count") or 20000),
+                          cost_r=float(payload.get("cost_r") or 0.0),
+                          data_dir=LAB_DATA_DIR)
+    except Exception as exc:  # validation failures must never crash the API
+        log.exception("strategy factory validation failed")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        _FACTORY_VALIDATE_LOCK.release()
+    try:
+        identity.record_audit(actor, "strategy_factory.validate",
+                              "strategy_factory", strategy_id,
+                              {"passed": result["report"]["passed"],
+                               "stage": result["stage"]})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "result": result}
+
+
+# ---------------------------------------------------------------------------
 # Phase 8/9 monitoring surfaces (M9.1/M9.2)
 # ---------------------------------------------------------------------------
 

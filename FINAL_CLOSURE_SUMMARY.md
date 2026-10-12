@@ -15,11 +15,12 @@ That claim is NOT supported by the repository. Verified on 2026-10-11:
 
 Actual verified state (updated 2026-10-12):
 - RMI-01 / RMI-02 / RMI-03 closed; **RMI-04 (Research -> Strategy, row 773) and
-  RMI-05 (Strategy Asset / Economy, row 774) closed 2026-10-12**; S1..S12 are
-  still not implemented.
+  RMI-05 (Strategy Asset / Economy, row 774) closed 2026-10-12**; **S1
+  (Strategy Factory, row 775) implemented 2026-10-12** and S2 (Strategy Asset
+  Layer) is covered by RMI-05; S3..S12 are still not implemented.
 - Official gate (scripts\verify_all.ps1, 2026-10-12, incl. live smoke): 6/6
   green (ruff, py_compile, pytest 2035 passed / 0 failed, tsc, vite, live
   smoke 7/7).
 
-There is no "final closure" yet: RMI-01..05 are closed, but S1..S12 are
-unimplemented.
+There is no "final closure" yet: RMI-01..05 are closed and S1/S2 have code,
+but S3..S12 are unimplemented.

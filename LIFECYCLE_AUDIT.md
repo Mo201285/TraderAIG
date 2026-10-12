@@ -22,4 +22,4 @@
 - LIVE: يحتاج MT5 Live/CEX API + ربط Venue + تفعيل reconciliation + Risk Policy.
 
 5. الحالة
-- RMI-01..RMI-05 مغلقة (RMI-04 الصف 773، RMI-05 الصف 774)؛ S1..S12 لم تُنفَّذ. دورة الحياة غير مكتملة.
+- RMI-01..RMI-05 مغلقة؛ S1 Strategy Factory نُفِّذ (الصف 775)؛ S3..S12 لم تُنفَّذ. دورة الحياة غير مكتملة.

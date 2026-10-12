@@ -1247,3 +1247,25 @@ export interface ResearchFactoryView {
   is_authorisation: boolean;
   trade_authority: string;
 }
+
+// ─── Go-live readiness (S12 controlled launch): /system/launch-readiness ─────
+
+export type LaunchCheckSeverity = "hard" | "advisory";
+
+export interface LaunchCheck {
+  id: string;
+  label: string;
+  ok: boolean;
+  severity: LaunchCheckSeverity;
+  detail: string;
+}
+
+export interface LaunchReadinessView {
+  present: boolean;
+  ready: boolean;
+  blocking: string[];
+  checks: LaunchCheck[];
+  note: string;
+  is_authorisation: boolean;
+  trade_authority: string;
+}

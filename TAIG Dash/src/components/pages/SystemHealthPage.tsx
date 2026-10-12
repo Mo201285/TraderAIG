@@ -42,6 +42,16 @@ const UI: Record<string, Record<string, string>> = {
     plus: "plus",
     componentsOf: "of",
     healthy: "healthy",
+    launch: "GO-LIVE GATE",
+    launchReady: "Ready for live orders",
+    launchBlocked: "Not ready for live orders",
+    launchHint:
+      "Evidence-only read of the hard preconditions for accepting live orders — it never enables a live gate.",
+    launchDown: "Backend not reachable — readiness unknown.",
+    launchAllOk: "All hard preconditions are met.",
+    launchBlocking: "blocking",
+    severityHard: "HARD",
+    severityAdvisory: "ADVISORY",
   },
   ar: {
     page: "صحة النظام",
@@ -97,6 +107,8 @@ export default function SystemHealthPage({ lang }: { lang: Language }) {
           </Btn>
         }
       />
+
+      <LaunchGate lang={lang} version={version} />
 
       {source === "loading" || !data ? (
         <Card>
@@ -179,5 +191,101 @@ export default function SystemHealthPage({ lang }: { lang: Language }) {
         </div>
       )}
     </div>
+  );
+}
+
+function LaunchGate({ lang, version }: { lang: Language; version: number }) {
+  const rtl = isRtl(lang);
+  const t = UI[lang];
+  const { data, source } = useData(() => api.getLaunchReadiness(), version);
+
+  if (source === "loading") {
+    return (
+      <Card style={{ marginBottom: "1rem" }}>
+        <div style={{ fontSize: "0.8rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
+          {t.loading}
+        </div>
+      </Card>
+    );
+  }
+  if (source !== "live" || !data || !data.present) {
+    return (
+      <Card style={{ marginBottom: "1rem", borderColor: "rgba(245,158,11,0.35)" }}>
+        <SectionLabel lang={lang}>{t.launch}</SectionLabel>
+        <p style={{ fontSize: "0.8rem", color: "var(--muted-foreground)", fontFamily: ff(lang), margin: 0 }}>
+          {t.launchDown}
+        </p>
+      </Card>
+    );
+  }
+
+  const accent = data.ready ? "#22c55e" : "#ef4444";
+  const ordered = [...data.checks].sort((a, b) => {
+    if (a.severity !== b.severity) return a.severity === "hard" ? -1 : 1;
+    if (a.ok !== b.ok) return a.ok ? 1 : -1;
+    return 0;
+  });
+
+  return (
+    <Card style={{ marginBottom: "1rem", borderColor: `${accent}40` }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <StatusDot color={accent} />
+          <div>
+            <div style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", letterSpacing: "0.07em" }}>
+              {t.launch}
+            </div>
+            <div style={{ fontFamily: "var(--font-display)", fontSize: "1.15rem", fontWeight: 600, color: accent }}>
+              {data.ready ? t.launchReady : t.launchBlocked}
+            </div>
+          </div>
+        </div>
+        {!data.ready && (
+          <span style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: accent }}>
+            {data.blocking.length} {t.launchBlocking}
+          </span>
+        )}
+      </div>
+
+      <p style={{ fontSize: "0.76rem", lineHeight: 1.6, color: "var(--muted-foreground)", fontFamily: ff(lang), margin: "10px 0 6px" }}>
+        {t.launchHint}
+      </p>
+
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {ordered.map((c) => {
+          const hard = c.severity === "hard";
+          const color = c.ok ? "#22c55e" : hard ? "#ef4444" : "#f59e0b";
+          return (
+            <div
+              key={c.id}
+              style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "7px 0", borderTop: "1px solid var(--border)" }}
+            >
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: color, marginTop: 5, flexShrink: 0 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: "0.78rem", fontWeight: 500, fontFamily: ff(lang) }}>{c.label}</span>
+                  <StateChip label={hard ? t.severityHard : t.severityAdvisory} color={hard ? "#64748b" : "#3b82f6"} />
+                  {!c.ok && <StateChip label={rtl ? "غير مستوفى" : "unmet"} color={color} />}
+                </div>
+                <div style={{ fontSize: "0.7rem", color: "var(--muted-foreground)", fontFamily: ff(lang), marginTop: 3, lineHeight: 1.5 }}>
+                  {c.detail}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {data.ready && (
+        <p style={{ fontSize: "0.74rem", color: "#22c55e", fontFamily: ff(lang), marginTop: 10, marginBottom: 0 }}>
+          {t.launchAllOk}
+        </p>
+      )}
+      {data.note && (
+        <p style={{ fontSize: "0.66rem", color: "var(--muted-foreground)", fontFamily: ff(lang), marginTop: 10, marginBottom: 0, opacity: 0.75 }}>
+          {data.note}
+        </p>
+      )}
+    </Card>
   );
 }

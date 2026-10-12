@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Language, User } from "../types";
 import { useData, api } from "../lib/useData";
 import { EmptyState, LoadingState } from "../design";
+import { SourceBadge, type ProvenanceState } from "./ui/shared";
 import InvestmentIntelligence from "./InvestmentIntelligence";
 
 interface Props {
@@ -56,6 +57,17 @@ export default function Dashboard({ lang, user }: Props) {
   const quality = useData(() => api.getMonitoringQuality());
   const review = useData(() => api.getMonitoringReview());
   const live = theses.source === "live";
+
+  // Provenance is tri-state, not bi-state: "mock preview" must never stand in
+  // for "the backend is down". Reuse the system-health read to decide.
+  const backendState: ProvenanceState =
+    health.source === "loading"
+      ? "checking"
+      : health.source !== "live"
+        ? "offline"
+        : live
+          ? "live"
+          : "mock";
   const [exVer, setExVer] = useState(0);
   const [exBusy, setExBusy] = useState(false);
   const ex = useData(() => api.getExercise(), exVer);
@@ -150,25 +162,13 @@ export default function Dashboard({ lang, user }: Props) {
         <p style={{ fontSize: "0.8rem", color: "var(--muted-foreground)", fontFamily: ff }}>
           {isRtl ? "نظرة عامة على مساحة عملك المؤسسية" : "Your institutional workspace overview"}
         </p>
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            marginTop: 8,
-            padding: "3px 10px",
-            borderRadius: 20,
-            fontSize: "0.62rem",
-            fontFamily: "var(--font-mono)",
-            letterSpacing: "0.05em",
-            background: live ? "rgba(34,197,94,0.08)" : "var(--muted)",
-            border: `1px solid ${live ? "rgba(34,197,94,0.25)" : "var(--border)"}`,
-            color: live ? "#22c55e" : "var(--muted-foreground)",
-          }}
-        >
-          <span style={{ width: 5, height: 5, borderRadius: "50%", background: live ? "#22c55e" : "#9ca3af" }} />
-          {live ? (isRtl ? "بيانات حية · الواجهة" : "LIVE · operations.api") : (isRtl ? "معاينة محاكاة" : "MOCK PREVIEW")}
-        </span>
+        <div style={{ marginTop: 8 }}>
+          <SourceBadge
+            state={backendState}
+            overall={health.data?.overall}
+            lang={lang}
+          />
+        </div>
       </div>
 
       {/* Your Investment Intelligence (row 755, UX-03) */}

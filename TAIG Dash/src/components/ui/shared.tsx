@@ -401,43 +401,52 @@ function clockTime(ts: number): string {
 
 /**
  * Global provenance badge. Never let the chrome imply live data when the
- * backend is unreachable: shows LIVE / CHECKING / OFFLINE plus the last time we
- * actually heard from the API, so a stale screen is visible at a glance.
+ * backend is unreachable: shows LIVE / MOCK / CHECKING / OFFLINE plus the last
+ * time we actually heard from the API, so a stale screen is visible at a
+ * glance. Pass an explicit `state` when a surface knows its own provenance
+ * (e.g. a page whose reads all fell back to mock while the API is still up);
+ * otherwise it derives from reachability.
  */
+export type ProvenanceState = "checking" | "live" | "mock" | "offline";
+
 export function SourceBadge({
+  state,
   reachable,
   loading = false,
   lastSync,
   overall,
   lang,
 }: {
-  reachable: boolean;
+  state?: ProvenanceState;
+  reachable?: boolean;
   loading?: boolean;
   lastSync?: number | null;
   overall?: string;
   lang: Language;
 }) {
-  const state = loading ? "checking" : reachable ? "live" : "offline";
-  const map: Record<string, { color: string; en: string; ar: string }> = {
+  const resolved: ProvenanceState =
+    state ?? (loading ? "checking" : reachable ? "live" : "offline");
+  const map: Record<ProvenanceState, { color: string; en: string; ar: string }> = {
     checking: { color: "#64748b", en: "CHECKING", ar: "جارٍ الفحص" },
     live: { color: "#22c55e", en: "LIVE", ar: "مباشر" },
+    mock: { color: "#3b82f6", en: "MOCK", ar: "محاكاة" },
     offline: { color: "#f59e0b", en: "OFFLINE", ar: "غير متصل" },
   };
-  const m = map[state];
+  const m = map[resolved];
   const label = lang === "ar" ? m.ar : m.en;
   let color = m.color;
-  if (state === "live") {
+  if (resolved === "live") {
     const o = (overall ?? "").toLowerCase();
     color = o === "healthy" ? "#22c55e" : o === "error" || o === "disconnected" ? "#ef4444" : "#f59e0b";
   }
   const sub =
-    state === "offline"
+    resolved === "offline"
       ? lastSync
         ? `${lang === "ar" ? "آخر مزامنة" : "last sync"} ${clockTime(lastSync)}`
         : lang === "ar"
           ? "لا مزامنة"
           : "no sync"
-      : state === "live" && overall
+      : resolved === "live" && overall
         ? overall
         : null;
   return (

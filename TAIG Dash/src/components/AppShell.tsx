@@ -3,6 +3,7 @@ import { translations } from "../i18n/translations";
 import { useBackendStatus } from "../lib/useData";
 import type { Language, User } from "../types";
 import { SourceBadge } from "./ui/shared";
+import NotificationCenter from "./NotificationCenter";
 import Dashboard from "./Dashboard";
 import ChartPage from "./pages/ChartPage";
 import ResearchPage from "./pages/ResearchPage";
@@ -330,6 +331,9 @@ export default function AppShell({ user, lang, onLangToggle, onLogout }: Props) 
             overall={backend.overall}
             lang={lang}
           />
+
+          {/* Live operational alerts (risk vetoes, drift, review, governance) */}
+          <NotificationCenter lang={lang} onNavigate={(p) => setPage(p as Page)} />
 
           {/* Mode chip — only claim PAPER once the backend confirms it is up */}
           {backend.reachable && (

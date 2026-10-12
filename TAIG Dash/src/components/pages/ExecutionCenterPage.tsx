@@ -111,6 +111,7 @@ const UI: Record<string, Record<string, string>> = {
     reconTypeMissingLocal: "Held at venue (no matching intent)",
     reconTypePriceVolume: "Volume / entry divergence",
     reconTypeOther: "Divergence",
+    reconView: "View ledger",
   },
   ar: {
     pipelineLabel: "مسار التنفيذ",
@@ -218,6 +219,7 @@ const UI: Record<string, Record<string, string>> = {
     reconTypeMissingLocal: "محتجز لدى الجهة (بلا قصد مطابق)",
     reconTypePriceVolume: "انحراف الحجم / الدخول",
     reconTypeOther: "انحراف",
+    reconView: "عرض السجل",
   },
 };
 
@@ -410,6 +412,48 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
             <div style={{ marginTop: 10, fontSize: "0.72rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
               {t.venuesLabel}: {live ? (data?.venues.length ? data.venues.join(" · ") : "—") : fmtSource(source)}
             </div>
+          </Card>
+
+          {/* Reconciliation summary — links the divergence ledger into the overview */}
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
+              <SectionLabel lang={lang}>{t.reconTitle}</SectionLabel>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <StateChip
+                  label={
+                    recon.source !== "live" ? (recon.source === "loading" ? (rtl ? "جارٍ" : "LOADING") : (rtl ? "متوقف" : "DOWN"))
+                    : (recon.data?.attempted ?? 0) === 0 ? (rtl ? "لم يُفحص" : "NOT CHECKED")
+                    : (recon.data?.last_ok ?? false) ? (rtl ? "مطابق" : "MATCHED") : (rtl ? "انحراف" : "DRIFT")
+                  }
+                  color={
+                    recon.source !== "live" ? "#f59e0b"
+                    : (recon.data?.attempted ?? 0) === 0 ? "#6b7280"
+                    : (recon.data?.last_ok ?? false) ? "#22c55e" : "#ef4444"
+                  }
+                />
+                <Btn variant="ghost" onClick={() => setTab("reconciliation")}>↗ {t.reconView}</Btn>
+              </div>
+            </div>
+            {recon.source === "loading" ? (
+              <div style={{ fontSize: "0.76rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>{t.loadingExec}</div>
+            ) : recon.source !== "live" ? (
+              <div style={{ fontSize: "0.76rem", color: "#f59e0b", fontFamily: ff(lang) }}>{t.reconNever}</div>
+            ) : (recon.data?.attempted ?? 0) === 0 ? (
+              <div style={{ fontSize: "0.76rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>{t.reconNever}</div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "0.6rem" }}>
+                {[
+                  { label: t.reconAttempted, value: String(recon.data?.attempted ?? 0), color: "#3b82f6" },
+                  { label: t.reconMismatches, value: String(recon.data?.mismatch_count ?? 0), color: (recon.data?.mismatch_count ?? 0) > 0 ? "#ef4444" : "#22c55e" },
+                  { label: t.updatedLabel, value: recon.data?.last_at ? fmtAt(recon.data.last_at) : "—", color: "#6b7280" },
+                ].map((m) => (
+                  <div key={m.label} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "0.7rem", display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: "0.6rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{m.label}</div>
+                    <div style={{ fontFamily: "var(--font-mono)", fontSize: "1.05rem", fontWeight: 600, color: m.color }}>{m.value}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </Card>
         </div>
       )}

@@ -3440,6 +3440,31 @@ def performance_report(ownership: Optional[str] = None) -> Dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Company -- P&L attribution (S8 AI Company)
+# ---------------------------------------------------------------------------
+
+
+def _pnl_attribution():
+    from company.pnl_attribution import PnLAttribution
+    return PnLAttribution(asset_layer=_asset_layer())
+
+
+@app.get("/company/pnl-attribution")
+def company_pnl_attribution(ownership: Optional[str] = None) -> Dict:
+    """S8: where realised PnL came from and who is accountable (read-only).
+
+    Rolls the per-strategy realised PnL up to its desk (strategy family) and its
+    accountable owner, so the AI company's revenue is attributable. Honest:
+    strategies with no recorded owner roll into ``unattributed`` and thin
+    evidence is marked ``proven=False`` -- never dressed up as a track record.
+    This is accountability, not authority (no trade permission).
+    """
+    ledger.load_from_db()
+    ownership = ownership if ownership in ("system", "manual") else None
+    return _pnl_attribution().report(ownership=ownership)
+
+
 @app.post("/alerts/test")
 def send_test_alert(payload: Dict) -> Dict:
     message = payload.get("message", "TraderAIG test alert")

@@ -859,6 +859,34 @@ def system_verification() -> Dict:
     return latest()
 
 
+@app.get("/system/launch-readiness")
+def system_launch_readiness() -> Dict:
+    """The evidence-only go-live gate (S12 capstone, controlled launch).
+
+    Read-only, exactly like ``/system/health``: it reports whether the *real*
+    configuration meets the hard preconditions for accepting live orders --
+    auth enforced, a live venue rail armed, no half-armed live gate -- and it
+    never enables anything (flipping a live gate stays an operator decision).
+    ``ready`` is True only when every hard check passes; otherwise ``blocking``
+    names the exact unmet preconditions. Secrets are never returned, only
+    their presence.
+    """
+    from core.config import settings
+    from governance.auth import auth
+    from operations.launch import assess
+
+    registered = None
+    try:
+        from persistence.repositories_accounts import AccountRegistryRepository
+        registered = len(AccountRegistryRepository().list_all())
+    except Exception:  # noqa: BLE001
+        registered = None
+
+    result = assess(settings, enforcement=auth.enforcement_enabled(),
+                    registered_accounts=registered)
+    return {"present": True, **result}
+
+
 # ---------------------------------------------------------------------------
 # Roadmap (live from PROJECT_MAP.md)
 # ---------------------------------------------------------------------------

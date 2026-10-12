@@ -1074,6 +1074,163 @@ def get_external_provider(provider_id: str) -> Dict:
 
 
 # ---------------------------------------------------------------------------
+# Partner Network (S11): WHICH EXTERNAL INTEGRATION DID AN OPERATOR ONBOARD
+# ---------------------------------------------------------------------------
+#
+# The provider registry above (row 743) records what a partner *is*; the S9
+# evidence partners record who supplies knowledge; the S5 venue scorecard
+# records where the canonical orders executed. None of them records the one
+# fact S11 adds: the operator's *adoption act* over a provider integration --
+# who onboarded it, when and why. `PartnerNetworkService` joins those seams and
+# adds that durable attestation. Nothing here places an order, changes a route
+# or grants a permission; every payload carries `is_authorisation: False` and
+# names the Risk Governor (rows 741/742/743). Data feeds are left to the S9
+# evidence-partner registry rather than re-registered here.
+
+def _partner_network_service():
+    from providers.network import PartnerNetworkService
+    return PartnerNetworkService()
+
+
+@app.get("/partner-network")
+def partner_network_status() -> Dict:
+    """The live partner-network view: registered partners, their attestation,
+    and the venues that actually executed -- derived from real evidence (the S5
+    scorecard) joined to registered partners, never asserted. A venue that
+    executed but has no registered, attested partner is surfaced, not hidden.
+    """
+    try:
+        view = _partner_network_service().network()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the partner network could not be read",
+            "error": str(exc)})
+    return {"ok": True, **view}
+
+
+@app.get("/partner-network/policy")
+def partner_network_policy() -> Dict:
+    """The onboarding contract: what an attestation is (and is not)."""
+    try:
+        view = _partner_network_service().policy()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the partner network policy could not be read",
+            "error": str(exc)})
+    return {"ok": True, **view}
+
+
+@app.get("/partner-network/attestations")
+def partner_network_attestations(status: str = "") -> Dict:
+    """Every operator attestation, optionally filtered by lifecycle status."""
+    try:
+        rows = _partner_network_service().attestations(status=status)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_attestation_filter",
+            "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "attestations could not be read",
+            "error": str(exc)})
+    return {"ok": True, "attestations": rows, "count": len(rows),
+            "is_authorisation": False,
+            "trade_authority": "risk/governor.py",
+            "read_only": True}
+
+
+@app.get("/partner-network/attestations/{provider_id}")
+def partner_network_get_attestation(provider_id: str) -> Dict:
+    """One provider's attestation, or a honest 404 if none exists."""
+    try:
+        row = _partner_network_service().get_attestation(provider_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the attestation could not be read",
+            "error": str(exc)})
+    if row is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "provider_id": provider_id,
+            "reason": "no_attestation",
+            "detail": "no operator attestation exists for this provider"})
+    return {"ok": True, **row}
+
+
+@app.post("/partner-network/{provider_id}/attest")
+def partner_network_attest(provider_id: str,
+                           payload: Optional[Dict] = None) -> Dict:
+    """Record the operator's onboarding attestation for a provider.
+
+    Governed + audited: a missing principal is 409, an unknown provider is 404
+    (a different problem from an unreachable store, 503), a bad body is 400.
+    The act is written to the audit ledger as `partner_network.attest`.
+    """
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": "no acting principal exists to attest a partner"})
+    payload = payload or {}
+    service = _partner_network_service()
+    if service.provider(provider_id) is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "provider_id": provider_id,
+            "reason": "unknown_provider",
+            "detail": "no such provider in the external provider registry"})
+    try:
+        result = service.attest(provider_id, actor=actor,
+                                note=str(payload.get("note", "") or ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "provider_id": provider_id,
+            "reason": "invalid_attestation", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the attestation could not be recorded",
+            "error": str(exc)})
+    identity.record_audit(actor, "partner_network.attest", "ExternalProvider",
+                          provider_id, {"note": str(payload.get("note", "") or "")})
+    return {"ok": True, **result, "action": "attested"}
+
+
+@app.post("/partner-network/{provider_id}/status")
+def partner_network_set_status(provider_id: str,
+                               payload: Optional[Dict] = None) -> Dict:
+    """Move an attestation through its lifecycle (attested/suspended/retired).
+
+    Governed + audited: unknown status and a missing attestation are both
+    refused (400) rather than silently accepted. The change is written to the
+    audit ledger as `partner_network.status`.
+    """
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": "no acting principal exists to change a partner status"})
+    payload = payload or {}
+    status = str(payload.get("status", "") or "")
+    try:
+        result = _partner_network_service().set_status(provider_id, status)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "provider_id": provider_id,
+            "reason": "invalid_status", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the attestation status could not be changed",
+            "error": str(exc)})
+    identity.record_audit(actor, "partner_network.status", "ExternalProvider",
+                          provider_id, {"status": status})
+    return {"ok": True, **result, "action": "status_updated"}
+
+
+# ---------------------------------------------------------------------------
 # Referral attribution (P2): WHICH ACCOUNT CAME FROM WHICH CODE
 # ---------------------------------------------------------------------------
 #

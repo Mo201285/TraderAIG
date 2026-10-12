@@ -617,3 +617,42 @@ class EvidencePartnerRecord(Base):
     note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
     updated_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
+
+
+class PartnerAttestationRecord(Base):
+    """Operator onboarding attestation for one external partner (S11).
+
+    Row 743's External Provider Registry records *what* an external integration
+    (prop firm / broker / exchange) is; it deliberately records no adoption act,
+    because "the operator's adoption step" is a separate, auditable fact -- the
+    adapter contract is explicit that an adapter can never claim an account or an
+    integration is verified, only the operator's adoption can (see
+    `providers/base.py`). This table is that step: a durable, per-provider
+    attestation naming *who* onboarded the integration, *when* and *why*, with a
+    lifecycle `status` (attested / suspended / retired).
+
+    The provider's name, type and venues are **snapshotted** at attest time --
+    exactly like a referral row snapshots its tracking method -- so the record
+    still says what was attested after the registry row is later edited or
+    de-listed. One attestation per provider (the provider_id is the key; a
+    re-attestation updates it in place).
+
+    Self-contained (no ForeignKeys: a de-listed provider must not break the
+    provenance read) and carrying **no trade-permission column** -- an
+    attestation asserts an integration was onboarded, never that an account may
+    trade (rows 741/742/743 invariant; the Risk Governor stays the sole trade
+    authority).
+    """
+
+    __tablename__ = "partner_attestations"
+
+    provider_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider_name: Mapped[str] = mapped_column(String(128), default="")
+    provider_type: Mapped[str] = mapped_column(String(64), default="")
+    supported_venues: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(32), default="attested", index=True)
+    attested_by: Mapped[str] = mapped_column(String(128), default="")
+    attested_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
+    updated_at: Mapped[str] = mapped_column(String(64), default=_now_iso)

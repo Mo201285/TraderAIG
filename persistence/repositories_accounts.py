@@ -45,6 +45,7 @@ from persistence.models_accounts import (
     EvidenceRecord,
     ExternalProviderRecord,
     ExternalReferralEvent,
+    PartnerAttestationRecord,
     ReferralRecord,
     ResearchMissionRecord,
     ResearchPackageRecord,
@@ -508,6 +509,121 @@ def _row_to_provider(row: ExternalProviderRecord) -> Dict[str, Any]:
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
+
+
+def _row_to_attestation(row: PartnerAttestationRecord) -> Dict[str, Any]:
+    import json
+
+    def _loads(text: str) -> List[Any]:
+        try:
+            return json.loads(text or "[]")
+        except Exception:  # noqa: BLE001
+            return []
+
+    return {
+        "provider_id": row.provider_id,
+        "provider_name": row.provider_name,
+        "provider_type": row.provider_type,
+        "supported_venues": _loads(row.supported_venues),
+        "status": row.status,
+        "attested_by": row.attested_by,
+        "attested_at": row.attested_at,
+        "note": row.note,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+class PartnerAttestationRepository:
+    """Durable operator onboarding attestations for external partners (S11).
+
+    The provider registry (row 743) records *what* an external integration is;
+    this records the operator's **adoption act** over it -- who onboarded the
+    partner, when and why -- with a lifecycle status (attested / suspended /
+    retired). One attestation per `provider_id` (upsert, so a re-attestation
+    updates in place). Reads either return a definite answer or raise, so a
+    store outage is never dressed as "nothing is attested".
+    """
+
+    def __init__(self, session: Optional[Session] = None) -> None:
+        self._injected = session
+        self._session = session
+
+    @contextmanager
+    def _db(self):
+        if self._injected is not None:
+            yield self._injected
+            return
+        session = self._session or make_live_session()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    def attest(self, *, provider_id: str, provider_name: str = "",
+               provider_type: str = "", supported_venues: Optional[List[str]] = None,
+               attested_by: str = "", note: str = "") -> Dict[str, Any]:
+        value = str(provider_id or "").strip()
+        if not value:
+            raise ValueError("an attestation needs a provider_id")
+        actor = str(attested_by or "").strip()
+        if not actor:
+            raise ValueError("an attestation needs the attesting actor")
+        now = datetime.now(timezone.utc).isoformat()
+        venues = _json_dumps(list(supported_venues) if supported_venues else [])
+        with self._db() as session:
+            row = session.get(PartnerAttestationRecord, value)
+            if row is None:
+                row = PartnerAttestationRecord(
+                    provider_id=value,
+                    provider_name=str(provider_name or ""),
+                    provider_type=str(provider_type or ""),
+                    supported_venues=venues,
+                    status="attested", attested_by=actor, attested_at=now,
+                    note=str(note or "").strip(), created_at=now)
+                session.add(row)
+            else:
+                row.provider_name = str(provider_name or row.provider_name)
+                row.provider_type = str(provider_type or row.provider_type)
+                row.supported_venues = venues
+                row.status = "attested"
+                row.attested_by = actor
+                row.attested_at = now
+                row.note = str(note or "").strip()
+            row.updated_at = now
+            session.commit()
+            return _row_to_attestation(row)
+
+    def get(self, provider_id: str) -> Optional[Dict[str, Any]]:
+        with self._db() as session:
+            row = session.get(PartnerAttestationRecord, str(provider_id or ""))
+        return _row_to_attestation(row) if row is not None else None
+
+    def list_all(self, *, status: str = "") -> List[Dict[str, Any]]:
+        with self._db() as session:
+            query = select(PartnerAttestationRecord)
+            if status:
+                if status not in ATTESTATION_STATUSES:
+                    raise ValueError("unknown attestation status filter")
+                query = query.where(PartnerAttestationRecord.status == status)
+            rows = session.execute(
+                query.order_by(PartnerAttestationRecord.provider_id)
+            ).scalars().all()
+        return [_row_to_attestation(r) for r in rows]
+
+    def set_status(self, provider_id: str, status: str) -> Dict[str, Any]:
+        if status not in ATTESTATION_STATUSES:
+            raise ValueError(
+                f"unknown attestation status {status!r}; known statuses are "
+                f"{', '.join(ATTESTATION_STATUSES)}")
+        with self._db() as session:
+            row = session.get(PartnerAttestationRecord, str(provider_id or ""))
+            if row is None:
+                raise ValueError(f"no attestation for provider {provider_id!r}")
+            row.status = status
+            row.updated_at = datetime.now(timezone.utc).isoformat()
+            session.commit()
+            return _row_to_attestation(row)
 
 
 # External referral events (T2 loop): `received -> attributed`, with a separate
@@ -1846,6 +1962,12 @@ SOURCE_COSTS = ("free", "tiered", "paid")
 PARTNER_KINDS = ("academic", "data_vendor", "community", "institution",
                  "individual")
 PARTNER_STATUSES = ("active", "suspended", "retired")
+
+# Partner Network (S11). An attestation is the *operator's* onboarding act for an
+# external partner integration -- a durable fact distinct from the provider
+# registry row (row 743), which records what a provider *is* but no adoption
+# step. The lifecycle retires an integration without deleting its provenance.
+ATTESTATION_STATUSES = ("attested", "suspended", "retired")
 
 QUEUE_STATUSES = ("queued", "active", "completed", "superseded")
 QUEUE_FROM = {

@@ -1,317 +1,429 @@
-import { useState } from "react";
-import type { Language } from "../../types";
-import { Card, PageHeader, SectionLabel, StateChip, Btn, Tab, ff, fd, isRtl } from "../ui/shared";
+﻿import { useState } from "react";
+import type { Language, PaperRequest, PaperRequestState, LearningExperience } from "../../types";
+import {
+  Card,
+  PageHeader,
+  StateChip,
+  Tab,
+  EmptyState,
+  LoadingState,
+  UnreachableState,
+  ff,
+  isRtl,
+} from "../ui/shared";
+import { api, useData } from "../../lib/useData";
 
-const TICKETS = {
-  en: [
-    {
-      id: "TKT-041",
-      strategy: "AAPL Mean Reversion",
-      symbol: "AAPL",
-      direction: "LONG",
-      dirColor: "#22c55e",
-      state: "Dispatched",
-      stateColor: "#3b82f6",
-      qty: 100,
-      entry: "$172.40",
-      target: "$178.20",
-      stop: "$168.50",
-      rr: "1:3.2",
-      date: "Sep 9, 09:55",
-      pnl: null,
-      lesson: null,
-    },
-    {
-      id: "TKT-040",
-      strategy: "XLK Sector Rotation",
-      symbol: "XLK",
-      direction: "LONG",
-      dirColor: "#22c55e",
-      state: "Executed",
-      stateColor: "#22c55e",
-      qty: 200,
-      entry: "$198.30",
-      target: "$207.00",
-      stop: "$193.10",
-      rr: "1:2.9",
-      date: "Sep 7, 10:12",
-      pnl: "+$1,740",
-      lesson: "Held through minor pullback at $201 — correct given volume context.",
-    },
-    {
-      id: "TKT-038",
-      strategy: "NVDA Momentum Ride",
-      symbol: "NVDA",
-      direction: "LONG",
-      dirColor: "#22c55e",
-      state: "Pending Handoff",
-      stateColor: "#f59e0b",
-      qty: 50,
-      entry: "$483.00",
-      target: "$510.00",
-      stop: "$471.00",
-      rr: "1:2.25",
-      date: "Sep 6, 14:30",
-      pnl: null,
-      lesson: null,
-    },
-    {
-      id: "TKT-035",
-      strategy: "SPY Put Spread Hedge",
-      symbol: "SPY",
-      direction: "PUT",
-      dirColor: "#ef4444",
-      state: "Vetoed",
-      stateColor: "#ef4444",
-      qty: 10,
-      entry: "$3.20",
-      target: "$6.00",
-      stop: "$1.50",
-      rr: "1:1.96",
-      date: "Sep 5, 11:00",
-      pnl: "—",
-      lesson: "Vetoed at intake — correlation constraint violated. Review hedge sizing rules.",
-    },
-  ],
-  ar: [
-    {
-      id: "TKT-041",
-      strategy: "ارتداد AAPL المتوسط",
-      symbol: "AAPL",
-      direction: "شراء",
-      dirColor: "#22c55e",
-      state: "مُرسَل",
-      stateColor: "#3b82f6",
-      qty: 100,
-      entry: "$172.40",
-      target: "$178.20",
-      stop: "$168.50",
-      rr: "1:3.2",
-      date: "9 سبتمبر، 09:55",
-      pnl: null,
-      lesson: null,
-    },
-    {
-      id: "TKT-040",
-      strategy: "تدوير قطاع XLK",
-      symbol: "XLK",
-      direction: "شراء",
-      dirColor: "#22c55e",
-      state: "منفّذ",
-      stateColor: "#22c55e",
-      qty: 200,
-      entry: "$198.30",
-      target: "$207.00",
-      stop: "$193.10",
-      rr: "1:2.9",
-      date: "7 سبتمبر، 10:12",
-      pnl: "+$1,740",
-      lesson: "صمدت رغم التراجع الطفيف عند $201 — صحيح في ضوء سياق الحجم.",
-    },
-    {
-      id: "TKT-038",
-      strategy: "زخم NVDA",
-      symbol: "NVDA",
-      direction: "شراء",
-      dirColor: "#22c55e",
-      state: "بانتظار التسليم",
-      stateColor: "#f59e0b",
-      qty: 50,
-      entry: "$483.00",
-      target: "$510.00",
-      stop: "$471.00",
-      rr: "1:2.25",
-      date: "6 سبتمبر، 14:30",
-      pnl: null,
-      lesson: null,
-    },
-    {
-      id: "TKT-035",
-      strategy: "تحوّط SPY بفروق الخيارات",
-      symbol: "SPY",
-      direction: "بيع",
-      dirColor: "#ef4444",
-      state: "مرفوض",
-      stateColor: "#ef4444",
-      qty: 10,
-      entry: "$3.20",
-      target: "$6.00",
-      stop: "$1.50",
-      rr: "1:1.96",
-      date: "5 سبتمبر، 11:00",
-      pnl: "—",
-      lesson: "مرفوض عند الاستقبال — خرق قيد الارتباط. مراجعة قواعد تحجيم التحوط.",
-    },
-  ],
+interface Strings {
+  title: string;
+  subtitle: string;
+  tabs: { id: string; label: string }[];
+  total: string;
+  dispatched: string;
+  executed: string;
+  vetoed: string;
+  pnl: string;
+  entry: string;
+  target: string;
+  stop: string;
+  size: string;
+  reason: string;
+  emptyQueue: string;
+  emptyDispatched: string;
+  emptyResults: string;
+  emptyLessons: string;
+  lessonsHint: string;
+  unreachable: string;
+  unreachableHint: string;
+  noPnl: string;
+}
+
+const UI: Record<Language, Strings> = {
+  en: {
+    title: "Paper Workflow Center",
+    subtitle: "Queue. Promote. Handoff. Execute. Outcome.",
+    tabs: [
+      { id: "queue", label: "Execution Queue" },
+      { id: "dispatched", label: "Dispatched" },
+      { id: "results", label: "Results & PnL" },
+      { id: "lessons", label: "Lessons Capture" },
+    ],
+    total: "Total",
+    dispatched: "Dispatched",
+    executed: "Executed",
+    vetoed: "Vetoed",
+    pnl: "Total PnL",
+    entry: "Entry",
+    target: "Target",
+    stop: "Stop",
+    size: "Size",
+    reason: "Reason",
+    emptyQueue: "No paper requests are awaiting action.",
+    emptyDispatched: "No paper requests have been dispatched.",
+    emptyResults: "No executed paper requests yet.",
+    emptyLessons: "No lessons captured from paper outcomes yet.",
+    lessonsHint: "Lessons are recorded in the experience ledger.",
+    unreachable: "Paper workflow is unavailable",
+    unreachableHint: "Ticket states are unknown while the backend is not reachable — nothing is fabricated.",
+    noPnl: "Realized PnL appears once an executed opportunity reports its outcome.",
+  },
+  ar: {
+    title: "مركز سير عمل الورق",
+    subtitle: "قائمة، ترقية، تسليم، تنفيذ، نتيجة.",
+    tabs: [
+      { id: "queue", label: "قائمة التنفيذ" },
+      { id: "dispatched", label: "المُرسَل" },
+      { id: "results", label: "النتائج والأرباح" },
+      { id: "lessons", label: "التقاط الدروس" },
+    ],
+    total: "الإجمالي",
+    dispatched: "مُرسَل",
+    executed: "منفّذ",
+    vetoed: "مرفوض",
+    pnl: "إجمالي الأرباح",
+    entry: "الدخول",
+    target: "الهدف",
+    stop: "الإيقاف",
+    size: "الحجم",
+    reason: "السبب",
+    emptyQueue: "لا توجد طلبات ورقية بانتظار الإجراء.",
+    emptyDispatched: "لم يُرسَل أي طلب ورقي.",
+    emptyResults: "لا توجد طلبات ورقية منفّذة بعد.",
+    emptyLessons: "لم تُلتقط دروس من نتائج الورق بعد.",
+    lessonsHint: "تُسجَّل الدروس في سجل الخبرات.",
+    unreachable: "سير عمل الورق غير متاح",
+    unreachableHint: "حالات التذاكر غير معروفة أثناء تعذّر الوصول إلى الخادم — لا يُختلق شيء.",
+    noPnl: "تظهر الأرباح المحققة عندما يُبلّغ طلب منفّذ عن نتيجته.",
+  },
 };
 
+const STATE_META: Record<PaperRequestState, { en: string; ar: string; color: string }> = {
+  queued: { en: "Queued", ar: "في القائمة", color: "#94a3b8" },
+  intake: { en: "Intake", ar: "استقبال", color: "#8b5cf6" },
+  approved: { en: "Approved", ar: "موافَق", color: "#22c55e" },
+  handoff: { en: "Pending Handoff", ar: "بانتظار التسليم", color: "#f59e0b" },
+  dispatched: { en: "Dispatched", ar: "مُرسَل", color: "#3b82f6" },
+  executed: { en: "Executed", ar: "منفّذ", color: "#22c55e" },
+  outcome: { en: "Outcome", ar: "نتيجة", color: "#22c55e" },
+  vetoed: { en: "Vetoed", ar: "مرفوض", color: "#ef4444" },
+};
+
+const DIR_META: Record<string, { en: string; ar: string; color: string }> = {
+  long: { en: "LONG", ar: "شراء", color: "#22c55e" },
+  short: { en: "SHORT", ar: "بيع", color: "#ef4444" },
+};
+
+const fmt = (n: number | null | undefined) =>
+  typeof n === "number" && Number.isFinite(n) ? n.toLocaleString() : "—";
+const when = (s?: string) => (s ? s.replace("T", " ").slice(0, 16) : "—");
+const stateLabel = (s: PaperRequestState, rtl: boolean) =>
+  STATE_META[s] ? (rtl ? STATE_META[s].ar : STATE_META[s].en) : s;
+const stateColor = (s: PaperRequestState) => (STATE_META[s] ? STATE_META[s].color : "#94a3b8");
+const dirMeta = (d: string, rtl: boolean) =>
+  DIR_META[d]
+    ? { label: rtl ? DIR_META[d].ar : DIR_META[d].en, color: DIR_META[d].color }
+    : { label: d.toUpperCase(), color: "#94a3b8" };
+
 export default function PaperWorkflowPage({ lang }: { lang: Language }) {
+  const rtl = isRtl(lang);
+  const t = UI[lang];
   const [tab, setTab] = useState("queue");
   const [expanded, setExpanded] = useState<string | null>(null);
-  const rtl = isRtl(lang);
-  const tickets = TICKETS[lang];
+  const version = 0;
 
-  const tabs = lang === "en"
-    ? [
-        { id: "queue", label: "Execution Queue" },
-        { id: "dispatched", label: "Dispatched" },
-        { id: "results", label: "Results & PnL" },
-        { id: "lessons", label: "Lessons Capture" },
-      ]
-    : [
-        { id: "queue", label: "قائمة التنفيذ" },
-        { id: "dispatched", label: "المُرسَل" },
-        { id: "results", label: "النتائج والأرباح" },
-        { id: "lessons", label: "التقاط الدروس" },
-      ];
+  const reqs = useData(() => api.getPaperRequests(), version);
+  const exps = useData(() => api.getExperiences(), version);
 
-  const summary = {
-    total: 14,
-    dispatched: 1,
-    executed: 11,
-    vetoed: 2,
-    pnl: "+$6,240",
-  };
+  const loading = reqs.source === "loading";
+  const live = reqs.source === "live";
+  const rows: PaperRequest[] = reqs.data ?? [];
+
+  const countOf = (s: PaperRequestState) => rows.filter((r) => r.state === s).length;
+  const executedCount = rows.filter(
+    (r) => r.state === "executed" || r.state === "outcome" || Boolean(r.executedAt),
+  ).length;
+  const realized = rows.map((r) => r.pnl).filter((p): p is number => typeof p === "number");
+  const totalPnl = realized.reduce((a, b) => a + b, 0);
+
+  const summary = [
+    { label: t.total, value: String(rows.length), color: "var(--foreground)" },
+    { label: t.dispatched, value: String(countOf("dispatched")), color: "#3b82f6" },
+    { label: t.executed, value: String(executedCount), color: "#22c55e" },
+    { label: t.vetoed, value: String(countOf("vetoed")), color: "#ef4444" },
+    {
+      label: t.pnl,
+      value: realized.length ? `${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}` : "—",
+      color: totalPnl >= 0 ? "#22c55e" : "#ef4444",
+    },
+  ];
+
+  const queueRows = rows.filter(
+    (r) => r.state === "queued" || r.state === "intake" || r.state === "approved" || r.state === "handoff",
+  );
+  const dispatchedRows = rows.filter((r) => r.state === "dispatched");
+  const resultRows = rows.filter(
+    (r) => r.state === "executed" || r.state === "outcome" || Boolean(r.executedAt),
+  );
+  const tabRows = tab === "queue" ? queueRows : tab === "dispatched" ? dispatchedRows : resultRows;
+  const emptyText = tab === "queue" ? t.emptyQueue : tab === "dispatched" ? t.emptyDispatched : t.emptyResults;
 
   return (
     <div>
       <PageHeader
-        title={rtl ? "مركز سير عمل الورق" : "Paper Workflow Center"}
-        subtitle={rtl ? "قائمة، ترقية، تسليم، تنفيذ، نتيجة." : "Queue. Promote. Handoff. Execute. Outcome."}
+        title={t.title}
+        subtitle={t.subtitle}
         lang={lang}
-        actions={<Btn variant="ghost">{rtl ? "تصدير" : "Export"}</Btn>}
+        actions={
+          <StateChip
+            label={loading ? "LOADING" : live ? "LIVE" : "DOWN"}
+            color={loading ? "#f59e0b" : live ? "#22c55e" : "#ef4444"}
+          />
+        }
       />
 
-      {/* Summary stats */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "0.75rem", marginBottom: "1.25rem" }}>
-        {[
-          { label: rtl ? "الإجمالي" : "Total", value: summary.total, color: "var(--foreground)" },
-          { label: rtl ? "مُرسَل" : "Dispatched", value: summary.dispatched, color: "#3b82f6" },
-          { label: rtl ? "منفّذ" : "Executed", value: summary.executed, color: "#22c55e" },
-          { label: rtl ? "مرفوض" : "Vetoed", value: summary.vetoed, color: "#ef4444" },
-          { label: rtl ? "إجمالي الأرباح" : "Total PnL", value: summary.pnl, color: "#22c55e" },
-        ].map((s) => (
-          <Card key={s.label} style={{ padding: "0.875rem" }}>
-            <div style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
-              {s.label}
-            </div>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: "1.3rem", fontWeight: 600, color: s.color }}>
-              {s.value}
-            </div>
-          </Card>
-        ))}
-      </div>
-
-      <Tab tabs={tabs} active={tab} onChange={setTab} lang={lang} />
-
-      {(tab === "queue" || tab === "dispatched" || tab === "results") && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.65rem" }}>
-          {tickets
-            .filter((t) => {
-              if (tab === "queue") return t.state === (rtl ? "بانتظار التسليم" : "Pending Handoff") || t.state === (rtl ? "مُرسَل" : "Dispatched");
-              if (tab === "dispatched") return t.state === (rtl ? "مُرسَل" : "Dispatched");
-              return true;
-            })
-            .map((t) => (
-              <Card key={t.id}>
+      {loading ? (
+        <LoadingState lang={lang} />
+      ) : !live ? (
+        <UnreachableState lang={lang} title={t.unreachable} hint={t.unreachableHint} />
+      ) : (
+        <>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(5, 1fr)",
+              gap: "0.75rem",
+              marginBottom: "1.25rem",
+            }}
+          >
+            {summary.map((s) => (
+              <Card key={s.label} style={{ padding: "0.875rem" }}>
                 <div
-                  style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}
-                  onClick={() => setExpanded(expanded === t.id ? null : t.id)}
+                  style={{
+                    fontSize: "0.62rem",
+                    fontFamily: "var(--font-mono)",
+                    color: "var(--muted-foreground)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.06em",
+                    marginBottom: 6,
+                  }}
                 >
-                  <div
-                    style={{
-                      width: 44,
-                      height: 44,
-                      background: "var(--muted)",
-                      border: "1px solid var(--border)",
-                      borderRadius: 7,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontFamily: "var(--font-mono)",
-                      fontSize: "0.68rem",
-                      fontWeight: 700,
-                      color: t.dirColor,
-                      flexShrink: 0,
-                    }}
-                  >
-                    {t.symbol}
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.7rem", color: "var(--muted-foreground)" }}>{t.id}</span>
-                      <StateChip label={t.state} color={t.stateColor} />
-                      <span style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: t.dirColor, background: `${t.dirColor}16`, border: `1px solid ${t.dirColor}28`, padding: "1px 6px", borderRadius: 8 }}>
-                        {t.direction}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: "0.875rem", fontFamily: ff(lang), fontWeight: 500 }}>{t.strategy}</div>
-                  </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    {t.pnl && t.pnl !== "—" && (
-                      <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.9rem", fontWeight: 600, color: "#22c55e", marginBottom: 2 }}>
-                        {t.pnl}
-                      </div>
-                    )}
-                    <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.65rem", color: "var(--muted-foreground)" }}>{t.date}</div>
-                  </div>
+                  {s.label}
                 </div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: "1.3rem", fontWeight: 600, color: s.color }}>
+                  {s.value}
+                </div>
+              </Card>
+            ))}
+          </div>
 
-                {expanded === t.id && (
-                  <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "1px solid var(--border)" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: "1rem" }}>
-                      {[
-                        { label: rtl ? "الدخول" : "Entry", value: t.entry },
-                        { label: rtl ? "الهدف" : "Target", value: t.target },
-                        { label: rtl ? "الإيقاف" : "Stop", value: t.stop },
-                        { label: rtl ? "المخاطرة/العائد" : "R/R", value: t.rr },
-                      ].map((m) => (
-                        <div key={m.label} style={{ background: "var(--muted)", borderRadius: 5, padding: "8px 10px" }}>
-                          <div style={{ fontSize: "0.6rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>{m.label}</div>
-                          <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.9rem", fontWeight: 600 }}>{m.value}</div>
+          <Tab tabs={t.tabs} active={tab} onChange={setTab} lang={lang} />
+
+          {tab === "lessons" ? (
+            <LessonsTab lang={lang} t={t} source={exps.source} rows={exps.data ?? []} />
+          ) : tabRows.length === 0 ? (
+            <EmptyState lang={lang} title={emptyText} />
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.65rem" }}>
+              {tabRows.map((r) => {
+                const dm = dirMeta(r.direction, rtl);
+                return (
+                  <Card key={r.id}>
+                    <div
+                      style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}
+                      onClick={() => setExpanded(expanded === r.id ? null : r.id)}
+                    >
+                      <div
+                        style={{
+                          width: 52,
+                          height: 44,
+                          background: "var(--muted)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 7,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontFamily: "var(--font-mono)",
+                          fontSize: "0.66rem",
+                          fontWeight: 700,
+                          color: dm.color,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {r.symbol}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.7rem", color: "var(--muted-foreground)" }}>
+                            {r.id}
+                          </span>
+                          <StateChip label={stateLabel(r.state, rtl)} color={stateColor(r.state)} />
+                          <span
+                            style={{
+                              fontSize: "0.62rem",
+                              fontFamily: "var(--font-mono)",
+                              color: dm.color,
+                              background: `${dm.color}16`,
+                              border: `1px solid ${dm.color}28`,
+                              padding: "1px 6px",
+                              borderRadius: 8,
+                            }}
+                          >
+                            {dm.label}
+                          </span>
                         </div>
-                      ))}
+                        <div
+                          style={{
+                            fontSize: "0.875rem",
+                            fontFamily: ff(lang),
+                            fontWeight: 500,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {r.strategyId || r.symbol}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: rtl ? "left" : "right", flexShrink: 0 }}>
+                        {typeof r.pnl === "number" && (
+                          <div
+                            style={{
+                              fontFamily: "var(--font-mono)",
+                              fontSize: "0.9rem",
+                              fontWeight: 600,
+                              color: r.pnl >= 0 ? "#22c55e" : "#ef4444",
+                              marginBottom: 2,
+                            }}
+                          >
+                            {`${r.pnl >= 0 ? "+" : ""}${r.pnl.toFixed(2)}`}
+                          </div>
+                        )}
+                        <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.65rem", color: "var(--muted-foreground)" }}>
+                          {when(r.createdAt)}
+                        </div>
+                      </div>
                     </div>
-                    {t.lesson && (
-                      <div style={{ padding: "10px 12px", borderRadius: 5, background: "rgba(59,130,246,0.05)", border: "1px solid rgba(59,130,246,0.15)", fontSize: "0.78rem", fontFamily: ff(lang), color: "#93c5fd", lineHeight: 1.6 }}>
-                        <strong>{rtl ? "درس: " : "Lesson: "}</strong>{t.lesson}
-                      </div>
-                    )}
-                    {t.state === (rtl ? "بانتظار التسليم" : "Pending Handoff") && (
-                      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                        <Btn variant="primary">{rtl ? "موافقة على التسليم" : "Approve Handoff"}</Btn>
-                        <Btn variant="danger">{rtl ? "رفض" : "Veto"}</Btn>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </Card>
-            ))}
-        </div>
-      )}
 
-      {tab === "lessons" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-          {tickets
-            .filter((t) => t.lesson)
-            .map((t) => (
-              <Card key={t.id}>
-                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-                  <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.68rem", color: "var(--muted-foreground)" }}>{t.id}</span>
-                  <StateChip label={t.state} color={t.stateColor} />
-                </div>
-                <div style={{ fontSize: "0.875rem", fontFamily: ff(lang), fontWeight: 500, marginBottom: 8 }}>{t.strategy}</div>
-                <div style={{ padding: "10px 12px", borderRadius: 5, background: "rgba(59,130,246,0.05)", border: "1px solid rgba(59,130,246,0.12)", fontSize: "0.78rem", fontFamily: ff(lang), color: "#93c5fd", lineHeight: 1.65 }}>
-                  {t.lesson}
-                </div>
-                <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-                  <Btn variant="ghost" style={{ fontSize: "0.72rem" }}>{rtl ? "إضافة للتعلم" : "Add to Learning"}</Btn>
-                  <Btn variant="accent" style={{ fontSize: "0.72rem" }}>{rtl ? "إعادة تشغيل" : "Replay"}</Btn>
-                </div>
-              </Card>
-            ))}
-        </div>
+                    {expanded === r.id && (
+                      <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "1px solid var(--border)" }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: "1rem" }}>
+                          {[
+                            { label: t.entry, value: fmt(r.entry) },
+                            { label: t.target, value: fmt(r.tp ?? null) },
+                            { label: t.stop, value: fmt(r.sl) },
+                            { label: t.size, value: fmt(r.size) },
+                          ].map((m) => (
+                            <div key={m.label} style={{ background: "var(--muted)", borderRadius: 5, padding: "8px 10px" }}>
+                              <div
+                                style={{
+                                  fontSize: "0.6rem",
+                                  fontFamily: "var(--font-mono)",
+                                  color: "var(--muted-foreground)",
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.05em",
+                                  marginBottom: 4,
+                                }}
+                              >
+                                {m.label}
+                              </div>
+                              <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.9rem", fontWeight: 600 }}>{m.value}</div>
+                            </div>
+                          ))}
+                        </div>
+                        {r.riskReason && (
+                          <div
+                            style={{
+                              padding: "10px 12px",
+                              borderRadius: 5,
+                              background: "rgba(239,68,68,0.05)",
+                              border: "1px solid rgba(239,68,68,0.15)",
+                              fontSize: "0.78rem",
+                              fontFamily: ff(lang),
+                              color: "#fca5a5",
+                              lineHeight: 1.6,
+                            }}
+                          >
+                            <strong>{t.reason}: </strong>
+                            {r.riskReason}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+
+          {tab === "results" && realized.length === 0 && (
+            <div style={{ marginTop: "0.75rem", fontSize: "0.72rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+              {t.noPnl}
+            </div>
+          )}
+        </>
       )}
+    </div>
+  );
+}
+
+function LessonsTab({
+  lang,
+  t,
+  source,
+  rows,
+}: {
+  lang: Language;
+  t: Strings;
+  source: "live" | "mock" | "loading";
+  rows: LearningExperience[];
+}) {
+  if (source === "loading") return <LoadingState lang={lang} />;
+  if (source !== "live") return <UnreachableState lang={lang} title={t.unreachable} hint={t.unreachableHint} />;
+  if (rows.length === 0) return <EmptyState lang={lang} title={t.emptyLessons} hint={t.lessonsHint} />;
+  const TYPE_COLOR: Record<LearningExperience["type"], string> = {
+    win: "#22c55e",
+    mistake: "#ef4444",
+    lesson: "#3b82f6",
+    pattern: "#a855f7",
+  };
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+      {rows.map((x) => (
+        <Card key={x.id}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+            <StateChip label={x.type.toUpperCase()} color={TYPE_COLOR[x.type]} />
+            {x.strategyId && (
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.65rem", color: "var(--muted-foreground)" }}>
+                {x.strategyId}
+              </span>
+            )}
+            <span
+              style={{
+                marginInlineStart: "auto",
+                fontSize: "0.62rem",
+                fontFamily: "var(--font-mono)",
+                color: "var(--muted-foreground)",
+              }}
+            >
+              {when(x.at)}
+            </span>
+          </div>
+          <div style={{ fontSize: "0.875rem", fontFamily: ff(lang), fontWeight: 500, marginBottom: 8 }}>{x.title}</div>
+          <div
+            style={{
+              padding: "10px 12px",
+              borderRadius: 5,
+              background: "rgba(59,130,246,0.05)",
+              border: "1px solid rgba(59,130,246,0.12)",
+              fontSize: "0.78rem",
+              fontFamily: ff(lang),
+              color: "#93c5fd",
+              lineHeight: 1.65,
+            }}
+          >
+            {x.detail}
+          </div>
+        </Card>
+      ))}
     </div>
   );
 }

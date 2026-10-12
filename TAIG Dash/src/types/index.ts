@@ -133,6 +133,11 @@ export interface PaperRequest {
   pnl?: number;
   exitReason?: ExitReason;
   barsHeld?: number;
+  opportunityStatus?: string;
+  screenReasons?: string[];
+  riskReason?: string | null;
+  score?: number | null;
+  history?: string[];
 }
 
 export interface RiskPolicy {

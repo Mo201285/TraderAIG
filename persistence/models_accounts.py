@@ -656,3 +656,29 @@ class PartnerAttestationRecord(Base):
     note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
     updated_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
+
+
+class UserLocaleRecord(Base):
+    """A user's preferred interface locale (S12 globalization).
+
+    The identity model carries no locale: a governance identity is who someone
+    *is* and what they may *do*, and folding an interface preference into it
+    would make a display choice look like an entitlement. So the preference
+    lives here, keyed on `user_id`, as a self-contained durable row (no
+    ForeignKeys -- a de-provisioned user must not break the preference read).
+
+    A resolved locale is a **preference, never a permission**: it changes which
+    language a surface renders in and nothing else (rows 741/742 invariant). The
+    value is validated against the declared locale catalog by
+    `LocalizationService`, not here, so the catalog stays the single owner of
+    what a supported locale is.
+    """
+
+    __tablename__ = "user_locales"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    locale: Mapped[str] = mapped_column(String(8), default="en", index=True)
+    source: Mapped[str] = mapped_column(String(32), default="operator")
+    updated_by: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
+    updated_at: Mapped[str] = mapped_column(String(64), default=_now_iso)

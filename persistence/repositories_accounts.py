@@ -47,6 +47,7 @@ from persistence.models_accounts import (
     ExternalReferralEvent,
     PartnerAttestationRecord,
     ReferralRecord,
+    UserLocaleRecord,
     ResearchMissionRecord,
     ResearchPackageRecord,
     ResearchQueueItemRecord,
@@ -624,6 +625,87 @@ class PartnerAttestationRepository:
             row.updated_at = datetime.now(timezone.utc).isoformat()
             session.commit()
             return _row_to_attestation(row)
+
+
+def _row_to_user_locale(row: UserLocaleRecord) -> Dict[str, Any]:
+    return {
+        "user_id": row.user_id,
+        "locale": row.locale,
+        "source": row.source,
+        "updated_by": row.updated_by,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+class UserLocaleRepository:
+    """Durable per-user interface locale preference (S12 globalization).
+
+    A preference, not a permission: the row only says which language a surface
+    should render in for a user. One row per `user_id` (upsert); the locale
+    value is validated by `LocalizationService` against the declared locale
+    catalog, so this store stays a faithful record. A read either returns a
+    definite row or `None`; the *default* locale is applied by the service, not
+    invented here.
+    """
+
+    def __init__(self, session: Optional[Session] = None) -> None:
+        self._injected = session
+        self._session = session
+
+    @contextmanager
+    def _db(self):
+        if self._injected is not None:
+            yield self._injected
+            return
+        session = self._session or make_live_session()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    def get(self, user_id: str) -> Optional[Dict[str, Any]]:
+        with self._db() as session:
+            row = session.get(UserLocaleRecord, str(user_id or ""))
+        return _row_to_user_locale(row) if row is not None else None
+
+    def set_locale(self, user_id: str, locale: str, *, source: str = "operator",
+                   updated_by: str = "") -> Dict[str, Any]:
+        value = str(user_id or "").strip()
+        if not value:
+            raise ValueError("a locale preference needs a user_id")
+        locale = str(locale or "").strip()
+        now = datetime.now(timezone.utc).isoformat()
+        with self._db() as session:
+            row = session.get(UserLocaleRecord, value)
+            if row is None:
+                row = UserLocaleRecord(
+                    user_id=value, locale=locale, source=str(source or "operator"),
+                    updated_by=str(updated_by or ""), created_at=now)
+                session.add(row)
+            else:
+                row.locale = locale
+                row.source = str(source or "operator")
+                row.updated_by = str(updated_by or "")
+            row.updated_at = now
+            session.commit()
+            return _row_to_user_locale(row)
+
+    def list_all(self) -> List[Dict[str, Any]]:
+        with self._db() as session:
+            rows = session.execute(
+                select(UserLocaleRecord).order_by(UserLocaleRecord.user_id)
+            ).scalars().all()
+        return [_row_to_user_locale(r) for r in rows]
+
+    def clear(self, user_id: str) -> bool:
+        with self._db() as session:
+            row = session.get(UserLocaleRecord, str(user_id or ""))
+            if row is None:
+                return False
+            session.delete(row)
+            session.commit()
+            return True
 
 
 # External referral events (T2 loop): `received -> attributed`, with a separate

@@ -681,6 +681,9 @@ def _tenancy_report() -> Dict:
             "GET /research/intelligence (the Paperclip/CrewAI mission loop "
             "and the Ollama router report need an acting principal too, "
             "row 752)",
+            "GET + POST /localization/users/{user_id}/locale (403 unless it is "
+            "the acting principal's own interface-locale preference; a locale "
+            "is a preference, never a permission)",
         ],
         "guard_account_called_by_any_route": False,
         "still_open_by_design": [
@@ -716,6 +719,20 @@ def _tenancy_report() -> Dict:
             "distinct from payments.charge_product. An event and a reward are "
 "commercial facts: none of them grants or reads a trade permission, "
              "and every payload carries is_authorisation: False (row 745)"
+        ),
+        "localization": (
+            "GET /localization/locales + GET /localization/regions + "
+            "GET /localization/policy + GET /localization/coverage (S12 "
+            "globalization: the declared locale catalog -- English source, "
+            "Arabic required RTL mirror -- and the declared region catalog "
+            "reconciled against the real venue registry by coverage(), "
+            "surfacing drift instead of assuming the catalog is fine) + "
+            "GET /localization/preferences (the durable per-user interface "
+            "preferences) + GET + POST /localization/users/{user_id}/locale "
+            "(ownership-scoped: 403 unless it is the acting principal's own "
+            "preference). A resolved locale is a preference, never a "
+            "permission; every payload carries is_authorisation: False "
+            "(row 639 declarations)"
         ),
         "evidence_plane": (
             "POST /evidence/intake (the ONE seam the external world feeds -- "
@@ -1228,6 +1245,135 @@ def partner_network_set_status(provider_id: str,
     identity.record_audit(actor, "partner_network.status", "ExternalProvider",
                           provider_id, {"status": status})
     return {"ok": True, **result, "action": "status_updated"}
+
+
+# ---------------------------------------------------------------------------
+# Localization (S12): EN/AR bilingual surfaces + declared multi-market reach
+# ---------------------------------------------------------------------------
+#
+# Globalization as two declared catalogs and one preference: the locale catalog
+# (English source, Arabic mirror -- a surface is localized only when both
+# exist), the region catalog (locales spoken + venue rails reached, reconciled
+# against the real venue registry by `coverage`), and a durable per-user locale
+# preference. A resolved locale is a preference, never a permission; every
+# payload carries `is_authorisation: False` and names the Risk Governor.
+
+def _localization_service():
+    from localization.registry import LocalizationService
+    return LocalizationService()
+
+
+@app.get("/localization/locales")
+def localization_locales() -> Dict:
+    """The declared locale catalog: code, direction (LTR/RTL) and source flag."""
+    view = _localization_service()
+    return {"ok": True, "locales": view.locales(),
+            "count": len(view.locales()),
+            "is_authorisation": False,
+            "trade_authority": "risk/governor.py",
+            "read_only": True}
+
+
+@app.get("/localization/regions")
+def localization_regions() -> Dict:
+    """The declared region catalog: locales spoken + venue rails reached."""
+    view = _localization_service()
+    return {"ok": True, "regions": view.regions(),
+            "count": len(view.regions()),
+            "is_authorisation": False,
+            "trade_authority": "risk/governor.py",
+            "read_only": True}
+
+
+@app.get("/localization/policy")
+def localization_policy() -> Dict:
+    """The globalization contract: source locale, mirror rule, preference rule."""
+    return {"ok": True, **_localization_service().policy()}
+
+
+@app.get("/localization/coverage")
+def localization_coverage() -> Dict:
+    """Reconcile the declared region catalog against the real venue registry.
+
+    Declared reach is never assumed: a region naming an unknown venue/locale, a
+    declared locale no region speaks, or a real venue no region reaches is
+    surfaced as drift, not hidden.
+    """
+    return {"ok": True, **_localization_service().coverage()}
+
+
+@app.get("/localization/preferences")
+def localization_preferences() -> Dict:
+    """Every stored per-user locale preference (read-only)."""
+    try:
+        rows = _localization_service().preferences()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "locale preferences could not be read",
+            "error": str(exc)})
+    return {"ok": True, "preferences": rows, "count": len(rows),
+            "is_authorisation": False,
+            "trade_authority": "risk/governor.py",
+            "read_only": True}
+
+
+@app.get("/localization/users/{user_id}/locale")
+def localization_user_locale(user_id: str) -> Dict:
+    """A user's resolved locale (their stored preference or the source default)."""
+    service = _localization_service()
+    if not service.user_exists(user_id):
+        return JSONResponse(status_code=404, content={
+            "ok": False, "user_id": user_id, "reason": "unknown_user",
+            "detail": "no such identity to resolve a locale for"})
+    _own(user_id, action="read a locale for")
+    try:
+        resolved = service.resolve(user_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the locale preference could not be read",
+            "error": str(exc)})
+    return {"ok": True, **resolved}
+
+
+@app.post("/localization/users/{user_id}/locale")
+def localization_set_user_locale(user_id: str,
+                                 payload: Optional[Dict] = None) -> Dict:
+    """Set an operator's per-user interface locale (governed + audited).
+
+    A missing principal is 409, an unknown identity is 404 (a different problem
+    from an unreachable store, 503), an unsupported locale is 400. The change is
+    written to the audit ledger as `localization.set_locale`; it is a
+    preference, never a permission.
+    """
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": "no acting principal exists to set a locale"})
+    payload = payload or {}
+    service = _localization_service()
+    if not service.user_exists(user_id):
+        return JSONResponse(status_code=404, content={
+            "ok": False, "user_id": user_id, "reason": "unknown_user",
+            "detail": "no such identity to set a locale for"})
+    _own(user_id, action="set a locale for")
+    try:
+        result = service.set_locale(user_id, payload.get("locale", ""),
+                                    actor=actor)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "user_id": user_id,
+            "reason": "invalid_locale", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the locale preference could not be recorded",
+            "error": str(exc)})
+    identity.record_audit(actor, "localization.set_locale", "User", user_id,
+                          {"locale": str(payload.get("locale", "") or "")})
+    return {"ok": True, **result, "action": "locale_set"}
 
 
 # ---------------------------------------------------------------------------

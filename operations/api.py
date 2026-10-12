@@ -4480,6 +4480,210 @@ def strategy_intake_promote(entry_id: str, payload: Dict) -> Dict:
 
 
 # ---------------------------------------------------------------------------
+# RMI-04 Research -> Strategy bridge
+#
+# A delivered Research Package (RMI-03) compiles into a lab-native strategy
+# candidate -- a StrategyDefinition plus a bounded set of variants from the
+# lab genome -- and is registered at RESEARCH with its package -> strategy
+# provenance persisted. The bridge never promotes: a passing validation is the
+# only thing that moves the strategy to CANDIDATE, and every further step stays
+# governed by the shared ReviewLoop promotion path. Nothing here grants a trade
+# permission.
+# ---------------------------------------------------------------------------
+
+_RESEARCH_STRATEGY_LOCK = _threading.Lock()
+_RESEARCH_VALIDATE_LOCK = _threading.Lock()
+
+
+def _research_bridge():
+    from research.strategy_lab.registry import StrategyRegistry
+    from research.strategy_lab.research_bridge import (
+        ResearchBindingStore,
+        ResearchStrategyBridge,
+    )
+    registry = StrategyRegistry(str(LAB_DATA_DIR / "registry.json"))
+    registry.load()
+    store = ResearchBindingStore(
+        str(LAB_DATA_DIR / "research_strategies.json"))
+    return ResearchStrategyBridge(registry, store)
+
+
+def _audit_research_strategy(actor, action, strategy_id, details=None,
+                             success=True):
+    identity.record_audit(actor, action, "research_strategy", strategy_id,
+                          details or {}, success)
+
+
+def _research_compile_kwargs(payload: Dict) -> Dict:
+    payload = payload or {}
+    return {
+        "asset": str(payload.get("asset") or ""),
+        "family_hint": str(payload.get("family") or ""),
+        "htf_tf": str(payload.get("htf_tf") or ""),
+        "setup_tf": str(payload.get("setup_tf") or ""),
+        "trigger_tf": str(payload.get("trigger_tf") or ""),
+        "trigger_model": str(payload.get("trigger_model") or ""),
+        "exit_model": str(payload.get("exit_model") or ""),
+        "min_rr": payload.get("min_rr") or None,
+        "sessions": payload.get("sessions") or (),
+    }
+
+
+@app.get("/research/strategies")
+def research_strategies_list(package_id: str = "") -> Dict:
+    """List research -> strategy bindings (read-only), optional package filter."""
+    bridge = _research_bridge()
+    bindings = (bridge.bindings_for_package(package_id) if package_id
+                else bridge.bindings())
+    return {"ok": True, "count": len(bindings), "bindings": bindings,
+            "read_only": True, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/strategies/{strategy_id}")
+def research_strategy_get(strategy_id: str) -> Dict:
+    """Read one research -> strategy binding, or a distinct 404."""
+    binding = _research_bridge().get_binding(strategy_id)
+    if binding is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "strategy_id": strategy_id,
+            "reason": "unknown_strategy",
+            "detail": "no research strategy is bound to that id"})
+    return {"ok": True, "binding": binding, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/research/strategies/compile")
+def research_strategy_compile(payload: Optional[Dict] = None) -> Dict:
+    """Compile a stored package into a candidate proposal (dry run, read-only).
+
+    No registry is written: this is the inspectable "what would this package
+    become" surface. A package that names no detector family, or cites no
+    evidence, is refused (fail-closed) rather than compiled from thin air.
+    """
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    from research.strategy_lab.research_bridge import ResearchBridgeError
+    package_id = str((payload or {}).get("package_id") or "")
+    try:
+        package = _research_factory().get(package_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the research factory could not be read",
+            "error": str(exc)})
+    if package is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "package_id": package_id, "reason": "unknown_package",
+            "detail": "no such research package"})
+    try:
+        proposal = _research_bridge().compiler.compile(
+            package, **_research_compile_kwargs(payload))
+    except ResearchBridgeError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "not_compilable", "detail": str(exc)})
+    return {"ok": True, "proposal": proposal.as_dict(), "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/research/strategies/register")
+def research_strategy_register(payload: Optional[Dict] = None) -> Dict:
+    """Compile and register a research package as a RESEARCH strategy.
+
+    Governed mutation: the compiled flagship is registered in the lab registry
+    at RESEARCH and its package -> strategy provenance is persisted. No
+    promotion happens here (a passing validation is the only way up).
+    """
+    actor = _acting_actor()
+    guard = _guard_factory(actor)
+    if guard is not None:
+        return guard
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    from research.strategy_lab.research_bridge import ResearchBridgeError
+    payload = payload or {}
+    package_id = str(payload.get("package_id") or "")
+    try:
+        package = _research_factory().get(package_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the research factory could not be read",
+            "error": str(exc)})
+    if package is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "package_id": package_id, "reason": "unknown_package",
+            "detail": "no such research package"})
+    try:
+        with _RESEARCH_STRATEGY_LOCK:
+            bridge = _research_bridge()
+            proposal = bridge.compile(package,
+                                      **_research_compile_kwargs(payload))
+            with _lab_lock:
+                result = bridge.register(proposal)
+    except ResearchBridgeError as exc:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "not_registered", "detail": str(exc)})
+    _audit_research_strategy(actor, "research_strategy.register",
+                             result["strategy_id"],
+                             {"package_id": package_id,
+                              "stage": result["stage"]})
+    return {"ok": True, **result, "proposal": proposal.as_dict(),
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/research/strategies/{strategy_id}/validate")
+def research_strategy_validate(strategy_id: str,
+                               payload: Optional[Dict] = None) -> Dict:
+    """Run a registered research strategy through the real lab pipeline.
+
+    Uses the same candle -> features -> runner -> validation machinery as the
+    automated runs (no lookahead). On a *passing* report the registry entry is
+    promoted RESEARCH -> CANDIDATE; a failing report leaves it at RESEARCH.
+    Nothing here can reach VALIDATED or above -- that stays the governed
+    ReviewLoop's call.
+    """
+    actor = _acting_actor()
+    _guard(Entitlement.CAN_TRADE)
+    from research.strategy_lab.research_bridge import (
+        ResearchBridgeError,
+        ResearchStrategyProposal,
+        run_research_validation,
+    )
+    bridge = _research_bridge()
+    binding = bridge.get_binding(strategy_id)
+    if binding is None:
+        raise HTTPException(
+            status_code=404,
+            detail="no research strategy is bound to that id")
+    try:
+        proposal = ResearchStrategyProposal.from_binding(binding)
+    except ResearchBridgeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    payload = payload or {}
+    if not _RESEARCH_VALIDATE_LOCK.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail="another research validation is already running")
+    try:
+        result = run_research_validation(
+            proposal,
+            source=str(payload.get("source") or "mt5"),
+            count=int(payload.get("count") or 20000),
+            cost_r=float(payload.get("cost_r") or 0.0),
+            data_dir=LAB_DATA_DIR)
+    except Exception as exc:  # validation failures must never crash the API
+        log.exception("research strategy validation failed")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        _RESEARCH_VALIDATE_LOCK.release()
+    _audit_research_strategy(actor, "research_strategy.validate", strategy_id,
+                             {"passed": result["report"]["passed"],
+                              "stage": result["stage"]})
+    return {"ok": True, "result": result}
+
+
+# ---------------------------------------------------------------------------
 # Phase 8/9 monitoring surfaces (M9.1/M9.2)
 # ---------------------------------------------------------------------------
 

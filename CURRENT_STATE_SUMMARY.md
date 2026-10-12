@@ -8,11 +8,12 @@
 
 الحالة الفعلية (متحقّق منها في المستودع):
 - RMI-01 (الصف 749/751) مغلق، RMI-02 (الصف 750) مغلق، RMI-03 (الصف 752) مغلق.
-- RMI-04 (Research → Strategy) و RMI-05 (Strategy Asset / Economy) مفتوحان.
+- RMI-04 (Research → Strategy، الصف 773) و RMI-05 (Strategy Asset / Economy،
+  الصف 774) أُغلقتا في 2026-10-12 عبر research_bridge.py و assets.py.
 - S1..S12 + حلقة التحسين الذاتي: تخطيط فقط (الصف 772)، بلا كود.
 
-بوابة التحقق الرسمية (scripts\verify_all.ps1، 2026-10-11، بلا live smoke):
-- ruff ✓، py_compile ✓، pytest ✓ (2010 passed, 0 failed)، tsc ✓، vite ✓ → 5/5 أخضر.
+بوابة التحقق الرسمية (scripts\verify_all.ps1، 2026-10-12، مع live smoke):
+- ruff ✓، py_compile ✓، pytest ✓ (2035 passed, 0 failed)، tsc ✓، vite ✓، live smoke 7/7 → 6/6 أخضر.
 
 دمج المستودع:
 - دُمج خطّ G:\One (09d928e) في TraderAIG فاستُعيدت وحدات research/missions،
@@ -25,4 +26,4 @@
 - Frontend UI: http://127.0.0.1:5173.
 - ملاحظة بيئة: .venv الحالي معطّل (يشير إلى C:\Python314 غير الموجود)؛ نُفّذت البوابة عبر C:\Python313.
 
-Git: main = origin/main = 79e4d76، شجرة نظيفة، بلا force-push.
+Git: main = origin/main، شجرة نظيفة، بلا force-push (يشمل إغلاق RMI-04/RMI-05).

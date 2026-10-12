@@ -5,8 +5,7 @@
 > لتلك الاختبارات أو الوحدات في المستودع.
 
 الواقع المتحقّق (2026-10-11):
-- عدد الاختبارات المجموعة: 2011.
-- البوابة الرسمية بلا live smoke: ruff ✓، py_compile ✓، pytest 2010 passed/0 failed ✓،
-  tsc ✓، vite ✓ → 5/5.
-- RMI-04 (Research→Strategy) و RMI-05 (Strategy Asset/Economy) مفتوحان؛
-  S1..S12 تخطيط فقط طبقًا لـ PROJECT_MAP (الصف 772).
+- عدد الاختبارات: pytest 2035 passed / 0 failed (2026-10-12).
+- البوابة الرسمية مع live smoke: ruff ✓، py_compile ✓، pytest ✓، tsc ✓، vite ✓،
+  live smoke 7/7 → 6/6.
+- RMI-04 (الصف 773) و RMI-05 (الصف 774) مغلقتان؛ S1..S12 تخطيط فقط طبقًا لـ PROJECT_MAP.

@@ -4684,6 +4684,91 @@ def research_strategy_validate(strategy_id: str,
 
 
 # ---------------------------------------------------------------------------
+# RMI-05 Strategy Asset Layer
+#
+# A strategy registered by the lab (or the RMI-04 bridge) becomes a first-class
+# asset: durable operator-authored metadata plus a provenance view, valued only
+# from real evidence (its validation report and its live performance) through a
+# pluggable valuation model. This layer never promotes, never trades and never
+# grants a permission -- it is a read-mostly view over the governed registry.
+# ---------------------------------------------------------------------------
+
+_ASSET_METADATA_LOCK = _threading.Lock()
+
+
+def _asset_layer():
+    from research.strategy_lab.assets import (
+        StrategyAssetLayer,
+        StrategyAssetMetadataStore,
+    )
+    from research.strategy_lab.registry import StrategyRegistry
+    from research.strategy_lab.research_bridge import ResearchBindingStore
+    registry = StrategyRegistry(str(LAB_DATA_DIR / "registry.json"))
+    registry.load()
+    bindings = ResearchBindingStore(
+        str(LAB_DATA_DIR / "research_strategies.json"))
+    metadata = StrategyAssetMetadataStore(
+        str(LAB_DATA_DIR / "strategy_assets.json"))
+    return StrategyAssetLayer(registry, bindings=bindings, metadata=metadata)
+
+
+@app.get("/strategy-assets")
+def strategy_assets_list() -> Dict:
+    """List every registered strategy as a valued asset (read-only)."""
+    assets = _asset_layer().assets()
+    return {"ok": True, "count": len(assets),
+            "assets": [a.as_dict() for a in assets],
+            "read_only": True, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/strategy-assets/{strategy_id}")
+def strategy_asset_get(strategy_id: str) -> Dict:
+    """Read one strategy asset (metadata + provenance + valuation) or 404."""
+    asset = _asset_layer().asset(strategy_id)
+    if asset is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "strategy_id": strategy_id,
+            "reason": "unknown_strategy",
+            "detail": "no such strategy is registered in the lab"})
+    return {"ok": True, "asset": asset.as_dict(), "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/strategy-assets/{strategy_id}/metadata")
+def strategy_asset_metadata(strategy_id: str,
+                            payload: Optional[Dict] = None) -> Dict:
+    """Attach operator-authored metadata to a registered strategy (governed).
+
+    Metadata may only be attached to a strategy that already exists in the lab
+    registry (fail-closed); the call never registers or promotes anything.
+    """
+    actor = _acting_actor()
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    from research.strategy_lab.assets import StrategyAssetError
+    try:
+        with _ASSET_METADATA_LOCK:
+            metadata = _asset_layer().attach_metadata(strategy_id,
+                                                      payload or {})
+    except StrategyAssetError as exc:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "strategy_id": strategy_id,
+            "reason": "unknown_strategy", "detail": str(exc)})
+    try:
+        identity.record_audit(actor, "strategy_asset.metadata",
+                              "strategy_asset", strategy_id,
+                              {"keys": sorted(k for k in metadata
+                                              if k not in (
+                                                  "strategy_id",
+                                                  "created_at",
+                                                  "updated_at"))})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "strategy_id": strategy_id, "metadata": metadata,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+# ---------------------------------------------------------------------------
 # Phase 8/9 monitoring surfaces (M9.1/M9.2)
 # ---------------------------------------------------------------------------
 

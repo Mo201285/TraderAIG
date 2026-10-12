@@ -10,7 +10,7 @@
   الخارجي، ونظام الإحالة + اختباراتها. كانت operations/api.py تستوردها وهي غائبة
   عن main، فكانت /evidence و /roadmap/status و /system/verification تُعيد 500.
 - بعد الدمج: هذه المسارات تعمل (200 أو رمز نطاقي 409/405 لا خطأ استيراد).
-- PROJECT_MAP: RMI-01..03 مغلقة؛ RMI-04 و RMI-05 مفتوحان؛ S1..S12 تخطيط فقط.
-- البوابة الرسمية (بلا smoke): 5/5 أخضر (ruff، py_compile، pytest 2010 passed، tsc، vite).
+- PROJECT_MAP: RMI-01..05 مغلقة (RMI-04 الصف 773، RMI-05 الصف 774)؛ S1..S12 تخطيط فقط.
+- البوابة الرسمية (مع live smoke): 6/6 أخضر (ruff، py_compile، pytest 2035 passed، tsc، vite، live smoke 7/7).
 
-Git: main = origin/main = 79e4d76، شجرة نظيفة.
+Git: main = origin/main، شجرة نظيفة.

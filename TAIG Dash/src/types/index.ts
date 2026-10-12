@@ -725,6 +725,53 @@ export interface RegimeSnapshot {
   regime: string;
 }
 
+export interface OpportunityRiskCheck {
+  name: string;
+  passed: boolean;
+  detail?: unknown;
+  permission?: string;
+}
+
+export interface OpportunityEvidence {
+  source?: string;
+  risk_decision?: {
+    decision_id?: string;
+    candidate_id?: string;
+    kind?: string;
+    reason?: string;
+    checks?: OpportunityRiskCheck[];
+  };
+  portfolio_allocation_check?: OpportunityRiskCheck;
+  candidate?: {
+    candidate_id?: string;
+    thesis_id?: string;
+    symbol?: string;
+    direction?: string;
+    entry?: number;
+    stop_loss?: number;
+    take_profit?: number;
+    size?: number;
+    risk_reward?: number;
+    confidence?: number;
+    priority?: number;
+    status?: string;
+    created_at?: number;
+  };
+  stage?: {
+    strategy_id?: string | null;
+    strategy_stage?: string | null;
+    live_allowed?: boolean;
+    note?: string;
+  };
+  screen?: { rubric?: string };
+}
+
+export interface OpportunityHistoryEntry {
+  ts: string;
+  status: string;
+  note?: string;
+}
+
 export interface OpportunityRow {
   opportunity_id: string;
   symbol: string;
@@ -738,6 +785,27 @@ export interface OpportunityRow {
   strategy_stage: string;
   execute_pending: boolean;
   detected_at: string;
+  source?: string;
+  session_key?: string;
+  thesis_id?: string;
+  candidate_id?: string;
+  strategy_id?: string | null;
+  entry?: number;
+  stop_loss?: number;
+  take_profit?: number;
+  size?: number;
+  risk_reward?: number;
+  priority?: number;
+  risk_reason?: string | null;
+  allocation_reason?: string | null;
+  live_eligibility_reason?: string | null;
+  screen_reasons?: string[];
+  evidence?: OpportunityEvidence;
+  qualified_at?: string | null;
+  approved_at?: string | null;
+  executed_at?: string | null;
+  ticket_key?: string | null;
+  history?: OpportunityHistoryEntry[];
 }
 
 export interface ResearchSummaryView {

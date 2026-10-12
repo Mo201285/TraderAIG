@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Language } from "../types";
+import type { Language, OpportunityRow } from "../types";
 import { Card, SectionLabel, ff, fd, isRtl } from "./ui/shared";
 import { EmptyState, ErrorState, LoadingState, StatusChip } from "../design";
 import { useData, api, type AsyncData } from "../lib/useData";
@@ -44,6 +44,11 @@ const UI: Record<Language, Record<string, string>> = {
     total: "total",
     records: "records",
     categories: "classifications",
+    conf: "conf",
+    riskOk: "risk ok",
+    allocOk: "alloc ok",
+    liveOk: "live-eligible",
+    rr: "R:R",
   },
   ar: {
     heading: "ذكاؤك الاستثماري",
@@ -84,6 +89,11 @@ const UI: Record<Language, Record<string, string>> = {
     total: "الإجمالي",
     records: "سجلاً",
     categories: "تصنيفات",
+    conf: "ثقة",
+    riskOk: "المخاطر سليمة",
+    allocOk: "التوزيع سليم",
+    liveOk: "مؤهّل مباشر",
+    rr: "م.ر",
   },
 };
 
@@ -135,6 +145,25 @@ function Tile<T>({
       </div>
     </Card>
   );
+}
+
+function opportunityEvidence(
+  o: OpportunityRow,
+  t: Record<string, string>,
+): { line: string; vetoed: boolean } {
+  const reasons = (o.screen_reasons ?? []).filter((r) => Boolean(r));
+  const vetoed = !o.risk_ok || !o.allocation_ok || !o.live_eligible;
+  if (reasons.length) {
+    return { line: reasons.join(" · "), vetoed };
+  }
+  const bits: string[] = [];
+  if (!o.risk_ok) bits.push("risk: " + (o.risk_reason || "—"));
+  if (!o.allocation_ok) bits.push("alloc: " + (o.allocation_reason || "—"));
+  if (!o.live_eligible) bits.push("live: " + (o.live_eligibility_reason || "—"));
+  if (bits.length) {
+    return { line: bits.join(" · "), vetoed };
+  }
+  return { line: t.riskOk + " · " + t.allocOk + " · " + t.liveOk, vetoed };
 }
 
 export default function InvestmentIntelligence({ lang }: { lang: Language }) {
@@ -260,36 +289,52 @@ export default function InvestmentIntelligence({ lang }: { lang: Language }) {
                   <span>{rows.filter((o) => o.status === "approved").length} {t.approved}</span>
                   <span>{rows.filter((o) => o.live_eligible).length} {t.ready}</span>
                 </div>
-                {rows.slice(0, 3).map((o) => (
-                  <div
-                    key={o.opportunity_id}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "6px 0",
-                      borderTop: "1px solid var(--border)",
-                    }}
-                  >
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.72rem", fontWeight: 600 }}>
-                      {o.symbol}
-                    </span>
-                    <span style={{ fontSize: "0.66rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
-                      {o.direction}
-                    </span>
-                    <StatusChip status={o.status} lang={lang} />
-                    <span
+                {rows.slice(0, 3).map((o) => {
+                  const ev = opportunityEvidence(o, t);
+                  const conf = typeof o.confidence === "number" ? o.confidence.toFixed(2) : "—";
+                  const rr = typeof o.risk_reward === "number" ? o.risk_reward.toFixed(2) : null;
+                  return (
+                    <div
+                      key={o.opportunity_id}
                       style={{
-                        marginInlineStart: "auto",
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "0.68rem",
-                        color: "var(--muted-foreground)",
+                        padding: "6px 0",
+                        borderTop: "1px solid var(--border)",
                       }}
                     >
-                      {o.score}
-                    </span>
-                  </div>
-                ))}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.72rem", fontWeight: 600 }}>
+                          {o.symbol}
+                        </span>
+                        <span style={{ fontSize: "0.66rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
+                          {o.direction}
+                        </span>
+                        <StatusChip status={o.status} lang={lang} />
+                        <span
+                          style={{
+                            marginInlineStart: "auto",
+                            fontFamily: "var(--font-mono)",
+                            fontSize: "0.68rem",
+                            color: "var(--muted-foreground)",
+                          }}
+                        >
+                          {o.score}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          marginTop: 2,
+                          fontFamily: "var(--font-mono)",
+                          fontSize: "0.6rem",
+                          color: ev.vetoed ? "#ef4444" : "var(--muted-foreground)",
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        {t.conf} {conf}
+                        {rr ? " · " + t.rr + " " + rr : ""} · {ev.line}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               <EmptyState title={t.oppEmpty} hint={t.oppEmptyHint} lang={lang} />

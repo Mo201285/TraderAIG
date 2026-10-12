@@ -1309,6 +1309,15 @@ export interface GrowthView {
   trade_authority?: string;
 }
 
+export interface KnowledgeView {
+  total: number;
+  per_status: Record<string, number>;
+  cited_evidence_ids: number;
+  known_statuses: string[];
+  is_authorisation?: boolean;
+  trade_authority?: string;
+}
+
 // ─── Go-live readiness (S12 controlled launch): /system/launch-readiness ─────
 
 export type LaunchCheckSeverity = "hard" | "advisory";

@@ -22,6 +22,7 @@ import type {
   HealthView,
   IntakeEntry,
   IntelligenceRouterView,
+  KnowledgeView,
   LearningExperience,
   LearningSplitView,
   LearningStatsView,
@@ -702,6 +703,19 @@ export const api = {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const raw = (await res.json()) as { growth?: GrowthView };
       return { ok: true, data: raw.growth ?? empty, source: "live" };
+    } catch (e) {
+      return { ok: false, data: empty, source: "mock", error: String(e) };
+    }
+  },
+  // -- Research knowledge (row 749): /research/knowledge ---------------------
+  async getResearchKnowledge(): Promise<Envelope<KnowledgeView>> {
+    const empty: KnowledgeView = { total: 0, per_status: {}, cited_evidence_ids: 0, known_statuses: [] };
+    if (!health.live) return { ok: false, data: empty, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/knowledge");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { knowledge?: KnowledgeView };
+      return { ok: true, data: raw.knowledge ?? empty, source: "live" };
     } catch (e) {
       return { ok: false, data: empty, source: "mock", error: String(e) };
     }

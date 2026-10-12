@@ -41,6 +41,14 @@ const UI: Record<string, Record<string, string>> = {
       "Packages exist with no evidence behind them — the growth surface reports this rather than filling the gap.",
     growthErrorTitle: "Growth surface unreachable",
     growthErrorHint: "The growth read could not be reached; nothing is shown in its place.",
+    knowledgeTitle: "Knowledge Library",
+    knowledgeHint:
+      "Research packages by status and how many cite evidence, read from /research/knowledge. Counts are only ever the live ones.",
+    citedLabel: "Cited evidence",
+    statusCol: "Status",
+    noStatuses: "No research packages recorded yet.",
+    knowledgeErrorTitle: "Knowledge library unreachable",
+    knowledgeErrorHint: "The knowledge read could not be reached; nothing is shown in its place.",
   },
   ar: {
     factoryTitle: "مصنع البحث",
@@ -76,6 +84,14 @@ const UI: Record<string, Record<string, string>> = {
       "توجد حزم بلا دليل خلفها — يُبلّغ سطح النمو عن ذلك بدل ملء الفراغ.",
     growthErrorTitle: "تعذّر الوصول إلى سطح النمو",
     growthErrorHint: "تعذّر بلوغ قراءة النمو؛ ولا يُعرض شيء بدلًا منها.",
+    knowledgeTitle: "مكتبة المعرفة",
+    knowledgeHint:
+      "حزم البحث حسب الحالة وعدد المستشهِدة بالأدلة، تُقرأ من /research/knowledge. الأعداد هي الحيّة فقط دائمًا.",
+    citedLabel: "أدلة مستشهِد بها",
+    statusCol: "الحالة",
+    noStatuses: "لم تُسجَّل أي حزم بحث بعد.",
+    knowledgeErrorTitle: "تعذّر الوصول إلى مكتبة المعرفة",
+    knowledgeErrorHint: "تعذّر بلوغ قراءة المعرفة؛ ولا يُعرض شيء بدلًا منها.",
   },
 };
 
@@ -108,11 +124,14 @@ export default function ResearchFactoryExplorer({ lang }: { lang: Language }) {
   const [version, setVersion] = useState(0);
   const factory = useData(() => api.getResearchFactory(), version);
   const growth = useData(() => api.getResearchGrowth(), version);
+  const knowledge = useData(() => api.getResearchKnowledge(), version);
 
   const stages = factory.data?.stages ?? [];
   const sourceLabel = factory.source;
   const g = growth.data;
   const families = g ? Object.entries(g.per_source) : [];
+  const k = knowledge.data;
+  const statuses = k ? Object.entries(k.per_status) : [];
 
   return (
     <>
@@ -306,6 +325,54 @@ export default function ResearchFactoryExplorer({ lang }: { lang: Language }) {
 
             <p style={{ ...mono, textAlign: rtl ? "right" : "left", opacity: 0.6 }}>
               {t.sourceLabel}: {growth.source} · {t.authority}
+            </p>
+          </>
+        )}
+      </Card>
+      <Card style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <SectionLabel lang={lang}>{t.knowledgeTitle}</SectionLabel>
+        <p style={{ margin: 0, fontSize: "0.74rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+          {t.knowledgeHint}
+        </p>
+        {knowledge.source === "loading" ? (
+          <LoadingState label={t.loadingFactory} lang={lang} />
+        ) : knowledge.source !== "live" || !k ? (
+          <ErrorState title={t.knowledgeErrorTitle} hint={t.knowledgeErrorHint} lang={lang} />
+        ) : (
+          <>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <span style={chip}>
+                {t.totalPackages}: <span style={{ fontWeight: 600 }}>{k.total}</span>
+              </span>
+              <span style={chip}>
+                {t.citedLabel}: <span style={{ fontWeight: 600 }}>{k.cited_evidence_ids}</span>
+              </span>
+            </div>
+            {k.known_statuses.length === 0 ? (
+              <EmptyState title={t.noStatuses} lang={lang} />
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {k.known_statuses.map((status) => (
+                  <div
+                    key={status}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      border: "1px solid var(--border)",
+                      borderRadius: 6,
+                      padding: "6px 10px",
+                      background: "rgba(127,127,127,0.04)",
+                    }}
+                  >
+                    <span style={{ fontSize: "0.76rem", fontFamily: ff(lang) }}>{status}</span>
+                    <span style={mono}>{k.per_status[status] ?? 0}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p style={{ ...mono, textAlign: rtl ? "right" : "left", opacity: 0.6 }}>
+              {t.sourceLabel}: {knowledge.source} · {t.authority}
             </p>
           </>
         )}

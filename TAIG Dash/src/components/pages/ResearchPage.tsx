@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { EvidenceRow, Language, Thesis } from "../../types";
-import { Card, PageHeader, SectionLabel, StateChip, Btn, Tab, EmptyState, LoadingState, UnreachableState, ff, fd, isRtl } from "../ui/shared";
+import { Card, PageHeader, SectionLabel, StateChip, Tab, EmptyState, LoadingState, UnreachableState, ff, fd, isRtl } from "../ui/shared";
 import { useData, api } from "../../lib/useData";
 
 const LADDER_COLORS = ["#64748b", "#3b82f6", "#22c55e", "#22c55e", "#22c55e",
@@ -71,17 +71,7 @@ export default function ResearchPage({ lang }: { lang: Language }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-      <PageHeader
-        title={d.title}
-        subtitle={d.subtitle}
-        lang={lang}
-        actions={
-          <>
-            <Btn variant="ghost">{rtl ? "استيراد" : "Import"}</Btn>
-            <Btn variant="primary">{rtl ? "+ أطروحة جديدة" : "+ New Thesis"}</Btn>
-          </>
-        }
-      />
+      <PageHeader title={d.title} subtitle={d.subtitle} lang={lang} />
 
       <Tab tabs={d.tabs} active={tab} onChange={setTab} lang={lang} />
 
@@ -238,9 +228,6 @@ export default function ResearchPage({ lang }: { lang: Language }) {
                     </div>
                     <span style={{ fontSize: "0.7rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>{th.score}</span>
                   </div>
-                  <Btn variant="ghost" style={{ padding: "5px 10px", fontSize: "0.72rem" }}>
-                    {rtl ? "فتح" : "Open"}
-                  </Btn>
                 </div>
               </Card>
             );
@@ -248,9 +235,6 @@ export default function ResearchPage({ lang }: { lang: Language }) {
           {!thesisList.length && (
             <Card><EmptyState title={rtl ? "لا أطروحات" : "No theses"} hint={rtl ? "ستشتق الأطروحات من سجل المختبر." : "Theses derive from the lab registry."} /></Card>
           )}
-          <Btn variant="primary" style={{ alignSelf: "flex-start" }}>
-            {rtl ? "+ أطروحة جديدة" : "+ New Thesis"}
-          </Btn>
         </div>
       )
       )}
@@ -304,7 +288,6 @@ export default function ResearchPage({ lang }: { lang: Language }) {
                 marginBottom: 12,
               }}
             />
-            <Btn variant="primary">{rtl ? "شرح" : "Explain"}</Btn>
           </Card>
         </div>
       )}

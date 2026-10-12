@@ -670,8 +670,22 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
                     )}
                   </div>
                   <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                    {ready && <Btn variant="primary">{en ? "Approve" : "موافقة"}</Btn>}
-                    <Btn variant="danger">{en ? "Veto" : "رفض"}</Btn>
+                    {ready && (
+                      <Btn
+                        variant="primary"
+                        disabled={!rep?.gates?.oos_pass || busy !== null}
+                        onClick={() => doPromote(p.id)}
+                      >
+                        {busy === p.id ? (en ? "Promoting…" : "جارٍ الترقية…") : en ? "Approve" : "موافقة"}
+                      </Btn>
+                    )}
+                    <Btn
+                      variant="danger"
+                      disabled={p.stage === "quarantined" || busy !== null}
+                      onClick={() => doQuarantine(p.id)}
+                    >
+                      {busy === p.id && !ready ? (en ? "Working…" : "جارٍ…") : en ? "Veto" : "رفض"}
+                    </Btn>
                   </div>
                 </div>
                 {ready && (

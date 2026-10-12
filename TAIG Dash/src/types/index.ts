@@ -137,7 +137,8 @@ export interface PaperRequest {
   screenReasons?: string[];
   riskReason?: string | null;
   score?: number | null;
-  history?: string[];
+  evidence?: OpportunityEvidence;
+  history?: OpportunityHistoryEntry[];
 }
 
 export interface PaperEngineStatus {

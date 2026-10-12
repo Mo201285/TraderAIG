@@ -488,6 +488,7 @@ export {
   ErrorState,
   LoadingState,
   StatusChip,
+  UnreachableState,
 } from "../../design";
 
 export function Timeline({

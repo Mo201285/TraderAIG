@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { CopyFollower, Language, OpsEvent } from "../../types";
-import { Btn, Card, PageHeader, SectionLabel, StateChip, ff, isRtl } from "../ui/shared";
+import { Btn, Card, PageHeader, SectionLabel, StateChip, UnreachableState, ff, isRtl } from "../ui/shared";
 import { api, useData } from "../../lib/useData";
 
 const TOPIC_COLOR: Record<string, string> = {
@@ -91,6 +91,8 @@ export default function LiveOpsPage({ lang }: { lang: Language }) {
 
       {source === "loading" ? (
         <Card><div style={{ fontSize: "0.85rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>{t.loading}</div></Card>
+      ) : source !== "live" ? (
+        <Card><UnreachableState lang={lang} /></Card>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 3fr) minmax(0, 2fr)", gap: "1rem", alignItems: "start" }}>
           {/* Event stream */}

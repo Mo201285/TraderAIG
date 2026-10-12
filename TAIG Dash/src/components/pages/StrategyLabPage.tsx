@@ -17,6 +17,7 @@ import {
   ScoreBar,
   EmptyState,
   LoadingState,
+  UnreachableState,
   ff,
   fd,
   isRtl,
@@ -322,6 +323,21 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
         }
       />
 
+      {!live && (
+        <Card style={{ marginBottom: "1rem" }}>
+          {strategies.source === "loading" ? (
+            <LoadingState label={en ? "Loading registry…" : "جارٍ تحميل السجل…"} lang={lang} />
+          ) : (
+            <UnreachableState
+              lang={lang}
+              hint={en
+                ? "The lab registry reads /strategies, /observations and /validation/reports. None could be reached, so no contract, observation or validation report is shown."
+                : "يقرأ سجل المختبر المسارات /strategies و/observations و/validation/reports. تعذّر الوصول إليها، لذا لا يُعرض أي عقد أو ملاحظة أو تقرير تحقق."}
+            />
+          )}
+        </Card>
+      )}
+
       {/* summary strip */}
       <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1rem", flexWrap: "wrap" }}>
         {Object.entries(stageMeta("production"))
@@ -338,7 +354,7 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
             </Card>
           ) : null,
         )}
-        {!Object.keys(stages).length && (
+        {live && !Object.keys(stages).length && (
           <Card style={{ flex: 1 }}>
             <EmptyState title={en ? "No contracts registered" : "لا توجد عقود"} hint={en ? "Run a strategy lab sweep to populate the registry." : "شغّل كسح المختبر لملء السجل."} />
           </Card>

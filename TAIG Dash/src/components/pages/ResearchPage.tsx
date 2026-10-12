@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { EvidenceRow, Language, Thesis } from "../../types";
-import { Card, PageHeader, SectionLabel, StateChip, Btn, Tab, EmptyState, LoadingState, ff, fd, isRtl } from "../ui/shared";
+import { Card, PageHeader, SectionLabel, StateChip, Btn, Tab, EmptyState, LoadingState, UnreachableState, ff, fd, isRtl } from "../ui/shared";
 import { useData, api } from "../../lib/useData";
 
 const LADDER_COLORS = ["#64748b", "#3b82f6", "#22c55e", "#22c55e", "#22c55e",
@@ -187,6 +187,11 @@ export default function ResearchPage({ lang }: { lang: Language }) {
       )}
 
       {tab === "thesis" && (
+        theses.source === "loading" ? (
+          <Card><LoadingState label={d.boardLoading} lang={lang} /></Card>
+        ) : theses.source !== "live" ? (
+          <Card><UnreachableState lang={lang} hint={rtl ? "تُقرأ الأطروحات من /strategies ولم يتم الوصول إليه." : "Theses read /strategies and it could not be reached."} /></Card>
+        ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
           {thesisList.map((th) => {
             const meta = TS_META[th.status];
@@ -247,6 +252,7 @@ export default function ResearchPage({ lang }: { lang: Language }) {
             {rtl ? "+ أطروحة جديدة" : "+ New Thesis"}
           </Btn>
         </div>
+      )
       )}
 
       {tab === "notes" && (

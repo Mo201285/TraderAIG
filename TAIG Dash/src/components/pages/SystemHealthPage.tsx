@@ -7,6 +7,7 @@ import {
   SectionLabel,
   StateChip,
   StatusDot,
+  UnreachableState,
   ff,
   isRtl,
 } from "../ui/shared";
@@ -115,6 +116,10 @@ export default function SystemHealthPage({ lang }: { lang: Language }) {
           <div style={{ fontSize: "0.85rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
             {t.loading}
           </div>
+        </Card>
+      ) : source !== "live" ? (
+        <Card>
+          <UnreachableState lang={lang} />
         </Card>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>

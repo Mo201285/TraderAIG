@@ -90,3 +90,32 @@ export function ErrorState({
     </div>
   );
 }
+
+/**
+ * The honest failure state for a real-operation surface: the API answered with
+ * an error (or never answered), so there is no live data to show. Distinct from
+ * EmptyState, which means "the call succeeded and there is genuinely nothing".
+ */
+export function UnreachableState({
+  lang,
+  title,
+  hint,
+}: {
+  lang?: Language;
+  title?: string;
+  hint?: string;
+}) {
+  const ar = lang === "ar";
+  return (
+    <ErrorState
+      lang={lang}
+      title={title ?? (ar ? "الخادم غير متاح" : "Backend unreachable")}
+      hint={
+        hint ??
+        (ar
+          ? "تعرض هذه الواجهة بيانات حيّة فقط. لا يُختلق شيء أثناء انقطاع الواجهة — أعد الاتصال بالخادم للتحميل."
+          : "This surface shows live data only. Nothing is fabricated while the API is offline — reconnect to the backend to load it.")
+      }
+    />
+  );
+}

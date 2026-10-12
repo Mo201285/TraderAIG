@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Language, User, ValidationReport, PaperRequest, StrategyContract } from "../../types";
-import { Card, PageHeader, SectionLabel, StateChip, Btn, ProgressRing, Sparkline, EmptyState, MetricTile, StatusDot, Grid, TwoCols, ff, fd, isRtl } from "../ui/shared";
+import { Card, PageHeader, SectionLabel, StateChip, Btn, ProgressRing, Sparkline, EmptyState, LoadingState, UnreachableState, MetricTile, StatusDot, Grid, TwoCols, ff, fd, isRtl } from "../ui/shared";
 import { useData, api } from "../../lib/useData";
 
 export default function SubscriberPage({ lang, user }: { lang: Language; user: User }) {
@@ -43,11 +43,25 @@ export default function SubscriberPage({ lang, user }: { lang: Language; user: U
         actions={
           <>
             <StateChip label={en ? `PLAN · ${plan.data?.name ?? "—"}` : `الخطة · ${plan.data?.name ?? "—"}`} color="var(--primary)" />
-            <StateChip label={live ? "● LIVE" : "● DEMO"} color={live ? "#22c55e" : "#64748b"} />
+            <StateChip label={live ? "● LIVE" : strategies.source === "loading" ? (en ? "● LOADING" : "● تحميل") : (en ? "● DOWN" : "● متوقف")} color={live ? "#22c55e" : "#f59e0b"} />
           </>
         }
       />
 
+      {strategies.source !== "live" && (
+        <Card style={{ marginBottom: "1.25rem" }}>
+          {strategies.source === "loading" ? (
+            <LoadingState label={en ? "Loading subscriber data…" : "جارٍ تحميل بيانات المشترك…"} lang={lang} />
+          ) : (
+            <UnreachableState
+              lang={lang}
+              hint={en
+                ? "Strategy contracts, paper workflows, validation and audit read the live API. It could not be reached, so none of them are shown."
+                : "تقرأ العقود وسير عمل الورق والتحقق والتدقيق من الواجهة الحيّة. تعذّر الوصول إليها، لذا لا يُعرض أي منها."}
+            />
+          )}
+        </Card>
+      )}
       <div style={{ display: "flex", gap: "1rem", marginBottom: "1.25rem", flexWrap: "wrap", alignItems: "stretch" }}>
         <Card style={{ flex: 1, minWidth: 260, display: "flex", gap: 20, alignItems: "center" }}>
           <ProgressRing value={pctUnlocked} color="#f59e0b" size={72} />

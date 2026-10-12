@@ -394,16 +394,19 @@ class PaymentService:
         entries = [e for e in self._ledger if e.user_id == user_id]
         succeeded = [e for e in entries if e.status == PaymentStatus.SUCCEEDED]
         balance = sum(e.amount_usd for e in succeeded)
-        # A credit entry is an EARN (a research reward); every other succeeded
-        # entry is money the user SPENT on a plan/product. Splitting them keeps
-        # the one balance honest about where it came from.
+        # A credit entry (or an inbound transfer) is an EARN; every other
+        # succeeded entry is money the user SPENT on a plan/product. Splitting
+        # them keeps the one balance honest about where it came from.
+        _earned = ("credit", "transfer_in")
         earned = sum(e.amount_usd for e in succeeded
-                     if e.details.get("kind") == "credit")
+                     if e.details.get("kind") in _earned)
         return {
             "user_id": user_id,
             "balance_usd": round(balance, 4),
             "earned_usd": round(earned, 4),
-            "spent_usd": round(balance - earned, 4),
+            "spent_usd": round(sum(e.amount_usd for e in succeeded
+                                   if e.amount_usd > 0
+                                   and e.details.get("kind") not in _earned), 4),
             "succeeded": len(succeeded),
             "refunded": sum(1 for e in entries
                             if e.status == PaymentStatus.REFUNDED),
@@ -461,6 +464,75 @@ class PaymentService:
                 "user_id": user_id, "amount_usd": amount,
                 "entry_id": entry.entry_id, "ref": ref, "source": source,
                 "wallet_balance": self.wallet(user_id)["balance_usd"]}
+
+    def transfer(self, from_user: str, to_user: str, amount_usd: float, *,
+                 source: str = "marketplace", ref: str = "",
+                 description: str = "",
+                 details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Move credits between two wallets (a marketplace purchase).
+
+        Debits the buyer and credits the seller in the one ledger, in one call:
+        the buyer must already hold at least `amount` (a balance check up front,
+        so a purchase never overdraws). Idempotent by ``source``+``ref`` -- a
+        repeated call for the same purchase moves nothing again. It moves no
+        real money, calls no provider and grants no entitlement or trade
+        permission.
+        """
+        amount = round(float(amount_usd), 4)
+        from_user = str(from_user or "").strip()
+        to_user = str(to_user or "").strip()
+        source = str(source or "marketplace").strip() or "marketplace"
+        ref = str(ref or "").strip()
+        if not from_user or not to_user:
+            return {"ok": False, "settled": False, "duplicate": False,
+                    "error": "both a payer and a payee are required"}
+        if from_user == to_user:
+            return {"ok": False, "settled": False, "duplicate": False,
+                    "error": "a transfer needs two distinct users"}
+        if not (0.0 < amount <= self.MAX_CREDIT_USD):
+            return {"ok": False, "settled": False, "duplicate": False,
+                    "error": (f"transfer amount must be in "
+                              f"(0, {self.MAX_CREDIT_USD:g}] USD")}
+        if ref:
+            prior = next((e for e in reversed(self._ledger)
+                          if e.provider == source
+                          and e.details.get("kind") == "transfer_out"
+                          and e.details.get("ref") == ref), None)
+            if prior is not None:
+                return {"ok": True, "settled": False, "duplicate": True,
+                        "from_user": from_user, "to_user": to_user,
+                        "amount_usd": abs(prior.amount_usd), "ref": ref,
+                        "source": source,
+                        "wallet_balance": self.wallet(from_user)["balance_usd"]}
+        balance = round(sum(e.amount_usd for e in self._ledger
+                            if e.user_id == from_user
+                            and e.status == PaymentStatus.SUCCEEDED), 4)
+        if balance < amount:
+            self._last_error = (
+                f"insufficient balance: {balance:g} < {amount:g}")
+            return {"ok": False, "settled": False, "duplicate": False,
+                    "error": self._last_error, "from_user": from_user,
+                    "to_user": to_user, "amount_usd": amount,
+                    "wallet_balance": balance}
+        base = {"kind": "transfer", "ref": ref, "source": source}
+        base.update(details or {})
+        self._entry(from_user, -amount, PaymentStatus.SUCCEEDED, source,
+                    charge_id=f"tf_{source}_{uuid.uuid4().hex[:16]}",
+                    description=description or f"transfer to {to_user}",
+                    details={**base, "kind": "transfer_out",
+                             "counterparty": to_user})
+        seller_entry = self._entry(
+            to_user, amount, PaymentStatus.SUCCEEDED, source,
+            charge_id=f"tf_{source}_{uuid.uuid4().hex[:16]}",
+            description=description or f"transfer from {from_user}",
+            details={**base, "kind": "transfer_in",
+                     "counterparty": from_user})
+        self._record_audit(source, "payment.transfer", seller_entry)
+        return {"ok": True, "settled": True, "duplicate": False,
+                "from_user": from_user, "to_user": to_user,
+                "amount_usd": amount, "ref": ref, "source": source,
+                "wallet_balance": self.wallet(from_user)["balance_usd"],
+                "payee_balance": self.wallet(to_user)["balance_usd"]}
 
     def charge(self, user_id: str, amount_usd: float, plan: str = "",
                provider: Optional[PaymentProvider] = None,

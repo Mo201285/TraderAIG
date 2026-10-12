@@ -3976,6 +3976,130 @@ def economy_research_reward(payload: Dict) -> Dict:
 
 
 # ---------------------------------------------------------------------------
+# S7 Strategy NFT + Marketplace -- tokenised strategies, traded (row 782)
+#
+# A verified strategy is minted as a token (evidence-gated, idempotent); owners
+# list/delist at a fixed price; a buyer purchases and the money settles through
+# the one wallet ledger (buyer debited, seller credited). Ownership is a
+# certificate, never a trade permission.
+# ---------------------------------------------------------------------------
+
+_NFT_LOCK = threading.Lock()
+
+
+def _nft_service():
+    from accounts.strategy_nft import StrategyNFTService, StrategyNFTStore
+    return StrategyNFTService(
+        store=StrategyNFTStore(str(LAB_DATA_DIR / "strategy_nfts.json")))
+
+
+@app.get("/economy/nfts")
+def economy_nfts_list(for_sale: bool = False) -> Dict:
+    """List minted strategy NFTs (read-only); `for_sale` filters to listings."""
+    svc = _nft_service()
+    rows = svc.listings() if for_sale else svc.all()
+    return {"ok": True, "count": len(rows), "nfts": rows,
+            "read_only": True, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/economy/nfts/{token_id}")
+def economy_nft_get(token_id: str) -> Dict:
+    """Read one strategy NFT or 404."""
+    token = _nft_service().get(token_id)
+    if token is None:
+        raise HTTPException(status_code=404, detail="unknown token")
+    return {"ok": True, "token": token}
+
+
+@app.post("/economy/nfts/mint")
+def economy_nft_mint(payload: Dict) -> Dict:
+    """Tokenise a VALIDATED-or-higher strategy (governed; row 782).
+
+    The request supplies only `strategy_id`; whether the strategy may be minted
+    (its stage, its passing report, its recorded owner) and the token's
+    provenance are read from the strategy asset, so a caller cannot mint an
+    unverified certificate. Idempotent: the same evidence yields the same token.
+    """
+    actor = _acting_actor()
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    strategy_id = str((payload or {}).get("strategy_id", "") or "").strip()
+    if not strategy_id:
+        raise HTTPException(status_code=400, detail="strategy_id is required")
+    with _NFT_LOCK:
+        result = _nft_service().mint(strategy_id, asset_layer=_asset_layer())
+    if result.get("reason") == "unknown_strategy":
+        raise HTTPException(status_code=404, detail="unknown strategy")
+    if result.get("reason") in ("not_validated", "no_passing_validation",
+                                "no_owner_recorded"):
+        raise HTTPException(status_code=409, detail=result["reason"])
+    try:
+        identity.record_audit(actor, "economy.nft_mint", "strategy",
+                              strategy_id,
+                              {"minted": result.get("minted"),
+                               "token_id": (result.get("token") or {}).get(
+                                   "token_id")})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, **result}
+
+
+@app.post("/economy/nfts/{token_id}/list")
+def economy_nft_list(token_id: str, payload: Optional[Dict] = None) -> Dict:
+    """List your own token at a fixed price (owner-only; row 782)."""
+    actor = _acting_actor() or ""
+    price = (payload or {}).get("price_usd", 0.0)
+    with _NFT_LOCK:
+        result = _nft_service().list_for_sale(token_id, price, actor=actor)
+    if result.get("reason") == "unknown_token":
+        raise HTTPException(status_code=404, detail="unknown token")
+    if result.get("reason") == "not_owner":
+        raise HTTPException(status_code=403, detail="only the owner may list")
+    if not result.get("listed"):
+        raise HTTPException(status_code=400, detail=result.get("reason"))
+    return {"ok": True, **result}
+
+
+@app.post("/economy/nfts/{token_id}/delist")
+def economy_nft_delist(token_id: str) -> Dict:
+    """Delist your own token (owner-only; row 782)."""
+    actor = _acting_actor() or ""
+    with _NFT_LOCK:
+        result = _nft_service().delist(token_id, actor=actor)
+    if result.get("reason") == "unknown_token":
+        raise HTTPException(status_code=404, detail="unknown token")
+    if result.get("reason") == "not_owner":
+        raise HTTPException(status_code=403, detail="only the owner may delist")
+    if not result.get("delisted"):
+        raise HTTPException(status_code=400, detail=result.get("reason"))
+    return {"ok": True, **result}
+
+
+@app.post("/economy/nfts/{token_id}/buy")
+def economy_nft_buy(token_id: str, payload: Dict) -> Dict:
+    """Buy a listed token; settlement goes through the wallet ledger (row 782).
+
+    The buyer pays from their own wallet (`_own`), the price is the listing's
+    (never the request's), and ownership transfers only after the ledger
+    settles. A purchase is a certificate transfer, never a trade permission.
+    """
+    buyer = str((payload or {}).get("buyer", "") or "").strip()
+    _own(buyer, action="buy an NFT for")
+    if identity.get_user(buyer) is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    with _NFT_LOCK:
+        result = _nft_service().buy(token_id, buyer)
+    if result.get("reason") == "unknown_token":
+        raise HTTPException(status_code=404, detail="unknown token")
+    if result.get("reason") == "insufficient_balance":
+        raise HTTPException(status_code=402,
+                            detail="insufficient wallet balance")
+    if not result.get("sold"):
+        raise HTTPException(status_code=400, detail=result.get("reason"))
+    return {"ok": True, **result}
+
+
+# ---------------------------------------------------------------------------
 # Live MT5 terminal
 # ---------------------------------------------------------------------------
 

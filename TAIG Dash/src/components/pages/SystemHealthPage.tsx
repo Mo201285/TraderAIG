@@ -53,6 +53,20 @@ const UI: Record<string, Record<string, string>> = {
     launchBlocking: "blocking",
     severityHard: "HARD",
     severityAdvisory: "ADVISORY",
+    recon: "EXECUTION RECONCILIATION",
+    reconHint:
+      "Broker/venue positions reconciled against internal intent. A ledger read — never a verdict.",
+    reconDown: "Reconciliation ledger unreachable — nothing is fabricated.",
+    attempted: "passes",
+    lastAt: "last run",
+    mismatches: "mismatches",
+    okLabel: "clean",
+    failLabel: "drift",
+    pendingLabel: "not yet run",
+    noRuns:
+      "No reconciliation pass has run yet — reads as 'not yet checked', not 'clean'.",
+    local: "local",
+    remote: "venue",
   },
   ar: {
     page: "صحة النظام",
@@ -69,6 +83,18 @@ const UI: Record<string, Record<string, string>> = {
     plus: "من",
     componentsOf: "مكوّناً",
     healthy: "سليمة",
+    recon: "مطابقة التنفيذ",
+    reconHint: "مطابقة مراكز المنصة مع النية الداخلية. قراءة سجل — وليست حكماً.",
+    reconDown: "سجل المطابقة غير متاح — لا يُختلق شيء.",
+    attempted: "دورات",
+    lastAt: "آخر تشغيل",
+    mismatches: "اختلافات",
+    okLabel: "سليم",
+    failLabel: "انحراف",
+    pendingLabel: "لم تُشغَّل بعد",
+    noRuns: "لم تُجرَ أي مطابقة بعد — تُقرأ كـ«لم يُفحص بعد»، لا «سليم».",
+    local: "محلي",
+    remote: "المنصة",
   },
 };
 
@@ -110,6 +136,8 @@ export default function SystemHealthPage({ lang }: { lang: Language }) {
       />
 
       <LaunchGate lang={lang} version={version} />
+
+      <ReconciliationPanel lang={lang} version={version} />
 
       {source === "loading" || !data ? (
         <Card>
@@ -196,6 +224,103 @@ export default function SystemHealthPage({ lang }: { lang: Language }) {
         </div>
       )}
     </div>
+  );
+}
+
+function ReconciliationPanel({ lang, version }: { lang: Language; version: number }) {
+  const rtl = isRtl(lang);
+  const t = UI[lang];
+  const { data, source, error } = useData(() => api.getReconciliation(), version);
+
+  const when = (n: number | null | undefined) =>
+    n ? new Date(n * 1000).toISOString().replace("T", " ").slice(0, 16) : "—";
+  const muted = { color: "var(--muted-foreground)" } as const;
+  const TYPE_LABEL: Record<string, [string, string]> = {
+    missing_remote: ["missing at venue", "مفقود لدى المنصة"],
+    missing_local: ["held at venue, untracked", "لدى المنصة وغير متتبَّع"],
+    price_volume_mismatch: ["price / volume drift", "انحراف السعر/الحجم"],
+  };
+  const stateChip =
+    !data || data.attempted === 0
+      ? { label: t.pendingLabel, color: "#64748b" }
+      : data.last_ok
+        ? { label: t.okLabel, color: "#22c55e" }
+        : { label: t.failLabel, color: "#ef4444" };
+
+  return (
+    <Card style={{ marginBottom: "1rem" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+        <SectionLabel lang={lang}>{t.recon}</SectionLabel>
+        {source === "live" && <StateChip label={stateChip.label} color={stateChip.color} />}
+      </div>
+
+      {source === "loading" || !data ? (
+        <p style={{ fontSize: "0.8rem", color: "var(--muted-foreground)", fontFamily: ff(lang), margin: "8px 0 0" }}>
+          {t.loading}
+        </p>
+      ) : source !== "live" ? (
+        <p style={{ fontSize: "0.8rem", color: "var(--muted-foreground)", fontFamily: ff(lang), margin: "8px 0 0" }}>
+          {t.reconDown}
+          {error ? ": " + error : ""}
+        </p>
+      ) : (
+        <>
+          <p style={{ fontSize: "0.76rem", lineHeight: 1.6, color: "var(--muted-foreground)", fontFamily: ff(lang), margin: "8px 0" }}>
+            {t.reconHint}
+          </p>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontFamily: "var(--font-mono)", fontSize: "0.72rem" }}>
+            <span>
+              <span style={muted}>{t.attempted}: </span>
+              {data.attempted}
+            </span>
+            <span>
+              <span style={muted}>{t.lastAt}: </span>
+              {when(data.last_at)}
+            </span>
+            <span style={{ color: data.mismatch_count ? "#ef4444" : "var(--muted-foreground)" }}>
+              <span style={muted}>{t.mismatches}: </span>
+              {data.mismatch_count}
+            </span>
+          </div>
+
+          {data.attempted === 0 && (
+            <p style={{ fontSize: "0.72rem", color: "var(--muted-foreground)", fontFamily: ff(lang), margin: "8px 0 0" }}>
+              {data.note || t.noRuns}
+            </p>
+          )}
+
+          {data.mismatches.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", marginTop: 8 }}>
+              {data.mismatches.map((m, i) => {
+                const label = TYPE_LABEL[m.type]?.[rtl ? 1 : 0] ?? m.type;
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "6px 0",
+                      borderTop: "1px solid var(--border)",
+                      fontSize: "0.72rem",
+                      fontFamily: "var(--font-mono)",
+                    }}
+                  >
+                    <span style={{ color: "#ef4444", fontWeight: 600 }}>{label}</span>
+                    <span style={muted}>{m.symbol ?? m.position_id}</span>
+                    {m.local && m.remote && (
+                      <span style={{ marginInlineStart: "auto", ...muted }}>
+                        {t.local} {m.local.vol}@{m.local.ep} → {t.remote} {m.remote.vol}@{m.remote.ep}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
   );
 }
 

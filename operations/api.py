@@ -4914,6 +4914,159 @@ def strategy_factory_validate(strategy_id: str,
 
 
 # ---------------------------------------------------------------------------
+# S3 AI Workforce
+#
+# Ten named section-8 seats (the same seats the UX-13 surface renders) on a
+# governed worker loop: a seat may be assigned a bounded task and returns a
+# PROPOSAL. The AI Action Gateway refuses Promote Live / Change Risk / Execute a
+# Trade / Modify Production and routes them to the Risk Governor and Governance
+# OS. Seats propose, never execute; no route here grants a trade permission.
+# ---------------------------------------------------------------------------
+
+_WORKFORCE_LOCK = _threading.Lock()
+
+
+def _workforce_service():
+    from research.workforce.service import (
+        WorkerProposalStore,
+        WorkforceService,
+    )
+    store = WorkerProposalStore(
+        str(LAB_DATA_DIR / "workforce_proposals.json"))
+    return WorkforceService(store=store)
+
+
+def _workforce_unknown_seat(seat_id: str) -> JSONResponse:
+    return JSONResponse(status_code=404, content={
+        "ok": False, "seat_id": seat_id, "reason": "unknown_seat",
+        "detail": "no such seat in the workforce"})
+
+
+@app.get("/workforce/seats")
+def workforce_seats() -> Dict:
+    """List the ten named AI seats and the roster summary (read-only)."""
+    service = _workforce_service()
+    seats = service.seats()
+    return {"ok": True, "count": len(seats), "seats": seats,
+            "summary": service.summary(), "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/workforce/seats/{seat_id}")
+def workforce_seat_get(seat_id: str) -> Dict:
+    """Read one named seat, or a distinct 404."""
+    seat = _workforce_service().seat(seat_id)
+    if seat is None:
+        return _workforce_unknown_seat(seat_id)
+    return {"ok": True, "seat": seat, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/workforce/proposals")
+def workforce_proposals(seat_id: str = "") -> Dict:
+    """List seats' proposals (newest first), optional seat filter (read-only)."""
+    service = _workforce_service()
+    rows = (service.proposals_for(seat_id) if seat_id
+            else service.proposals())
+    return {"ok": True, "count": len(rows), "proposals": rows,
+            "read_only": True, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/workforce/proposals/{proposal_id}")
+def workforce_proposal_get(proposal_id: str) -> Dict:
+    """Read one proposal, or a distinct 404."""
+    row = _workforce_service().proposal(proposal_id)
+    if row is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "proposal_id": proposal_id,
+            "reason": "unknown_proposal",
+            "detail": "no such proposal in the workforce journal"})
+    return {"ok": True, "proposal": row, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/workforce/{seat_id}/propose")
+def workforce_propose(seat_id: str, payload: Optional[Dict] = None) -> Dict:
+    """Assign a bounded task to a seat; the seat returns a PROPOSAL, never execution."""
+    actor = _acting_actor()
+    guard = _guard_factory(actor)
+    if guard is not None:
+        return guard
+    service = _workforce_service()
+    if service.seat(seat_id) is None:
+        return _workforce_unknown_seat(seat_id)
+    payload = payload or {}
+    try:
+        with _WORKFORCE_LOCK:
+            proposal = service.propose(
+                seat_id=seat_id,
+                brief=payload.get("brief", ""),
+                note=payload.get("note", ""),
+                model=payload.get("model", ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_assignment", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the workforce journal could not be written",
+            "error": str(exc)})
+    try:
+        identity.record_audit(actor, "workforce.propose", "workforce_seat",
+                              seat_id,
+                              {"proposal_id": proposal["proposal_id"],
+                               "act": "propose"})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "proposal": proposal, "action": "proposed",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/workforce/{seat_id}/action")
+def workforce_action(seat_id: str, payload: Optional[Dict] = None) -> Dict:
+    """Ask the AI Action Gateway whether a seat may take an action.
+
+    The four forbidden actions (Promote Live / Change Risk / Execute a Trade /
+    Modify Production) are refused here with 403 and routed to the Risk Governor
+    / Governance OS; only `propose` is allowed. This is 'seats propose, never
+    execute' as a live control, not a banner.
+    """
+    actor = _acting_actor()
+    guard = _guard_factory(actor)
+    if guard is not None:
+        return guard
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    service = _workforce_service()
+    if service.seat(seat_id) is None:
+        return _workforce_unknown_seat(seat_id)
+    payload = payload or {}
+    decision = service.request_action(seat_id=seat_id,
+                                      action=payload.get("action", ""),
+                                      target=payload.get("target", ""))
+    try:
+        if not decision["allowed"]:
+            identity.record_audit(actor, "workforce.action_refused",
+                                  "workforce_seat", seat_id,
+                                  {"action": decision["action"],
+                                   "reason": decision["reason"],
+                                   "routed_to": decision["routed_to"]})
+        else:
+            identity.record_audit(actor, "workforce.action_allowed",
+                                  "workforce_seat", seat_id,
+                                  {"action": decision["action"]})
+    except Exception:  # noqa: BLE001
+        pass
+    if not decision["allowed"]:
+        return JSONResponse(status_code=403, content={
+            "ok": False, "reason": decision["reason"],
+            "routed_to": decision["routed_to"], "decision": decision,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"})
+    return {"ok": True, "decision": decision, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+# ---------------------------------------------------------------------------
 # Phase 8/9 monitoring surfaces (M9.1/M9.2)
 # ---------------------------------------------------------------------------
 

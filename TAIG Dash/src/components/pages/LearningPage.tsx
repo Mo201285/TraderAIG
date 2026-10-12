@@ -42,6 +42,17 @@ const SIGNAL_COLOR: Record<string, string> = {
   alert: "#ef4444",
 };
 
+const QUALITY_COLOR: Record<string, string> = {
+  ok: "#22c55e",
+  healthy: "#22c55e",
+  watch: "#f59e0b",
+  degraded: "#f59e0b",
+  warning: "#f59e0b",
+  alert: "#ef4444",
+  down: "#ef4444",
+  error: "#ef4444",
+};
+
 const UI: Record<string, Record<string, string>> = {
   en: {
     recordsTab: "Experience Records",
@@ -112,9 +123,41 @@ const UI: Record<string, Record<string, string>> = {
     emptyRecordsTitle: "No experiences recorded yet",
     emptyRecordsHint:
       "No live ledger record exists — run a market exercise before the runtime writes one.",
+    qualityTab: "Data Quality",
+    reviewTab: "Review Queue",
+    qualityTitle: "Ledger data quality",
+    reviewTitle: "Promotion review queue",
+    qualityHint:
+      "Ledger integrity by area — every area status comes straight from the live /monitoring/quality check and nothing is inferred.",
+    reviewHint:
+      "Promotions and quarantines awaiting a human decision; every item comes from the live /monitoring/review queue and nothing is applied automatically.",
+    qualityStatusLabel: "Overall",
+    generatedLabel: "Generated",
+    areasLabel: "Areas",
+    queuedLabel: "item(s) queued",
+    safeLabel: "safe",
+    promoteLabel: "promote",
+    kindLabel: "Kind",
+    transitionLabel: "Transition",
+    eligibleLabel: "Eligible",
+    engineLabel: "Engine",
+    runningLabel: "running",
+    idleLabel: "idle",
+    loadingQuality: "Reading data quality…",
+    loadingReview: "Reading the review queue…",
+    emptyQualityTitle: "No quality areas reported",
+    emptyQualityHint:
+      "The surface reports only the areas the live quality check holds; none are invented here.",
+    emptyReviewTitle: "Nothing needs review",
+    emptyReviewHint:
+      "The queue reports only the promotions and quarantines the live monitor proposes; none are invented here.",
+    errorQualityTitle: "Data quality unreachable",
+    errorQualityHint: "The surface reads /monitoring/quality and it could not be reached.",
+    errorReviewTitle: "Review queue unreachable",
+    errorReviewHint: "The queue reads /monitoring/review and it could not be reached.",
     authority:
       "Read-only surface of the Learning Plane: every figure derives from a registered route and nothing here claims trade authority.",
-    accountsLabel: "/learning/split · /monitoring/drift · /recommendations",
+    accountsLabel: "/learning/split · /monitoring/drift · /monitoring/quality · /monitoring/review · /recommendations",
   },
   ar: {
     recordsTab: "سجلات الخبرة",
@@ -181,9 +224,39 @@ const UI: Record<string, Record<string, string>> = {
     errorRecordsHint: "السجلات تقرأ /learning/experiences ويتعذر الوصول إليها.",
     emptyRecordsTitle: "لا تجارب مسجّلة بعد",
     emptyRecordsHint: "لا يوجد سجل حي — نفّذ تمريناً سوقياً قبل أن يكتبه المحرك.",
+    qualityTab: "جودة البيانات",
+    reviewTab: "طابور المراجعة",
+    qualityTitle: "جودة بيانات السجل",
+    reviewTitle: "طابور مراجعة الترقيات",
+    qualityHint:
+      "سلامة السجل حسب المنطقة — كل حالة منطقة تأتي مباشرةً من فحص /monitoring/quality الحي ولا شيء يُستنتج.",
+    reviewHint:
+      "ترقيات وعزل بانتظار قرار بشري؛ كل عنصر يأتي من طابور /monitoring/review الحي ولا يُطبَّق شيء تلقائياً.",
+    qualityStatusLabel: "الإجمالي",
+    generatedLabel: "أُنشئ",
+    areasLabel: "المناطق",
+    queuedLabel: "عنصر في الطابور",
+    safeLabel: "آمن",
+    promoteLabel: "ترقية",
+    kindLabel: "النوع",
+    transitionLabel: "الانتقال",
+    eligibleLabel: "مؤهل",
+    engineLabel: "المحرك",
+    runningLabel: "يعمل",
+    idleLabel: "متوقف",
+    loadingQuality: "جارٍ قراءة جودة البيانات…",
+    loadingReview: "جارٍ قراءة طابور المراجعة…",
+    emptyQualityTitle: "لا مناطق جودة مُبلَّغة",
+    emptyQualityHint: "السطح لا يعرض إلا المناطق التي يحملها فحص الجودة الحي؛ لا شيء مُختلَق هنا.",
+    emptyReviewTitle: "لا شيء يحتاج مراجعة",
+    emptyReviewHint: "الطابور لا يعرض إلا الترقيات والعزل التي يقترحها المراقب الحي؛ لا شيء مُختلَق هنا.",
+    errorQualityTitle: "جودة البيانات غير متاحة",
+    errorQualityHint: "السطح يقرأ /monitoring/quality ويتعذر الوصول إليه.",
+    errorReviewTitle: "طابور المراجعة غير متاح",
+    errorReviewHint: "الطابور يقرأ /monitoring/review ويتعذر الوصول إليه.",
     authority:
       "سطح قراءة فقط لمستوى التعلم: كل رقم مشتق من مسار مسجّل ولا شيء هنا يدّعي سلطة تداول.",
-    accountsLabel: "/learning/split · /monitoring/drift · /recommendations",
+    accountsLabel: "/learning/split · /monitoring/drift · /monitoring/quality · /monitoring/review · /recommendations",
   },
 };
 
@@ -200,11 +273,17 @@ export default function LearningPage({ lang }: { lang: Language }) {
   const driftLive = driftSource === "live";
   const { data: recoms, source: recomSource } = useData(() => api.getRecommendations(), version);
   const recomLive = recomSource === "live";
+  const { data: quality, source: qualitySource } = useData(() => api.getMonitoringQuality(), version);
+  const qualityLive = qualitySource === "live";
+  const { data: review, source: reviewSource } = useData(() => api.getMonitoringReview(), version);
+  const reviewLive = reviewSource === "live";
 
   const tabs = [
     { id: "records", label: t.recordsTab },
     { id: "split", label: t.splitTab },
     { id: "drift", label: t.driftTab },
+    { id: "quality", label: t.qualityTab },
+    { id: "review", label: t.reviewTab },
     { id: "recommendations", label: t.recommendationsTab },
   ];
 
@@ -225,6 +304,8 @@ export default function LearningPage({ lang }: { lang: Language }) {
   const signals = driftLive ? (drift?.signals ?? []) : [];
   const proposals = driftLive ? (drift?.quarantine_proposals ?? []) : [];
   const recommendations = recomLive ? (recoms ?? []) : [];
+  const qualityAreas = qualityLive ? Object.entries(quality?.areas ?? {}) : [];
+  const reviewItems = reviewLive ? (review?.items ?? []) : [];
 
   const cards = [
     { label: t.recordsCount, value: xpsLive ? String(xps?.length ?? 0) : "—", color: "var(--foreground)" },
@@ -545,6 +626,116 @@ export default function LearningPage({ lang }: { lang: Language }) {
                     </div>
                   )}
                 </div>
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+
+      {tab === "quality" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 4 }}>
+              <SectionLabel lang={lang}>{t.qualityTitle}</SectionLabel>
+              <StateChip
+                label={qualityLive ? (rtl ? "مباشر" : "LIVE") : qualitySource === "loading" ? (rtl ? "جارٍ" : "LOADING") : (rtl ? "متوقف" : "DOWN")}
+                color={qualityLive ? "#22c55e" : "#f59e0b"}
+              />
+            </div>
+            <div style={{ fontSize: "0.72rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginBottom: 8 }}>
+              {t.qualityHint}
+            </div>
+            {qualitySource === "loading" ? (
+              <LoadingState label={t.loadingQuality} lang={lang} />
+            ) : qualitySource === "mock" ? (
+              <ErrorState title={t.errorQualityTitle} hint={t.errorQualityHint} lang={lang} />
+            ) : !quality || qualityAreas.length === 0 ? (
+              <EmptyState title={t.emptyQualityTitle} hint={t.emptyQualityHint} lang={lang} />
+            ) : (
+              <div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{t.qualityStatusLabel}</span>
+                    <StateChip label={quality.status} color={QUALITY_COLOR[quality.status] ?? "var(--muted-foreground)"} />
+                  </div>
+                  <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.62rem", color: "var(--muted-foreground)" }}>
+                    {t.generatedLabel}: {Number.isFinite(quality.generated_at) ? new Date(quality.generated_at * 1000).toISOString().slice(0, 16).replace("T", " ") : "—"}
+                  </span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column" }}>
+                  {qualityAreas.map(([key, area]) => (
+                    <div
+                      key={key}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "6px 0", borderTop: "1px solid var(--border)" }}
+                    >
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.74rem", color: "var(--foreground)", textTransform: "capitalize" }}>
+                        {key.replace(/_/g, " ")}
+                      </span>
+                      <StateChip label={area.status} color={QUALITY_COLOR[area.status] ?? "var(--muted-foreground)"} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+
+      {tab === "review" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 4 }}>
+              <SectionLabel lang={lang}>{t.reviewTitle}</SectionLabel>
+              <StateChip
+                label={reviewLive ? (rtl ? "مباشر" : "LIVE") : reviewSource === "loading" ? (rtl ? "جارٍ" : "LOADING") : (rtl ? "متوقف" : "DOWN")}
+                color={reviewLive ? "#22c55e" : "#f59e0b"}
+              />
+            </div>
+            <div style={{ fontSize: "0.72rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginBottom: 8 }}>
+              {t.reviewHint}
+            </div>
+            {reviewSource === "loading" ? (
+              <LoadingState label={t.loadingReview} lang={lang} />
+            ) : reviewSource === "mock" ? (
+              <ErrorState title={t.errorReviewTitle} hint={t.errorReviewHint} lang={lang} />
+            ) : !review || review.count === 0 ? (
+              <EmptyState title={t.emptyReviewTitle} hint={t.emptyReviewHint} lang={lang} />
+            ) : (
+              <div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                  <span style={{ fontFamily: "var(--font-mono)", fontSize: "1.5rem", fontWeight: 600 }}>{review.count}</span>
+                  <span style={{ fontSize: "0.72rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>{t.queuedLabel}</span>
+                </div>
+                <div style={{ display: "flex", gap: 10, fontSize: "0.7rem", fontFamily: "var(--font-mono)", flexWrap: "wrap", margin: "6px 0" }}>
+                  <span style={{ color: "#22c55e" }}>{review.safe} {t.safeLabel}</span>
+                  <span style={{ color: "#f59e0b" }}>{review.promotion_candidates} {t.promoteLabel}</span>
+                  <span style={{ color: "#ef4444" }}>{review.quarantine_proposals} {t.quarantineLabel}</span>
+                </div>
+                {reviewItems.length > 0 && (
+                  <div style={{ display: "flex", flexDirection: "column" }}>
+                    {reviewItems.map((it, i) => (
+                      <div key={`${it.strategy_id || "item"}-${i}`} style={{ display: "flex", flexDirection: "column", gap: 5, padding: "8px 0", borderTop: "1px solid var(--border)" }}>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                          <StateChip label={it.kind} color={it.kind === "quarantine" ? "#ef4444" : it.eligible ? "#f59e0b" : "#64748b"} />
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.74rem", fontWeight: 600 }}>{field(it.strategy_id)}</span>
+                          {it.asset ? <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.68rem", color: "var(--muted-foreground)" }}>{it.asset}</span> : null}
+                          <span style={{ marginInlineStart: "auto", fontSize: "0.64rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                            {t.transitionLabel}: {field(it.from_stage)} → {field(it.to_stage)}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", gap: 10, fontSize: "0.66rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", flexWrap: "wrap" }}>
+                          <span>{t.eligibleLabel}: {it.eligible ? (rtl ? "نعم" : "yes") : (rtl ? "لا" : "no")}</span>
+                          <span>{t.engineLabel}: {it.engine_running ? t.runningLabel : t.idleLabel}</span>
+                        </div>
+                        {it.reasons.length > 0 && (
+                          <div style={{ fontSize: "0.7rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+                            {t.reasonsLabel}: {it.reasons.join(" · ")}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </Card>

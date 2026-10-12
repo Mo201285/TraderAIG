@@ -30,6 +30,7 @@ import type {
   ObservationRecord,
   OpsEvent,
   OpportunityRow,
+  PaperEngineStatus,
   PaperRequest,
   PaymentProvidersView,
   PaymentsStatusView,
@@ -239,6 +240,29 @@ export const api = {
   },
   async getPaperRequests(): Promise<Envelope<PaperRequest[]>> {
     return resolve("paper", mockPaperRequests, "/paper/requests", []);
+  },
+  async getPaperEngine(): Promise<Envelope<PaperEngineStatus>> {
+    const empty: PaperEngineStatus = { running: false, paper: true, cycles: 0, symbols: [], errors: [] };
+    if (!health.live) return { ok: false, data: empty, source: "mock" };
+    try {
+      const res = await authorizedFetch("/paper/engine");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as PaperEngineStatus, source: "live" };
+    } catch (e) {
+      return { ok: false, data: empty, source: "mock", error: String(e) };
+    }
+  },
+  async startPaperEngine(interval = 30): Promise<Envelope<{ started?: boolean }>> {
+    return postJson<{ started?: boolean }>("/paper/engine/start", { interval });
+  },
+  async stopPaperEngine(): Promise<Envelope<{ stopped?: boolean }>> {
+    return postJson<{ stopped?: boolean }>("/paper/engine/stop", {});
+  },
+  async approveOpportunity(id: string): Promise<Envelope<Record<string, unknown>>> {
+    return postJson<Record<string, unknown>>(`/opportunities/${encodeURIComponent(id)}/approve`, {});
+  },
+  async rejectOpportunity(id: string, reason: string): Promise<Envelope<Record<string, unknown>>> {
+    return postJson<Record<string, unknown>>(`/opportunities/${encodeURIComponent(id)}/reject`, { reason });
   },
   async getRegimes(): Promise<Envelope<MarketRegime[]>> {
     if (!health.live) return { ok: true, data: mockRegimes, source: "mock" };

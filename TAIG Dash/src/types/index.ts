@@ -140,6 +140,24 @@ export interface PaperRequest {
   history?: string[];
 }
 
+export interface PaperEngineStatus {
+  running: boolean;
+  paper?: boolean;
+  available?: boolean;
+  connected?: boolean;
+  attach_mode?: string;
+  session_login?: string | null;
+  server?: string | null;
+  trade_allowed?: boolean | null;
+  last_error?: string | null;
+  cycles?: number;
+  symbols?: string[];
+  timeframe?: string;
+  htf_timeframe?: string;
+  errors?: string[];
+}
+
+
 export interface RiskPolicy {
   maxDailyLossPct: number;
   maxDailyTrades: number;

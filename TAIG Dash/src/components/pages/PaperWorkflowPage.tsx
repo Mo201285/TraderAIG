@@ -1,8 +1,10 @@
 ﻿import { useState } from "react";
 import type { Language, PaperRequest, PaperRequestState, LearningExperience } from "../../types";
 import {
+  Btn,
   Card,
   PageHeader,
+  SectionLabel,
   StateChip,
   Tab,
   EmptyState,
@@ -35,6 +37,20 @@ interface Strings {
   unreachable: string;
   unreachableHint: string;
   noPnl: string;
+  engine: string;
+  running: string;
+  stopped: string;
+  startPaper: string;
+  stopPaper: string;
+  working: string;
+  timeframe: string;
+  cycles: string;
+  engineStarted: string;
+  engineStopped: string;
+  actionFailed: string;
+  approveHandoff: string;
+  veto: string;
+  approved: string;
 }
 
 const UI: Record<Language, Strings> = {
@@ -65,6 +81,20 @@ const UI: Record<Language, Strings> = {
     unreachable: "Paper workflow is unavailable",
     unreachableHint: "Ticket states are unknown while the backend is not reachable — nothing is fabricated.",
     noPnl: "Realized PnL appears once an executed opportunity reports its outcome.",
+    engine: "Paper Engine",
+    running: "RUNNING",
+    stopped: "STOPPED",
+    startPaper: "Start Paper Desk",
+    stopPaper: "Stop Paper Desk",
+    working: "Working…",
+    timeframe: "Timeframe",
+    cycles: "Cycles",
+    engineStarted: "Paper desk started",
+    engineStopped: "Paper desk stopped",
+    actionFailed: "Action failed",
+    approveHandoff: "Approve Handoff",
+    veto: "Veto",
+    approved: "approved",
   },
   ar: {
     title: "مركز سير عمل الورق",
@@ -93,6 +123,20 @@ const UI: Record<Language, Strings> = {
     unreachable: "سير عمل الورق غير متاح",
     unreachableHint: "حالات التذاكر غير معروفة أثناء تعذّر الوصول إلى الخادم — لا يُختلق شيء.",
     noPnl: "تظهر الأرباح المحققة عندما يُبلّغ طلب منفّذ عن نتيجته.",
+    engine: "محرّك الورق",
+    running: "يعمل",
+    stopped: "متوقف",
+    startPaper: "تشغيل مكتب الورق",
+    stopPaper: "إيقاف مكتب الورق",
+    working: "جارٍ العمل…",
+    timeframe: "الإطار الزمني",
+    cycles: "الدورات",
+    engineStarted: "تم تشغيل مكتب الورق",
+    engineStopped: "تم إيقاف مكتب الورق",
+    actionFailed: "فشل الإجراء",
+    approveHandoff: "موافقة على التسليم",
+    veto: "رفض",
+    approved: "موافَق عليه",
   },
 };
 
@@ -128,10 +172,53 @@ export default function PaperWorkflowPage({ lang }: { lang: Language }) {
   const t = UI[lang];
   const [tab, setTab] = useState("queue");
   const [expanded, setExpanded] = useState<string | null>(null);
-  const version = 0;
+  const [version, setVersion] = useState(0);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [acting, setActing] = useState(false);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
   const reqs = useData(() => api.getPaperRequests(), version);
   const exps = useData(() => api.getExperiences(), version);
+  const engine = useData(() => api.getPaperEngine(), version);
+
+  const actEngine = async (action: "start" | "stop") => {
+    setActing(true);
+    setNotice(null);
+    try {
+      const env = action === "start" ? await api.startPaperEngine() : await api.stopPaperEngine();
+      if (env.ok) {
+        setNotice({ ok: true, text: action === "start" ? t.engineStarted : t.engineStopped });
+      } else {
+        setNotice({ ok: false, text: `${t.actionFailed}: ${env.error ?? t.unreachable}` });
+      }
+    } catch (e) {
+      setNotice({ ok: false, text: `${t.actionFailed}: ${String(e)}` });
+    } finally {
+      setActing(false);
+      setVersion((v) => v + 1);
+    }
+  };
+
+  const actTicket = async (id: string, action: "approve" | "veto") => {
+    setBusyId(id);
+    setNotice(null);
+    try {
+      const env =
+        action === "approve"
+          ? await api.approveOpportunity(id)
+          : await api.rejectOpportunity(id, "operator veto via dashboard");
+      if (env.ok) {
+        setNotice({ ok: true, text: `${id} ${action === "approve" ? t.approved : t.vetoed}` });
+      } else {
+        setNotice({ ok: false, text: `${t.actionFailed}: ${env.error ?? t.unreachable}` });
+      }
+    } catch (e) {
+      setNotice({ ok: false, text: `${t.actionFailed}: ${String(e)}` });
+    } finally {
+      setBusyId(null);
+      setVersion((v) => v + 1);
+    }
+  };
 
   const loading = reqs.source === "loading";
   const live = reqs.source === "live";
@@ -186,6 +273,77 @@ export default function PaperWorkflowPage({ lang }: { lang: Language }) {
         <UnreachableState lang={lang} title={t.unreachable} hint={t.unreachableHint} />
       ) : (
         <>
+          {notice && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "0.6rem 0.9rem",
+                borderRadius: 6,
+                marginBottom: "1rem",
+                fontSize: "0.78rem",
+                fontFamily: ff(lang),
+                background: notice.ok ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)",
+                border: `1px solid ${notice.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
+                color: notice.ok ? "#22c55e" : "#ef4444",
+              }}
+            >
+              <span>{notice.text}</span>
+              <Btn
+                variant="ghost"
+                onClick={() => setNotice(null)}
+                style={{ marginInlineStart: "auto", padding: "3px 9px" }}
+              >
+                ×
+              </Btn>
+            </div>
+          )}
+
+          {engine.source === "live" && engine.data && (
+            <Card style={{ marginBottom: "1.25rem" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <SectionLabel lang={lang}>{t.engine}</SectionLabel>
+                <StateChip
+                  label={engine.data.running ? t.running : t.stopped}
+                  color={engine.data.running ? "#22c55e" : "#64748b"}
+                />
+                <span
+                  style={{
+                    fontSize: "0.68rem",
+                    fontFamily: "var(--font-mono)",
+                    color: "var(--muted-foreground)",
+                  }}
+                >
+                  {t.timeframe}: {engine.data.timeframe ?? "—"} · {t.cycles}: {engine.data.cycles ?? 0}
+                </span>
+                <div style={{ marginInlineStart: "auto", display: "flex", gap: 8 }}>
+                  <Btn variant="primary" disabled={engine.data.running || acting} onClick={() => actEngine("start")}>
+                    {acting ? t.working : t.startPaper}
+                  </Btn>
+                  <Btn variant="danger" disabled={!engine.data.running || acting} onClick={() => actEngine("stop")}>
+                    {t.stopPaper}
+                  </Btn>
+                </div>
+              </div>
+              <div
+                style={{
+                  marginTop: 8,
+                  fontSize: "0.68rem",
+                  fontFamily: "var(--font-mono)",
+                  color: "var(--muted-foreground)",
+                }}
+              >
+                {(engine.data.symbols ?? []).join(" · ") || "—"}
+              </div>
+              {engine.data.errors?.length ? (
+                <div style={{ marginTop: 8, fontSize: "0.72rem", color: "#fca5a5", fontFamily: ff(lang) }}>
+                  {engine.data.errors[engine.data.errors.length - 1]}
+                </div>
+              ) : null}
+            </Card>
+          )}
+
           <div
             style={{
               display: "grid",
@@ -346,6 +504,27 @@ export default function PaperWorkflowPage({ lang }: { lang: Language }) {
                             {r.riskReason}
                           </div>
                         )}
+                        {(() => {
+                          const st = r.opportunityStatus;
+                          const canApprove = st === "qualified";
+                          const canVeto =
+                            (st === "scan" || st === "qualified" || st === "approved") && !r.executedAt;
+                          if (!canApprove && !canVeto) return null;
+                          return (
+                            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                              {canApprove && (
+                                <Btn variant="primary" disabled={busyId === r.id} onClick={() => actTicket(r.id, "approve")}>
+                                  {busyId === r.id ? t.working : t.approveHandoff}
+                                </Btn>
+                              )}
+                              {canVeto && (
+                                <Btn variant="danger" disabled={busyId === r.id} onClick={() => actTicket(r.id, "veto")}>
+                                  {t.veto}
+                                </Btn>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                   </Card>

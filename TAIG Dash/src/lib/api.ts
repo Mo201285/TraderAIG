@@ -15,6 +15,8 @@ import type {
   DspyModelsView,
   DspyRegistryView,
   DspyStatusView,
+  DeveloperPolicyView,
+  DeveloperTokensView,
   EvidenceRow,
   ExecutionTruthView,
   ReconciliationView,
@@ -1143,6 +1145,34 @@ export const api = {
       return {
         ok: true,
         data: (await res.json()) as WorkforceProposalsView,
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getDeveloperPolicy(): Promise<Envelope<DeveloperPolicyView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/developer/policy");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return {
+        ok: true,
+        data: (await res.json()) as DeveloperPolicyView,
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getDeveloperTokens(): Promise<Envelope<DeveloperTokensView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/developer/tokens");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return {
+        ok: true,
+        data: (await res.json()) as DeveloperTokensView,
         source: "live",
       };
     } catch (e) {

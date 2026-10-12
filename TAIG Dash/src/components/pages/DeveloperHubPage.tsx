@@ -361,6 +361,159 @@ function Contract({
   );
 }
 
+const TOK_UI: Record<string, Record<string, string>> = {
+  en: {
+    title: "Developer tokens",
+    hint:
+      "Scoped API tokens for the acting principal, read from /developer/policy and /developer/tokens. A token is a ceiling over its owner's entitlements; its plaintext is returned once at mint and never read back.",
+    prefix: "Prefix",
+    scopes: "Scopes",
+    writeScopes: "Write scopes",
+    ttl: "Default TTL (s)",
+    enforcement: "Auth enforced",
+    durable: "Registry durable",
+    hashed: "Hashed at rest",
+    revocable: "Revocable",
+    noteLabel: "Policy",
+    ledger: "Token ledger",
+    empty: "No developer tokens",
+    emptyHint: "A minted token would appear here; nothing is invented.",
+    errorTitle: "Token registry unavailable",
+    errorHint: "Tokens and policy are only ever read from the live server.",
+    active: "active",
+    revoked: "revoked",
+    inactive: "inactive",
+    expires: "expires",
+    lastUsed: "last used",
+    never: "never",
+  },
+  ar: {
+    title: "رموز المطورين",
+    hint: "رموز API محددة النطاق للهوية الفاعلة، مقروءة من /developer/policy و/developer/tokens. الرمز سقف فوق صلاحيات مالكه؛ ويُعاد نصّه مرة واحدة عند الإنشاء ولا يُقرأ مجددًا.",
+    prefix: "البادئة",
+    scopes: "النطاقات",
+    writeScopes: "نطاقات الكتابة",
+    ttl: "مدة الصلاحية الافتراضية (ث)",
+    enforcement: "المصادقة مُفعَّلة",
+    durable: "السجل دائم",
+    hashed: "مُجزَّأ عند التخزين",
+    revocable: "قابل للإبطال",
+    noteLabel: "السياسة",
+    ledger: "دفتر الرموز",
+    empty: "لا رموز مطورين",
+    emptyHint: "سيظهر الرمز المُنشأ هنا؛ ولا يُختلق شيء.",
+    errorTitle: "سجل الرموز غير متاح",
+    errorHint: "الرموز والسياسة يُقرآن من الخادم الحي وحده.",
+    active: "نشط",
+    revoked: "مُبطَل",
+    inactive: "غير نشط",
+    expires: "ينتهي",
+    lastUsed: "آخر استخدام",
+    never: "أبدًا",
+  },
+};
+
+function tokenChip(active: boolean, revoked: boolean, t: Record<string, string>): { label: string; color: string } {
+  if (revoked) return { label: t.revoked, color: "#ef4444" };
+  if (active) return { label: t.active, color: "#22c55e" };
+  return { label: t.inactive, color: "#f59e0b" };
+}
+
+function DeveloperTokensCard({ lang }: { lang: Language }) {
+  const rtl = isRtl(lang);
+  const t = TOK_UI[lang];
+  const [version] = useState(0);
+  const policy = useData(() => api.getDeveloperPolicy(), version);
+  const tokens = useData(() => api.getDeveloperTokens(), version);
+
+  const p = policy.data;
+  const rows = tokens.data?.tokens ?? [];
+  const loading = policy.source === "loading" || tokens.source === "loading";
+  const mono: React.CSSProperties = { fontFamily: "var(--font-mono)", fontSize: "0.7rem", color: "var(--muted-foreground)", margin: 0 };
+
+  return (
+    <Card style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: "0.75rem" }}>
+      <SectionLabel lang={lang}>{t.title}</SectionLabel>
+      <p style={{ margin: 0, fontSize: "0.74rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>{t.hint}</p>
+      {loading ? (
+        <LoadingState label={t.title} lang={lang} />
+      ) : !p ? (
+        <ErrorState title={t.errorTitle} hint={t.errorHint} lang={lang} />
+      ) : (
+        <>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 20 }}>
+            <div>
+              <div style={tileLabel}>{t.prefix}</div>
+              <div style={{ ...tileValue, fontSize: "0.9rem" }} dir="ltr">{p.prefix}</div>
+            </div>
+            <div>
+              <div style={tileLabel}>{t.ttl}</div>
+              <div style={tileValue}>{p.default_ttl_seconds}</div>
+            </div>
+            <div>
+              <div style={tileLabel}>{t.enforcement}</div>
+              <div style={{ ...tileValue, fontSize: "0.9rem", color: p.enforcement_enabled ? "#22c55e" : "#f59e0b" }}>
+                {p.enforcement_enabled ? "✓" : "—"}
+              </div>
+            </div>
+            <div>
+              <div style={tileLabel}>{t.durable}</div>
+              <div style={{ ...tileValue, fontSize: "0.9rem", color: p.durable ? "#22c55e" : "#f59e0b" }}>
+                {p.durable ? "✓" : "—"}
+              </div>
+            </div>
+            <div>
+              <div style={tileLabel}>{t.hashed}</div>
+              <div style={{ ...tileValue, fontSize: "0.9rem", color: p.hashed_at_rest ? "#22c55e" : "#f59e0b" }}>
+                {p.hashed_at_rest ? "✓" : "—"}
+              </div>
+            </div>
+            <div>
+              <div style={tileLabel}>{t.revocable}</div>
+              <div style={{ ...tileValue, fontSize: "0.9rem", color: p.revocable ? "#22c55e" : "#f59e0b" }}>
+                {p.revocable ? "✓" : "—"}
+              </div>
+            </div>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
+            <span style={mono}>{t.scopes}:</span>
+            {p.scopes.map((sc) => <span key={sc} dir="ltr" style={{ ...tileSub, color: "var(--foreground)" }}>{sc}</span>)}
+            <span style={mono}>· {t.writeScopes}:</span>
+            {p.write_scopes.map((s) => (
+              <span key={s} dir="ltr" style={{ ...tileSub, color: "#f59e0b" }}>{s}</span>
+            ))}
+          </div>
+          {p.note && <p style={{ ...mono, textAlign: rtl ? "right" : "left" }}>{t.noteLabel}: {p.note}</p>}
+
+          <SectionLabel lang={lang}>{t.ledger} ({rows.length})</SectionLabel>
+          {rows.length === 0 ? (
+            <p style={mono}>{t.empty} — {t.emptyHint}</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              {rows.map((tok) => {
+                const c = tokenChip(tok.active, !!tok.revoked_at, t);
+                return (
+                  <div key={tok.token_id} style={{ borderTop: "1px solid var(--border)", paddingTop: 5, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "baseline" }}>
+                    <span dir="ltr" style={{ ...mono, color: "var(--foreground)" }}>{tok.token_id}</span>
+                    <span style={{ fontFamily: ff(lang), fontSize: "0.76rem", flex: 1, minWidth: 120 }}>{tok.label || "—"}</span>
+                    {tok.scopes.map((s) => (
+                      <span key={s} dir="ltr" style={{ ...mono, border: "1px solid var(--border)", borderRadius: 4, padding: "1px 6px" }}>{s}</span>
+                    ))}
+                    <span style={{ ...mono, color: c.color }}>{c.label}</span>
+                    <span style={mono}>
+                      {t.expires}: {tok.expires_at ?? t.never} · {t.lastUsed}: {tok.last_used_at ?? t.never}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
 export default function DeveloperHubPage({ lang }: { lang: Language }) {
   const rtl = isRtl(lang);
   const t = UI[lang];
@@ -493,6 +646,8 @@ export default function DeveloperHubPage({ lang }: { lang: Language }) {
           <EmptyState title={t.verifyEmpty} hint={t.verifyEmptyHint} lang={lang} />
         )}
       </Card>
+
+      <DeveloperTokensCard lang={lang} />
 
       <Card
         style={{

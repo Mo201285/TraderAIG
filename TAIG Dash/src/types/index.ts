@@ -1295,6 +1295,40 @@ export interface WorkforceProposalsView {
 
 // ─── Developer Hub (row 756, M11.3): route catalogue from the registered app ─
 
+export interface DeveloperPolicyView {
+  ok: boolean;
+  prefix: string;
+  scopes: string[];
+  write_scopes: string[];
+  default_ttl_seconds: number;
+  read_scope_needed_for_get: boolean;
+  write_scope_needed_for_mutation: boolean;
+  hashed_at_rest: boolean;
+  revocable: boolean;
+  durable: boolean;
+  enforcement_enabled: boolean;
+  note: string;
+}
+
+export interface DeveloperTokenView {
+  token_id: string;
+  user_id: string;
+  label: string;
+  scopes: string[];
+  prefix: string;
+  created_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  last_used_at: string | null;
+  active: boolean;
+}
+
+export interface DeveloperTokensView {
+  ok: boolean;
+  count: number;
+  tokens: DeveloperTokenView[];
+}
+
 export interface RouteParameter {
   name: string;
   location: string;

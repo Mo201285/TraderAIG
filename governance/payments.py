@@ -309,6 +309,9 @@ class PaymentService:
     """
 
     SUBSCRIPTION_DAYS = 30
+    #: Ceiling on a single wallet credit (an earn). A reward model or caller
+    #: bug can never mint an unbounded balance through ``credit``.
+    MAX_CREDIT_USD = 10_000.0
 
     def __init__(self, mode: Optional[str] = None,
                  live_allowed: Optional[bool] = None,
@@ -389,19 +392,75 @@ class PaymentService:
 
     def wallet(self, user_id: str) -> Dict[str, Any]:
         entries = [e for e in self._ledger if e.user_id == user_id]
-        balance = sum(e.amount_usd for e in entries
-                      if e.status == PaymentStatus.SUCCEEDED)
+        succeeded = [e for e in entries if e.status == PaymentStatus.SUCCEEDED]
+        balance = sum(e.amount_usd for e in succeeded)
+        # A credit entry is an EARN (a research reward); every other succeeded
+        # entry is money the user SPENT on a plan/product. Splitting them keeps
+        # the one balance honest about where it came from.
+        earned = sum(e.amount_usd for e in succeeded
+                     if e.details.get("kind") == "credit")
         return {
             "user_id": user_id,
             "balance_usd": round(balance, 4),
-            "succeeded": sum(1 for e in entries
-                             if e.status == PaymentStatus.SUCCEEDED),
+            "earned_usd": round(earned, 4),
+            "spent_usd": round(balance - earned, 4),
+            "succeeded": len(succeeded),
             "refunded": sum(1 for e in entries
                             if e.status == PaymentStatus.REFUNDED),
             "pending": sum(1 for e in entries
                            if e.status == PaymentStatus.PENDING),
             "entries": [e.as_dict() for e in entries],
         }
+
+    def credit(self, user_id: str, amount_usd: float, *,
+               source: str = "rewards", description: str = "",
+               ref: str = "",
+               details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Record a positive wallet credit (an EARN), idempotent by source+ref.
+
+        This is the single primitive that lets a *reward* -- e.g. a research
+        credit a validated strategy earned (S6) -- land in the same ledger the
+        billing charges use, so the wallet balance is one source of truth for
+        both what a user paid and what a user earned.
+
+        It moves no real money, calls no provider, and grants no entitlement or
+        trade permission: it only appends a SUCCEEDED ledger entry tagged
+        ``kind: credit``. The amount is bounded to ``(0, MAX_CREDIT_USD]`` so a
+        model or caller bug can never mint an unbounded balance, and a repeat
+        with the same ``source``+``ref`` returns the first entry untouched
+        rather than crediting twice.
+        """
+        amount = round(float(amount_usd), 4)
+        if not (0.0 < amount <= self.MAX_CREDIT_USD):
+            self._last_error = (f"credit amount must be in "
+                                f"(0, {self.MAX_CREDIT_USD:g}] USD")
+            return {"ok": False, "credited": False, "duplicate": False,
+                    "error": self._last_error, "user_id": user_id,
+                    "amount_usd": amount,
+                    "wallet_balance": self.wallet(user_id)["balance_usd"]}
+        source = str(source or "rewards").strip() or "rewards"
+        ref = str(ref or "").strip()
+        if ref:
+            prior = next((e for e in reversed(self._ledger)
+                          if e.provider == source
+                          and e.details.get("kind") == "credit"
+                          and e.details.get("ref") == ref), None)
+            if prior is not None:
+                return {"ok": True, "credited": False, "duplicate": True,
+                        "user_id": user_id, "amount_usd": prior.amount_usd,
+                        "entry_id": prior.entry_id, "ref": ref,
+                        "source": source,
+                        "wallet_balance": self.wallet(user_id)["balance_usd"]}
+        meta = {"kind": "credit", "ref": ref, "source": source}
+        meta.update(details or {})
+        entry = self._entry(user_id, amount, PaymentStatus.SUCCEEDED, source,
+                            charge_id=f"cr_{source}_{uuid.uuid4().hex[:16]}",
+                            description=description, details=meta)
+        self._record_audit(source, "payment.credit", entry)
+        return {"ok": True, "credited": True, "duplicate": False,
+                "user_id": user_id, "amount_usd": amount,
+                "entry_id": entry.entry_id, "ref": ref, "source": source,
+                "wallet_balance": self.wallet(user_id)["balance_usd"]}
 
     def charge(self, user_id: str, amount_usd: float, plan: str = "",
                provider: Optional[PaymentProvider] = None,

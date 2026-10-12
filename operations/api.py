@@ -3926,6 +3926,56 @@ def build_payment_provider_for_name(name: str):
 
 
 # ---------------------------------------------------------------------------
+# S6 XTAIG Economy -- research-credit rewards tied to the wallet ledger (row 781)
+#
+# A strategy whose validation PASSES earns its owner research credits (XTAIG)
+# that land in the one wallet ledger (governance/payments.py). The amount comes
+# from the strategy's STORED report and the payee from its recorded asset owner,
+# so neither is caller-chosen; the credit is idempotent and never a trade gate.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/economy/research-reward/policy")
+def economy_research_reward_policy() -> Dict:
+    """The research-credit model's public envelope (read-only; row 781)."""
+    from accounts.research_rewards import ResearchRewardService
+    return {"ok": True, **ResearchRewardService.policy()}
+
+
+@app.post("/economy/research-reward")
+def economy_research_reward(payload: Dict) -> Dict:
+    """Award the research credit a validated strategy earned (S6, row 781).
+
+    Governed (`CAN_MANAGE_RISK`): issuing economy credit is an operator action,
+    not a self-service claim. The request supplies only `strategy_id` -- the
+    amount is computed by the credit model from the strategy's *stored*
+    validation report and the beneficiary is the owner recorded on the strategy
+    asset, so a caller can invent neither the number nor the payee. The grant is
+    idempotent: awarding the same validation again credits once.
+    """
+    actor = _acting_actor()
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    from accounts.research_rewards import ResearchRewardService
+    strategy_id = str((payload or {}).get("strategy_id", "") or "").strip()
+    if not strategy_id:
+        raise HTTPException(status_code=400, detail="strategy_id is required")
+    result = ResearchRewardService().award_for_validation(
+        strategy_id, asset_layer=_asset_layer())
+    if result.get("reason") == "unknown_strategy":
+        raise HTTPException(status_code=404, detail="unknown strategy")
+    try:
+        identity.record_audit(actor, "economy.research_reward", "strategy",
+                              strategy_id,
+                              {"granted": result.get("granted"),
+                               "credits": result.get("credits"),
+                               "user_id": result.get("user_id"),
+                               "reason": result.get("reason")})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, **result}
+
+
+# ---------------------------------------------------------------------------
 # Live MT5 terminal
 # ---------------------------------------------------------------------------
 

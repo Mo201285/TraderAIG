@@ -233,7 +233,7 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
   };
 
   const doRevalidate = async () => {
-    if (applying) return;
+    if (applying || !live) return;
     setApplying(true);
     const r = await api.revalidatePolicy({
       mode,
@@ -252,7 +252,7 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
   };
 
   const doPromote = async (id: string) => {
-    if (busy) return;
+    if (busy || !live) return;
     setBusy(id);
     const r = await api.promote(id);
     setBusy(null);
@@ -265,7 +265,7 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
   };
 
   const doQuarantine = async (id: string) => {
-    if (busy) return;
+    if (busy || !live) return;
     setBusy(id);
     const r = await api.quarantine(id);
     setBusy(null);
@@ -520,10 +520,10 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
               )}
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: "0.5rem" }}>
-                <Btn variant="primary" disabled={!report?.gates?.oos_pass || busy !== null} onClick={() => doPromote(selected.id)}>
+                <Btn variant="primary" disabled={!report?.gates?.oos_pass || busy !== null || !live} onClick={() => doPromote(selected.id)}>
                   {busy === selected.id ? (en ? "Promoting…" : "جارٍ الترقية…") : en ? "Promote" : "ترقية"}
                 </Btn>
-                <Btn variant="danger" disabled={selected.stage === "quarantined" || busy !== null} onClick={() => doQuarantine(selected.id)}>
+                <Btn variant="danger" disabled={selected.stage === "quarantined" || busy !== null || !live} onClick={() => doQuarantine(selected.id)}>
                   {busy === selected.id ? (en ? "Working…" : "جارٍ…") : en ? "Quarantine" : "عزل"}
                 </Btn>
                 {flash && (
@@ -638,7 +638,7 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
                   {en ? "Governance override approval" : "موافقة تجاوز الحوكمة"}
                 </label>
               )}
-              <Btn variant="primary" onClick={doRevalidate}>
+              <Btn variant="primary" disabled={!live || applying} onClick={doRevalidate}>
                 {applying ? (en ? "Re-validating…" : "جارٍ إعادة التحقق…") : en ? "Apply Policy" : "تطبيق السياسة"}
               </Btn>
               {flash && (
@@ -673,7 +673,7 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
                     {ready && (
                       <Btn
                         variant="primary"
-                        disabled={!rep?.gates?.oos_pass || busy !== null}
+                        disabled={!rep?.gates?.oos_pass || busy !== null || !live}
                         onClick={() => doPromote(p.id)}
                       >
                         {busy === p.id ? (en ? "Promoting…" : "جارٍ الترقية…") : en ? "Approve" : "موافقة"}
@@ -681,7 +681,7 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
                     )}
                     <Btn
                       variant="danger"
-                      disabled={p.stage === "quarantined" || busy !== null}
+                      disabled={p.stage === "quarantined" || busy !== null || !live}
                       onClick={() => doQuarantine(p.id)}
                     >
                       {busy === p.id && !ready ? (en ? "Working…" : "جارٍ…") : en ? "Veto" : "رفض"}

@@ -71,6 +71,7 @@ export default function Dashboard({ lang, user }: Props) {
           : "mock";
   const [exVer, setExVer] = useState(0);
   const [exBusy, setExBusy] = useState(false);
+  const [exError, setExError] = useState<string | null>(null);
   const ex = useData(() => api.getExercise(), exVer);
   const exercise = ex.data;
 
@@ -146,7 +147,18 @@ export default function Dashboard({ lang, user }: Props) {
 
   const runExercise = async () => {
     setExBusy(true);
-    await api.runExercise(15);
+    setExError(null);
+    const env = await api.runExercise(15);
+    if (!env.ok) {
+      const why = env.error ?? (isRtl ? "الخادم غير متاح" : "backend unreachable");
+      setExError(
+        isRtl
+          ? "تعذّر بدء التمرين: " + why + ". لم يُشغَّل شيء."
+          : "Exercise did not start: " + why + ". Nothing was run.",
+      );
+      setExBusy(false);
+      return;
+    }
     setTimeout(() => {
       setExVer((v) => v + 1);
       setExBusy(false);
@@ -415,6 +427,9 @@ export default function Dashboard({ lang, user }: Props) {
               )}
               {exercise?.error && (
                 <span style={{ fontSize: "0.7rem", fontFamily: "var(--font-mono)", color: "#ef4444" }}>{exercise.error}</span>
+              )}
+              {exError && (
+                <span style={{ fontSize: "0.7rem", fontFamily: ff, color: "#ef4444", lineHeight: 1.5 }}>{exError}</span>
               )}
               <button
                 onClick={runExercise}

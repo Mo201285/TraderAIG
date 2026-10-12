@@ -23,11 +23,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import pytest
 from fastapi.testclient import TestClient
 
+import operations.api as api_module  # noqa: E402
 from decision.candidate import candidate_board  # noqa: E402
 from learning.experience import ExperienceRecord, ledger  # noqa: E402
 from learning.learning_split import execution_learning, research_learning  # noqa: E402
-from operations.api import _lab_recorder, _lab_registry, app  # noqa: E402
+from operations.api import _lab_registry, app  # noqa: E402
 from operations.drift import DriftMonitor, DriftThresholds  # noqa: E402
+from research.strategy_lab.contracts import (  # noqa: E402
+    ExitReason,
+    OosSplit,
+    SpreadBucket,
+    StrategyFamily,
+    TradeObservation,
+    VolatilityBucket,
+)
 from core.state import state  # noqa: E402
 
 SPLIT_NOTE = ("research and execution learning are recorded in separate stores "
@@ -37,8 +46,25 @@ DRIFT_CONTRACT = ("drift only proposes; quarantine is a governance act via "
 
 
 def _corpus():
-    recorder = _lab_recorder()
+    # Read through the same accessor the route uses, so a monkeypatched
+    # recorder is seen by both the test's expectation and the live route.
+    recorder = api_module._lab_recorder()
     return list(recorder.all())
+
+
+def _observation(pnl=0.7):
+    return TradeObservation(
+        experiment_id="e", strategy_id="corpus:demo",
+        family=StrategyFamily.OB_MITIGATION, variant_hash="h",
+        asset="XAUUSD", htf_tf="H1", setup_tf="M15", trigger_tf="M1",
+        session="london", weekday=2, regime="bullish/normal",
+        volatility_bucket=VolatilityBucket.MEDIUM,
+        spread_bucket=SpreadBucket.NORMAL,
+        entry_type="matrix_pool", sl_model="lt", tp_model="zt",
+        pattern_geometry="", macro_state="",
+        mfe_r=1.0, mae_r=-0.5, exit_reason=ExitReason.TARGET,
+        oos_split=OosSplit.OUT_OF_SAMPLE, walkforward_window=0,
+        pnl=pnl, r_multiple=pnl)
 
 
 def _expected_research(corpus):
@@ -164,10 +190,19 @@ def test_every_figure_equals_a_fresh_derivation_of_the_canonical_stores(
 
 
 def test_an_empty_ledger_reports_empty_execution_while_research_stays_honest(
-        client, ledger_state):
+        client, ledger_state, monkeypatch):
     """Empty experience store never invents execution or drift, and the
-    research track still reports the real lab corpus, not zero."""
+    research track still reflects the lab corpus, not zero.
+
+    The lab corpus lives in a gitignored runtime directory, so a fresh checkout
+    (CI) has none; seed one deterministic observation through a patched recorder
+    so this guard proves the split without depending on runtime data.
+    """
     ledger_state._records = []
+    from research.strategy_lab.observations import ObservationRecorder
+    recorder = ObservationRecorder()
+    recorder.record(_observation())
+    monkeypatch.setattr(api_module, "_lab_recorder", lambda: recorder)
 
     split = client.get("/learning/split").json()
     execution = split["execution"]

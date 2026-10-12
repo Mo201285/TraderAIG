@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ChangeRequest, Language } from "../../types";
-import { Btn, Card, EmptyState, PageHeader, SectionLabel, StateChip, ff, isRtl } from "../ui/shared";
+import { Btn, Card, EmptyState, ErrorState, PageHeader, SectionLabel, StateChip, ff, isRtl } from "../ui/shared";
 import { api, useData } from "../../lib/useData";
 
 const KIND_LABEL: Record<string, [string, string]> = {
@@ -91,6 +91,14 @@ const UI: Record<string, Record<string, string>> = {
     failing: "Failing gates",
     promosEmpty: "No ladder movement yet",
     promosEmptyHint: "/research/promotions",
+    approving: "Approving…",
+    approved: "approved",
+    denied: "denied",
+    actionFailed: "Action failed",
+    requestsUnreachable: "Governance API unreachable",
+    requestsUnreachableHint:
+      "Change requests are shown and acted on only while the API is live — none are fabricated here, and no approve/deny is applied against a placeholder.",
+    dismiss: "Dismiss",
     byStage: "BY STAGE",
     noEvents: "no history events recorded for this strategy yet",
   },
@@ -132,6 +140,14 @@ const UI: Record<string, Record<string, string>> = {
     failing: "البوابات الفاشلة",
     promosEmpty: "لا حركة على السلّم بعد",
     promosEmptyHint: "/research/promotions",
+    approving: "جارٍ الموافقة…",
+    approved: "تمت الموافقة",
+    denied: "مرفوض",
+    actionFailed: "فشل الإجراء",
+    requestsUnreachable: "واجهة الحوكمة غير متاحة",
+    requestsUnreachableHint:
+      "تُعرض طلبات التغيير ويُعمل عليها فقط عندما تكون الواجهة حيّة — لا شيء مُختلق هنا، ولا تُطبَّق موافقة أو رفض على عنصر وهمي.",
+    dismiss: "إغلاق",
     byStage: "حسب المرحلة",
     noEvents: "لا أحداث سجل مسجّلة لهذه الاستراتيجية بعد",
   },
@@ -147,6 +163,8 @@ export default function GovernancePage({ lang }: { lang: Language }) {
   const [sub, setSub] = useState<"pending" | "all">("pending");
   const [denyingId, setDenyingId] = useState<string | null>(null);
   const [denyReason, setDenyReason] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const changes = useData(() => api.getChangeRequests(), version);
   const audit = useData(() => api.getAudit(), version);
   const gates = useData(() => api.getResearchGates(), version);
@@ -158,15 +176,27 @@ export default function GovernancePage({ lang }: { lang: Language }) {
     tab === "audit" ? audit : tab === "gates" ? gates : tab === "promotions" ? promos : changes;
 
   const act = async (id: string, action: "approve" | "deny") => {
-    if (action === "approve") {
-      await api.approveChangeRequest(id);
+    setBusyId(id);
+    setNotice(null);
+    try {
+      const env =
+        action === "approve"
+          ? await api.approveChangeRequest(id)
+          : await api.denyChangeRequest(id, denyReason || "operator veto");
+    if (env.ok) {
+      setNotice({ ok: true, text: `${id} ${action === "approve" ? t.approved : t.denied}` });
     } else {
-      await api.denyChangeRequest(id, denyReason || "operator veto");
+      setNotice({ ok: false, text: `${t.actionFailed}: ${env.error ?? t.requestsUnreachable}` });
     }
+  } catch (e) {
+    setNotice({ ok: false, text: `${t.actionFailed}: ${String(e)}` });
+  } finally {
+    setBusyId(null);
     setDenyingId(null);
     setDenyReason("");
     setVersion((v) => v + 1);
-  };
+  }
+};
 
   const loadingCard = (
     <Card>
@@ -230,9 +260,37 @@ export default function GovernancePage({ lang }: { lang: Language }) {
         </span>
       </div>
 
+      {notice && (
+        <div
+          style={{
+            marginBottom: "0.75rem",
+            padding: "8px 12px",
+            borderRadius: 6,
+            fontSize: "0.78rem",
+            fontFamily: ff(lang),
+            background: notice.ok ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)",
+            border: `1px solid ${notice.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
+            color: notice.ok ? "#22c55e" : "#ef4444",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span style={{ fontFamily: "var(--font-mono)" }}>{notice.ok ? "✓" : "✕"}</span>
+          <span>{notice.text}</span>
+          <Btn variant="ghost" onClick={() => setNotice(null)} style={{ marginInlineStart: "auto", padding: "3px 9px" }}>
+            {t.dismiss}
+          </Btn>
+        </div>
+      )}
+
       {tab === "requests" ? (
-        changes.source === "loading" || !changes.data ? (
+        changes.source === "loading" ? (
           loadingCard
+        ) : changes.source !== "live" ? (
+          <Card>
+            <ErrorState title={t.requestsUnreachable} hint={t.requestsUnreachableHint} lang={lang} />
+          </Card>
         ) : rows.length === 0 ? (
           <EmptyState title={t.empty} hint={t.emptyHint} />
         ) : (
@@ -270,8 +328,10 @@ export default function GovernancePage({ lang }: { lang: Language }) {
 
                   {pending && (
                     <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      <Btn variant="primary" onClick={() => act(c.id, "approve")}>{t.approve}</Btn>
-                      <Btn variant="danger" onClick={() => setDenyingId(denyingId === c.id ? null : c.id)}>{t.deny}</Btn>
+                      <Btn variant="primary" disabled={busyId === c.id} onClick={() => act(c.id, "approve")}>
+                        {busyId === c.id ? t.approving : t.approve}
+                      </Btn>
+                      <Btn variant="danger" disabled={busyId === c.id} onClick={() => setDenyingId(denyingId === c.id ? null : c.id)}>{t.deny}</Btn>
                       {denyingId === c.id && (
                         <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
                           <input
@@ -290,7 +350,7 @@ export default function GovernancePage({ lang }: { lang: Language }) {
                               width: 220,
                             }}
                           />
-                          <Btn variant="danger" onClick={() => act(c.id, "deny")}>✓</Btn>
+                          <Btn variant="danger" disabled={busyId === c.id} onClick={() => act(c.id, "deny")}>✓</Btn>
                         </span>
                       )}
                     </div>

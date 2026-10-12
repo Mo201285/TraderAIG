@@ -19,6 +19,8 @@ import type {
   ExecutionTruthView,
   ReconciliationView,
   VenueScorecardView,
+  WorkforceSeatsView,
+  WorkforceProposalsView,
   ExerciseStatus,
   GrowthView,
   HealthView,
@@ -1113,6 +1115,34 @@ export const api = {
       return {
         ok: true,
         data: (await res.json()) as DspyGovernanceView,
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getWorkforceSeats(): Promise<Envelope<WorkforceSeatsView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/workforce/seats");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return {
+        ok: true,
+        data: (await res.json()) as WorkforceSeatsView,
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getWorkforceProposals(): Promise<Envelope<WorkforceProposalsView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/workforce/proposals");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return {
+        ok: true,
+        data: (await res.json()) as WorkforceProposalsView,
         source: "live",
       };
     } catch (e) {

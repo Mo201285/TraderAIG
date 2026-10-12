@@ -40,6 +40,23 @@ const UI: Record<string, Record<string, string>> = {
     departmentExec: "Executive",
     departmentEng: "Engineering",
     departmentResearch: "Research",
+    cpTitle: "Workforce Control Plane",
+    cpHint:
+      "The governed worker loop: the roster the control plane actually serves, read from /workforce/seats, and the proposal ledger from /workforce/proposals. A seat proposes; it never executes.",
+    cpSeats: "Served seats",
+    cpLayers: "By layer",
+    cpProposals: "Proposals",
+    cpOpen: "Open",
+    cpVerified: "Roster verified",
+    cpDrift: "Roster drift",
+    cpVerifiedHint: "The reference roster matches the seats the control plane serves.",
+    cpDriftHint: "The control plane serves a roster the reference copy does not match:",
+    cpMissing: "missing",
+    cpExtra: "extra",
+    cpLedger: "Proposal ledger",
+    cpNoProposals: "No proposals — a seat's brief would appear here; nothing is invented.",
+    cpExecuted: "executed",
+    cpNotExecuted: "not executed",
     routerLabel: "Ollama intelligence router",
     routerHint:
       "Which tier would run each task class, and with which model, from what the live server actually reports.",
@@ -90,6 +107,23 @@ const UI: Record<string, Record<string, string>> = {
     departmentExec: "تنفيذي",
     departmentEng: "هندسة",
     departmentResearch: "بحث",
+    cpTitle: "لوحة تحكّم القوى العاملة",
+    cpHint:
+      "حلقة العامل المحكومة: القائمة التي تخدمها لوحة التحكّم فعلًا، مقروءة من /workforce/seats، ودفتر المقترحات من /workforce/proposals. المقعد يقترح؛ ولا ينفّذ أبدًا.",
+    cpSeats: "المقاعد المخدومة",
+    cpLayers: "حسب الطبقة",
+    cpProposals: "المقترحات",
+    cpOpen: "مفتوحة",
+    cpVerified: "القائمة موثّقة",
+    cpDrift: "انحراف القائمة",
+    cpVerifiedHint: "القائمة المرجعية تطابق المقاعد التي تخدمها لوحة التحكّم.",
+    cpDriftHint: "لوحة التحكّم تخدم قائمة لا تطابق النسخة المرجعية:",
+    cpMissing: "ناقص",
+    cpExtra: "زائد",
+    cpLedger: "دفتر المقترحات",
+    cpNoProposals: "لا مقترحات — سيظهر موجز المقعد هنا؛ ولا يُختلق شيء.",
+    cpExecuted: "منفَّذ",
+    cpNotExecuted: "غير منفَّذ",
     routerLabel: "موجّه الذكاء Ollama",
     routerHint:
       "أي طبقة ستشغّل كل صنف مهام، وبأي نموذج، من واقع ما يبلّغ به الخادم الحي فعلًا.",
@@ -170,11 +204,22 @@ export default function AIWorkforceExplorer({ lang }: { lang: Language }) {
   const router = useData(() => api.getResearchIntelligence(), version);
   const missions = useData(() => api.getResearchMissions(), version);
   const summary = useData(() => api.getResearchMissionsSummary(), version);
+  const seatsQ = useData(() => api.getWorkforceSeats(), version);
+  const proposalsQ = useData(() => api.getWorkforceProposals(), version);
 
   const report = router.data;
   const missionRows = missions.data ?? [];
   const summaryView = summary.data;
   const loading = router.source === "loading" || missions.source === "loading";
+  const seats = seatsQ.data;
+  const proposals = proposalsQ.data;
+  const missingSeats = seats
+    ? WORKFORCE_AGENTS.map((a) => a.agentId).filter((id) => !seats.seats.some((s) => s.seat_id === id))
+    : [];
+  const extraSeats = seats
+    ? seats.seats.map((s) => s.seat_id).filter((id) => !WORKFORCE_AGENTS.some((a) => a.agentId === id))
+    : [];
+  const drift = seats != null && (seats.count !== WORKFORCE_AGENTS.length || missingSeats.length > 0 || extraSeats.length > 0);
 
   return (
     <Card
@@ -294,6 +339,84 @@ export default function AIWorkforceExplorer({ lang }: { lang: Language }) {
             );
           })}
         </div>
+      </div>
+
+      <div>
+        <SectionLabel lang={lang}>{t.cpTitle}</SectionLabel>
+        <p style={{ ...rowText, fontSize: "0.74rem", color: "var(--muted-foreground)" }}>{t.cpHint}</p>
+        {seatsQ.source === "loading" ? (
+          <LoadingState label={t.loadingWorkforce} lang={lang} />
+        ) : !seats ? (
+          <EmptyState title={t.errorTitle} hint={t.errorHint} lang={lang} />
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 6 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 20 }}>
+              <div>
+                <div style={tileLabel}>{t.cpSeats}</div>
+                <div style={tileValue}>{seats.summary?.count ?? seats.count}</div>
+              </div>
+              <div>
+                <div style={tileLabel}>{t.cpProposals}</div>
+                <div style={tileValue}>{seats.proposals}</div>
+              </div>
+              <div>
+                <div style={tileLabel}>{t.cpOpen}</div>
+                <div style={tileValue}>{seats.open_proposals}</div>
+              </div>
+              <div>
+                <div style={tileLabel}>{t.cpSource}</div>
+                <div style={{ ...tileValue, fontSize: "0.9rem", color: drift ? "#f59e0b" : "#22c55e" }}>
+                  {drift ? t.cpDrift : t.cpVerified}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
+              <span style={mono}>{t.cpLayers}:</span>
+              {Object.entries(seats.summary?.by_layer ?? {}).map(([layer, count]) => (
+                <span key={layer} style={chip}>
+                  {layer}: {count}
+                </span>
+              ))}
+            </div>
+
+            {drift ? (
+              <p style={{ ...mono, color: "#f59e0b" }}>
+                {t.cpDriftHint}
+                {missingSeats.length > 0 ? ` ${t.cpMissing}: ${missingSeats.join(", ")}.` : ""}
+                {extraSeats.length > 0 ? ` ${t.cpExtra}: ${extraSeats.join(", ")}.` : ""}
+              </p>
+            ) : (
+              <p style={mono}>{t.cpVerifiedHint}</p>
+            )}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span style={mono}>{t.cpLedger}</span>
+              {proposalsQ.source === "loading" ? (
+                <LoadingState label={t.loadingWorkforce} lang={lang} />
+              ) : !proposals || proposals.proposals.length === 0 ? (
+                <p style={mono}>{t.cpNoProposals}</p>
+              ) : (
+                proposals.proposals.map((p) => (
+                  <div
+                    key={p.proposal_id}
+                    style={{ borderTop: "1px solid var(--border)", paddingTop: 5, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "baseline" }}
+                  >
+                    <span dir="ltr" style={{ ...mono, color: "var(--foreground)" }}>
+                      {p.proposal_id}
+                    </span>
+                    <span style={{ fontFamily: ff(lang), fontSize: "0.76rem", flex: 1, minWidth: 160 }}>
+                      {p.brief}
+                    </span>
+                    <span style={mono}>{p.seat_title}</span>
+                    <span style={chip}>{p.status}</span>
+                    <span style={mono}>{p.executed ? t.cpExecuted : t.cpNotExecuted}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <div>

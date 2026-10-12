@@ -1232,6 +1232,67 @@ export interface DspyGovernanceView {
   note: string;
 }
 
+// ─── Workforce Control Plane (row 5810-ish): governed worker loop ────────────
+
+export interface WorkforceSeatView {
+  seat_id: string;
+  title: string;
+  department: string;
+  reports_to: string | null;
+  layer: string;
+  layer_role: string;
+  task_class: string | null;
+  mission: string;
+  observes: string[];
+  proposes_never_executes: boolean;
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+
+export interface WorkforceLayerRole {
+  layer: string;
+  order: number;
+  role: string;
+}
+
+export interface WorkforceSeatsView {
+  ok: boolean;
+  count: number;
+  seats: WorkforceSeatView[];
+  summary: {
+    count: number;
+    by_layer: Record<string, number>;
+    by_department: Record<string, number>;
+    layers: WorkforceLayerRole[];
+  };
+  proposals: number;
+  open_proposals: number;
+}
+
+export interface WorkforceProposalView {
+  proposal_id: string;
+  seat_id: string;
+  seat_title: string;
+  department: string;
+  layer: string;
+  task_class: string | null;
+  brief: string;
+  task: string;
+  model: string;
+  note: string;
+  status: string;
+  executed: boolean;
+  act: string;
+  gateway: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface WorkforceProposalsView {
+  ok: boolean;
+  count: number;
+  proposals: WorkforceProposalView[];
+}
+
 // ─── Developer Hub (row 756, M11.3): route catalogue from the registered app ─
 
 export interface RouteParameter {

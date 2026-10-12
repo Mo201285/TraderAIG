@@ -89,6 +89,28 @@ const UI: Record<string, Record<string, string>> = {
     ordersTab: "Orders",
     positionsTab: "Positions",
     learningTab: "Learning",
+    reconciliationTab: "Reconciliation",
+    reconTitle: "Account Reconciliation",
+    reconSubtitle: "Canonical positions vs venue-reported positions",
+    reconAttempted: "Checks Run",
+    reconLastResult: "Last Result",
+    reconMismatches: "Mismatches",
+    reconResultOk: "OK",
+    reconResultDrift: "DRIFT",
+    reconResultNone: "—",
+    reconClean: "No divergence recorded in the last reconciliation pass.",
+    reconNever:
+      "No reconciliation has run yet — a live or paper loop records this the moment it verifies positions against the venue. This reads as 'not yet checked', not 'clean'.",
+    reconCheckedLabel: "CHECKED",
+    reconType: "Type",
+    reconPosition: "Position",
+    reconSymbol: "Symbol",
+    reconLocal: "Local",
+    reconRemote: "Venue",
+    reconTypeMissingRemote: "Closed at venue (intent still open)",
+    reconTypeMissingLocal: "Held at venue (no matching intent)",
+    reconTypePriceVolume: "Volume / entry divergence",
+    reconTypeOther: "Divergence",
   },
   ar: {
     pipelineLabel: "مسار التنفيذ",
@@ -174,6 +196,28 @@ const UI: Record<string, Record<string, string>> = {
     ordersTab: "الأوامر",
     positionsTab: "المراكز",
     learningTab: "التعلم",
+    reconciliationTab: "المطابقة",
+    reconTitle: "مطابقة الحساب",
+    reconSubtitle: "المراكز الأساسية مقابل مراكز الجهة المُبلَّغ عنها",
+    reconAttempted: "عدد الفحوص",
+    reconLastResult: "آخر نتيجة",
+    reconMismatches: "الانحرافات",
+    reconResultOk: "مطابق",
+    reconResultDrift: "انحراف",
+    reconResultNone: "—",
+    reconClean: "لا انحراف مسجّل في آخر دورة مطابقة.",
+    reconNever:
+      "لم تُجرَ أي مطابقة بعد — تسجّلها حلقة حيّة أو ورقية لحظة التحقق من المراكز مقابل الجهة. تُقرأ كـ«لم يُفحص بعد» وليس كـ«نظيف».",
+    reconCheckedLabel: "المفحوص",
+    reconType: "النوع",
+    reconPosition: "المركز",
+    reconSymbol: "الرمز",
+    reconLocal: "المحلي",
+    reconRemote: "الجهة",
+    reconTypeMissingRemote: "مغلق لدى الجهة (القصد ما زال مفتوحاً)",
+    reconTypeMissingLocal: "محتجز لدى الجهة (بلا قصد مطابق)",
+    reconTypePriceVolume: "انحراف الحجم / الدخول",
+    reconTypeOther: "انحراف",
   },
 };
 
@@ -194,6 +238,7 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
   const rtl = isRtl(lang);
   const t = UI[lang];
   const { data, source } = useData(() => api.getExecutionTruth(), version);
+  const recon = useData(() => api.getReconciliation(), version);
   const live = source === "live";
   const lc = live ? data?.lifecycle : undefined;
   const mt = live ? data?.metrics : undefined;
@@ -218,12 +263,14 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
         { id: "orders", label: t.ordersTab },
         { id: "positions", label: t.positionsTab },
         { id: "learning", label: t.learningTab },
+        { id: "reconciliation", label: t.reconciliationTab },
       ]
     : [
         { id: "overview", label: t.overviewLabel },
         { id: "orders", label: t.ordersTab },
         { id: "positions", label: t.positionsTab },
         { id: "learning", label: t.learningTab },
+        { id: "reconciliation", label: t.reconciliationTab },
       ];
 
   // §7 lifecycle: intent → order → acknowledgement → fill → position → close
@@ -510,6 +557,85 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
           )}
         </div>
       )}
+
+      {tab === "reconciliation" && (() => {
+        const rSource = recon.source;
+        const rLive = rSource === "live";
+        const r = rLive ? recon.data : undefined;
+        const rows = r?.mismatches ?? [];
+        const typeLabel = (ty: string): string =>
+          ty === "missing_remote" ? t.reconTypeMissingRemote
+          : ty === "missing_local" ? t.reconTypeMissingLocal
+          : ty === "price_volume_mismatch" ? t.reconTypePriceVolume
+          : t.reconTypeOther;
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <span style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                {rLive ? `/execution/reconciliation · ${t.reconSubtitle}` : rSource}
+              </span>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <StateChip label={rLive ? (rtl ? "مباشر" : "LIVE") : rSource === "loading" ? (rtl ? "جارٍ" : "LOADING") : (rtl ? "متوقف" : "DOWN")} color={rLive ? "#22c55e" : "#f59e0b"} />
+                <Btn variant="ghost" onClick={() => setVersion((v) => v + 1)}>↻ {t.updatedLabel}</Btn>
+              </div>
+            </div>
+            {rSource === "loading" ? (
+              <LoadingState label={t.loadingExec} lang={lang} />
+            ) : !rLive ? (
+              <ErrorState title={t.errorTitle} hint={t.errorHint} lang={lang} />
+            ) : (r?.attempted ?? 0) === 0 ? (
+              <Card style={{ padding: "1rem" }}>
+                <EmptyState title={t.reconTitle} hint={t.reconNever} lang={lang} />
+              </Card>
+            ) : (
+              <>
+                <Card>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+                    <SectionLabel lang={lang}>{t.reconTitle}</SectionLabel>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.65rem", color: "var(--muted-foreground)" }}>{t.reconCheckedLabel}: {r?.checked}</span>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "0.6rem" }}>
+                    {[
+                      { label: t.reconAttempted, value: String(r?.attempted ?? 0), color: "#3b82f6" },
+                      { label: t.reconLastResult, value: r?.last_ok == null ? t.reconResultNone : r.last_ok ? t.reconResultOk : t.reconResultDrift, color: r?.last_ok == null ? "#6b7280" : r.last_ok ? "#22c55e" : "#ef4444" },
+                      { label: t.reconMismatches, value: String(r?.mismatch_count ?? 0), color: (r?.mismatch_count ?? 0) > 0 ? "#ef4444" : "#22c55e" },
+                      { label: t.updatedLabel, value: r?.last_at ? fmtAt(r.last_at) : "—", color: "#6b7280" },
+                    ].map((m) => (
+                      <div key={m.label} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "0.7rem", display: "flex", flexDirection: "column", gap: 6 }}>
+                        <div style={{ fontSize: "0.6rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{m.label}</div>
+                        <div style={{ fontFamily: "var(--font-mono)", fontSize: "1.05rem", fontWeight: 600, color: m.color }}>{m.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+
+                {(r?.mismatch_count ?? 0) === 0 ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 6, background: "rgba(34,197,94,0.05)", border: "1px solid rgba(34,197,94,0.18)" }}>
+                    <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#22c55e", flexShrink: 0 }} />
+                    <span style={{ fontSize: "0.82rem", fontFamily: ff(lang), flex: 1 }}>{t.reconClean}</span>
+                    <StateChip label={rtl ? "مطابق" : "MATCHED"} color="#22c55e" />
+                  </div>
+                ) : (
+                  rows.map((mm, i) => (
+                    <Card key={`${mm.type}-${mm.position_id}-${i}`} style={{ border: "1px solid rgba(239,68,68,0.4)", background: "rgba(239,68,68,0.05)" }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginBottom: 8 }}>
+                        <StateChip label={typeLabel(mm.type)} color="#ef4444" />
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.68rem", color: "var(--muted-foreground)" }}>{mm.position_id.slice(0, 14)}</span>
+                        {mm.symbol ? <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.78rem", fontWeight: 600 }}>{mm.symbol}</span> : null}
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                        <span>{t.reconType}: {mm.type}</span>
+                        {mm.local ? <span>{t.reconLocal}: vol {num2(mm.local.vol)} · entry {num2(mm.local.ep)}</span> : null}
+                        {mm.remote ? <span>{t.reconRemote}: vol {num2(mm.remote.vol)} · entry {num2(mm.remote.ep)}</span> : null}
+                      </div>
+                    </Card>
+                  ))
+                )}
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       <p style={{ margin: "0.75rem 0 0", fontFamily: "var(--font-mono)", fontSize: "0.66rem", color: "var(--muted-foreground)", textAlign: rtl ? "right" : "left", opacity: 0.6 }}>
         {t.sourceLabel}: {source} · {t.authority}

@@ -7507,6 +7507,30 @@ def execution_truth() -> Dict:
     }
 
 
+@app.get("/execution/reconciliation")
+def execution_reconciliation(limit: int = 50) -> Dict:
+    """Read-only reconciliation surface: account plane vs internal intent.
+
+    Reports the divergences the ReconciliationEngine actually recorded when a
+    live/paper loop verified canonical positions against the venue (external
+    close, volume/entry tampering, positions the venue holds that intent does
+    not, and vice versa). It is a ledger read, not a verdict: ``attempted == 0``
+    means no reconciliation has run yet -- not that the account is clean. Never
+    places an order and is not a trade authority.
+    """
+    from core.pipeline import recon_engine  # noqa: PLC0415
+
+    summary = recon_engine.summary(recent=max(1, limit))
+    summary.update({
+        "source": "overlay",
+        "checked": "canonical positions vs venue-reported positions",
+        "note": ("" if summary["attempted"] else
+                 "no reconciliation pass has run yet -- reads as 'not yet "
+                 "checked', not 'clean'"),
+    })
+    return summary
+
+
 @app.get("/execution/venue-score")
 def execution_venue_score() -> Dict:
     """Read-only venue scorecard (S5 Execution Network).

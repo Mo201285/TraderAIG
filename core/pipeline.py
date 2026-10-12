@@ -604,6 +604,12 @@ class ReconciliationEngine:
     def __init__(self, state_ref: Optional[CanonicalState] = None) -> None:
         self._state = state_ref or state
         self._mismatches: List[Dict] = []
+        # Process-lifetime counters for the read-only reconciliation surface.
+        # They record what actually happened -- never a synthesised "healthy"
+        # verdict when no loop has ever reconciled.
+        self._checks = 0
+        self._last_ok: Optional[bool] = None
+        self._last_at: Optional[float] = None
 
     def verify(self, remote_positions: List[Dict],
                baseline: Optional[Dict[str, Dict]] = None) -> bool:
@@ -644,7 +650,29 @@ class ReconciliationEngine:
             mismatches += 1
 
         log.info(f"Reconciliation: {'OK' if mismatches == 0 else f'{mismatches} mismatch(es)'}")
-        return mismatches == 0
+        self._checks += 1
+        self._last_ok = mismatches == 0
+        self._last_at = time.time()
+        return self._last_ok
+
+    def summary(self, recent: int = 50) -> Dict[str, Any]:
+        """Honest read-only view of the reconciliation ledger.
+
+        Reports only what :meth:`verify` actually recorded. ``attempted`` is
+        the number of verify passes and ``last_ok`` is null until one has run,
+        so an empty mismatch list with ``attempted == 0`` reads as "no
+        reconciliation has happened" rather than "the account is clean".
+        """
+        rows = self._mismatches[-max(1, recent):]
+        return {
+            "attempted": self._checks,
+            "last_ok": self._last_ok,
+            "last_at": self._last_at,
+            "mismatch_count": len(self._mismatches),
+            "mismatches": rows,
+            "read_only": True,
+            "is_authorisation": False,
+        }
 
     def _record(self, mismatch: Dict) -> None:
         self._mismatches.append(mismatch)

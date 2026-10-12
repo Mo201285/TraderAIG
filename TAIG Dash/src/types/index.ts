@@ -345,6 +345,27 @@ export interface ExecutionTruthView {
   learning: ExecutionLearningView | null;
 }
 
+export interface ReconciliationMismatchView {
+  type: string;
+  position_id: string;
+  symbol?: string;
+  local?: { vol?: number; ep?: number };
+  remote?: { vol?: number; ep?: number };
+}
+
+export interface ReconciliationView {
+  attempted: number;
+  last_ok: boolean | null;
+  last_at: number | null;
+  mismatch_count: number;
+  mismatches: ReconciliationMismatchView[];
+  read_only: boolean;
+  is_authorisation: boolean;
+  source: string;
+  checked: string;
+  note: string;
+}
+
 export interface Thesis {
   id: string;
   symbol: string;

@@ -16,6 +16,7 @@ import type {
   DspyStatusView,
   EvidenceRow,
   ExecutionTruthView,
+  ReconciliationView,
   ExerciseStatus,
   HealthView,
   IntakeEntry,
@@ -391,6 +392,21 @@ export const api = {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const raw = (await res.json()) as Record<string, any>;
       return { ok: true, data: adaptExecutionTruth(raw), source: "live" };
+    } catch (e) {
+      return { ok: false, data: empty, source: "mock", error: String(e) };
+    }
+  },
+  async getReconciliation(): Promise<Envelope<ReconciliationView>> {
+    const empty: ReconciliationView = {
+      attempted: 0, last_ok: null, last_at: null, mismatch_count: 0,
+      mismatches: [], read_only: true, is_authorisation: false,
+      source: "mock", checked: "", note: "",
+    };
+    if (!health.live) return { ok: false, data: empty, source: "mock" };
+    try {
+      const res = await authorizedFetch("/execution/reconciliation");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as ReconciliationView, source: "live" };
     } catch (e) {
       return { ok: false, data: empty, source: "mock", error: String(e) };
     }

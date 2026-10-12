@@ -226,14 +226,38 @@ def http_json(url: str, timeout: float = 2.5) -> Tuple[bool, Any]:
         return False, str(exc)
 
 
-def service_headers() -> Dict[str, str]:
-    """Auth header for a non-interactive console caller, when one is configured.
+def _session_token() -> str:
+    """A human session token for the console, when one is configured.
 
-    The console is a machine caller: it has no password prompt, so it cannot
-    hold a session. With `TRADERAIG_AUTH=1` a mutating command would otherwise
-    401. Sending nothing (and letting the API explain why) is better than
-    sending a token that might be wrong.
+    Preferred over the service token because the service token is now scoped to
+    the machine rails: it drives the engine/venue lifecycle, but a human command
+    (`user create`, `pay charge`, `strategy propose`) that mutates state needs a
+    real session. The token is issued by `tradraig login` and exported as
+    `TRADERAIG_SESSION_TOKEN` (or stored in the vault slot `auth.session_token`).
     """
+    token = os.environ.get("TRADERAIG_SESSION_TOKEN", "").strip()
+    if not token:
+        try:
+            from core.secrets_vault import vault
+            token = (vault.read("auth.session_token") or "").strip()
+        except Exception:
+            token = ""
+    return token
+
+
+def service_headers() -> Dict[str, str]:
+    """Auth header for the console: a session if we have one, else the machine token.
+
+    The console is a privileged operator tool. With `TRADERAIG_AUTH=1` a session
+    authenticates the operator on every route, while the service token
+    authenticates only the machine rails (it is no longer a universal pass — a
+    leaked machine credential must not mint entitlements or move money). Sending
+    nothing (and letting the API explain why) is better than sending a token
+    that might be wrong.
+    """
+    session = _session_token()
+    if session:
+        return {"Authorization": f"Bearer {session}"}
     token = os.environ.get("AUTH_SERVICE_TOKEN", "").strip()
     if not token:
         try:
@@ -595,6 +619,35 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(render_health_json(snap))
     else:
         print(render_status(snap, args.lang))
+    return 0
+
+
+def cmd_login(args: argparse.Namespace) -> int:
+    """Open a session for the console — the human credential (28.19).
+
+    With enforcement on, a human command (`user create`, `pay charge`, `strategy
+    propose`) needs a session: the service token is now scoped to the machine
+    rails and will not satisfy a human mutation. The token is printed for the
+    operator to export; the password is never stored or echoed.
+    """
+    import getpass
+    base = f"http://127.0.0.1:{API_PORT}"
+    email = (args.email or os.environ.get("IDENTITY_PRIMARY_EMAIL", "")).strip()
+    if not email:
+        print(f"{_ANSI['bad']}login requires --email (or IDENTITY_PRIMARY_EMAIL)"
+              f"{_ANSI['off']}")
+        return 1
+    password = args.password or getpass.getpass("password: ")
+    rc, data = http_post_json(f"{base}/auth/login",
+                              {"email": email, "password": password})
+    if rc != 200 or not isinstance(data, dict) or not data.get("token"):
+        print(f"{_ANSI['bad']}login failed ({rc}){_ANSI['off']}")
+        return 1
+    token = data["token"]
+    print(f"{_ANSI['ok']}session opened{_ANSI['off']} for {data.get('user_id')}")
+    print(token)
+    print(f"{_ANSI['dim']}export TRADERAIG_SESSION_TOKEN={token}"
+          f"{_ANSI['off']}")
     return 0
 
 
@@ -1768,6 +1821,11 @@ def _parser() -> argparse.ArgumentParser:
     s = sub.add_parser("status", help="layer health screen")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_status)
+
+    lg = sub.add_parser("login", help="open a session for the console (28.19)")
+    lg.add_argument("--email", default="")
+    lg.add_argument("--password", default="")
+    lg.set_defaults(fn=cmd_login)
 
     d = sub.add_parser("doctor", help="self-diagnosis + fixes")
     d.add_argument("--json", action="store_true")

@@ -85,6 +85,31 @@ OPEN_PATHS = frozenset({
 # given — an earlier version excluded the entire `/auth/` prefix for convenience
 # and logout then had no way to know which session to end.
 
+# The machine rails the 24/7 supervisor is allowed to drive with the service
+# token. The service token is a MACHINE credential for keeping the engine and the
+# venue connections alive — `scripts/ensure_backend.py` POSTs exactly these after
+# a reboot — and it is deliberately NOT a universal pass for every mutating
+# route. A human action (the console, a dashboard click) uses a session.
+#
+# This closes a real hole rather than a theoretical one: with an unbounded
+# service token, anyone holding it could `POST /users`, `POST /payments/charge`
+# or activate an institutional subscription — the row-730 escalation reached
+# through a different credential. With enforcement OFF (the default on the 24/7
+# host) this scope has no effect, because nothing is gated; with it ON, a service
+# token satisfies the session requirement ONLY on these rails, and every other
+# mutation needs a real session.
+SERVICE_TOKEN_PATHS = frozenset({
+    "/mt5/connect",
+    "/mt5/sync",
+    "/mt5/watcher",
+    "/mt5/engine/start",
+    "/mt5/engine/stop",
+    "/paper/engine/start",
+    "/paper/engine/stop",
+    "/cex/engine/start",
+    "/cex/engine/stop",
+})
+
 
 def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
@@ -436,6 +461,21 @@ class AuthService:
             return False
         return method.upper() not in ("GET", "HEAD", "OPTIONS")
 
+    @staticmethod
+    def service_token_allowed(method: str, path: str) -> bool:
+        """Is the service token sufficient for this mutating request?
+
+        Only the machine rails. Every other mutating route needs a real session,
+        so a leaked machine credential cannot mint entitlements, create users or
+        move money (see the row-730 escalation, reached here by a credential
+        instead of a path parameter). Reads are never gated, so a GET is only
+        meaningful to this function when it is state-changing, which it is not —
+        hence the explicit non-GET guard.
+        """
+        clean = path.split("?")[0].rstrip("/") or "/"
+        return (method.upper() not in ("GET", "HEAD", "OPTIONS")
+                and clean in SERVICE_TOKEN_PATHS)
+
     def auth_policy(self) -> Dict:
         return {
             "enforcement_enabled": self.enforcement_enabled(),
@@ -444,6 +484,8 @@ class AuthService:
             "open_paths": sorted(OPEN_PATHS),
             "reads_gated": False,
             "service_token_configured": self.service_token_configured(),
+            "service_token_scoped": True,
+            "service_token_paths": sorted(SERVICE_TOKEN_PATHS),
             "token_ttl_seconds": TOKEN_TTL_SECONDS,
             "signing_secret_persistent": self._secret_persistent
             if self._secret is not None else vault_will_persist(),

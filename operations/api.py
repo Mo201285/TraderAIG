@@ -179,11 +179,12 @@ async def _enforce_session(request: Request, call_next):
     `/system/health.auth`, because a login screen on a deployment that does not
     enforce anything is the fabricated door this project already removed once.
     When it is on, the policy is `auth.requires_session`: every non-GET request
-    needs a session EXCEPT the named open paths, and a machine caller (the 24/7
-    supervisor, the console, the live smoke) may present `X-Service-Token`
-    instead — those callers POST to the API to keep the rails alive, so gating
-    them without a service token would have the watchdog locked out of the
-    system it is meant to supervise.
+    needs a session EXCEPT the named open paths. A machine caller (the 24/7
+    supervisor, the live smoke) may present `X-Service-Token` instead, but ONLY
+    on the machine rails — `auth.service_token_allowed` pins those paths, so a
+    leaked machine credential cannot reach a human route. The console is a human
+    tool and authenticates with a session (`tradraig login`), not the machine
+    token.
 
     Reads stay open by design, and `/system/health` says so in the same
     response that reports enforcement being on. Gating reads would not make this
@@ -295,9 +296,16 @@ def _reject_without_session(request: Request):
     """
     supplied = _presented_token(request)
     try:
-        if supplied and auth.check_service_token(supplied):
+        if (supplied and auth.check_service_token(supplied)
+                and auth.service_token_allowed(request.method,
+                                               request.url.path)):
             request.state.auth_kind = "service"
         else:
+            # A valid service token OUTSIDE its scope is not a session: it is
+            # refused here (401) exactly like no credential, so the machine
+            # credential cannot reach human routes. `_identify_caller` still
+            # recognises it for `/auth/session` and the `/auth/password`
+            # recovery path, which are open and never reach this branch.
             request.state.session = _verify_presented_session(supplied)
             request.state.auth_kind = "session"
     except AuthError as exc:

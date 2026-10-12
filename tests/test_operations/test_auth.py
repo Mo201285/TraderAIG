@@ -860,3 +860,125 @@ def test_the_session_endpoint_never_invents_an_identity(client, monkeypatch):
     assert body["authenticated"] is False
     assert "user_id" not in body
     assert "acts with the server-selected principal" in body["note"]
+
+
+# ---------------------------------------------------------------------------
+# service token scope (the machine rails are NOT a universal pass)
+# ---------------------------------------------------------------------------
+
+def test_service_token_paths_is_pinned(client):
+    """The allowlist is a control, not a suggestion. Pinning it exactly means a
+    future change to the blast radius of the machine credential has to be seen
+    here first."""
+    from governance.auth import SERVICE_TOKEN_PATHS
+
+    assert SERVICE_TOKEN_PATHS == frozenset({
+        "/mt5/connect",
+        "/mt5/sync",
+        "/mt5/watcher",
+        "/mt5/engine/start",
+        "/mt5/engine/stop",
+        "/paper/engine/start",
+        "/paper/engine/stop",
+        "/cex/engine/start",
+        "/cex/engine/stop",
+    })
+
+
+def test_the_supervisor_rails_are_all_in_scope(client):
+    """The 24/7 watchdog's own POST targets must be on the allowlist, or the
+    scope we added to harden human routes would strand the machine that keeps
+    the platform alive."""
+    from governance.auth import auth as auth_svc, SERVICE_TOKEN_PATHS
+
+    for path in ("/mt5/connect", "/mt5/watcher",
+                 "/paper/engine/start", "/cex/engine/start"):
+        assert path in SERVICE_TOKEN_PATHS, path
+        assert auth_svc.service_token_allowed("POST", path) is True
+
+
+def test_service_token_allowed_behaviour(client):
+    from governance.auth import auth as auth_svc
+
+    assert auth_svc.service_token_allowed("POST", "/paper/engine/start") is True
+    assert auth_svc.service_token_allowed("POST", "/paper/engine/start/") is True
+    assert auth_svc.service_token_allowed("POST", "/users") is False
+    assert auth_svc.service_token_allowed("POST", "/payments/charge") is False
+    assert auth_svc.service_token_allowed("POST", "/mt5/sync?x=1") is True
+    # reads are never gated, so the question does not arise for them
+    assert auth_svc.service_token_allowed("GET", "/paper/engine/start") is False
+
+
+def test_a_valid_service_token_is_refused_on_a_human_route(client, monkeypatch):
+    """The hardening step: the machine credential used to be an unbounded pass,
+    so anyone holding it could `POST /users` or `/payments/charge`. Now those
+    routes demand a session even when the token itself is genuine."""
+    monkeypatch.setenv("TRADERAIG_AUTH", "1")
+    monkeypatch.setenv("AUTH_SERVICE_TOKEN", "machine-token-value")
+
+    res = client.post("/users", json={"email": f"peek{time.time_ns()}@x.co"},
+                      headers={"X-Service-Token": "machine-token-value"})
+    assert res.status_code == 401
+
+    res = client.post("/payments/charge", json={"amount": 1},
+                      headers={"X-Service-Token": "machine-token-value"})
+    assert res.status_code == 401
+
+
+def test_a_human_session_still_reaches_the_human_route(client, monkeypatch):
+    """The console authenticates as a human now, and the session travels to the
+    routes the machine token no longer may."""
+    _uid, email, password = _operator(client, monkeypatch)
+    monkeypatch.setenv("TRADERAIG_AUTH", "1")
+    token = client.post("/auth/login", json={"email": email,
+                                             "password": password}).json()["token"]
+
+    res = client.post("/users", json={"email": f"human{time.time_ns()}@x.co"},
+                      headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 201
+
+
+def test_with_enforcement_off_the_scope_changes_nothing(client, monkeypatch):
+    """The 24/7 host runs with the door unlocked. Scoping must not quietly
+    re-lock a route the supervisor has never needed a session for."""
+    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("AUTH_SERVICE_TOKEN", "machine-token-value")
+
+    res = client.post("/users", json={"email": f"open{time.time_ns()}@x.co"},
+                      headers={"X-Service-Token": "machine-token-value"})
+    assert res.status_code == 201
+
+
+def test_health_reports_the_service_token_scope(client, monkeypatch):
+    monkeypatch.setenv("TRADERAIG_AUTH", "1")
+    auth_block = client.get("/system/health").json()["auth"]
+
+    assert auth_block["service_token_scoped"] is True
+    assert "/paper/engine/start" in auth_block["service_token_paths"]
+    assert "/users" not in auth_block["service_token_paths"]
+
+
+def test_the_console_prefers_a_session_over_the_machine_token():
+    """The fallback ordering is the point: a human command must send the human
+    credential, not quietly fall back to the machine token that human routes now
+    refuse."""
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "_auth_console_session", root / "tools" / "tradraig.py")
+    console = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(console)
+
+    os.environ["AUTH_SERVICE_TOKEN"] = "machine-token-value"
+    os.environ["TRADERAIG_SESSION_TOKEN"] = "session-abc"
+    try:
+        assert console.service_headers() == {"Authorization": "Bearer session-abc"}
+        os.environ.pop("TRADERAIG_SESSION_TOKEN", None)
+        # no session → the machine token is not sent to humans either; it is
+        # reserved for the rails, so with neither configured we send nothing
+        assert console.service_headers() == {"X-Service-Token": "machine-token-value"}
+    finally:
+        os.environ.pop("TRADERAIG_SESSION_TOKEN", None)
+        os.environ.pop("AUTH_SERVICE_TOKEN", None)

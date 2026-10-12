@@ -112,6 +112,39 @@ const UI: Record<string, Record<string, string>> = {
     reconTypePriceVolume: "Volume / entry divergence",
     reconTypeOther: "Divergence",
     reconView: "View ledger",
+    venuesTab: "Venues",
+    venueScoreTitle: "Venue scorecard",
+    venueHint:
+      "Advisory scorecard over the canonical orders' venue attribution — fill quality, slippage and reliability per venue. Evidence, not a switch: the venue gate stays the operator's call.",
+    venuesRecommendedLabel: "Recommended",
+    venuesMinSamplesLabel: "Min samples",
+    venuesMethodLabel: "Method",
+    venuesWeightsLabel: "Weights",
+    venuesUnattributedLabel: "Unattributed orders",
+    venuesAccountBrokerLabel: "Account broker",
+    venueOrdersLabel: "Orders",
+    venueTerminalLabel: "Terminal",
+    venueFilledLabel: "Filled",
+    venuePartialLabel: "Partial",
+    venueRejectedLabel: "Rejected",
+    venueCancelledLabel: "Cancelled",
+    venueRejectRateLabel: "Reject rate",
+    venueAvgCommissionLabel: "Avg commission",
+    venueSamplesLabel: "Samples",
+    venueBasisLabel: "Basis",
+    venueComponentsLabel: "Components",
+    venueTierStrong: "Strong",
+    venueTierFair: "Fair",
+    venueTierWeak: "Weak",
+    venueTierUnproven: "Unproven",
+    venueReadOnly: "ADVISORY",
+    recommendedNone: "None yet — no venue has enough terminal orders.",
+    loadingVenues: "Reading the venue scorecard…",
+    emptyVenuesTitle: "No venues configured",
+    emptyVenuesHint:
+      "The scorecard always surfaces the MT5 and CEX rails; none are reported yet.",
+    errorVenuesTitle: "Venue scorecard unreachable",
+    errorVenuesHint: "The surface reads /execution/venue-score and it could not be reached.",
   },
   ar: {
     pipelineLabel: "مسار التنفيذ",
@@ -220,6 +253,39 @@ const UI: Record<string, Record<string, string>> = {
     reconTypePriceVolume: "انحراف الحجم / الدخول",
     reconTypeOther: "انحراف",
     reconView: "عرض السجل",
+    venuesTab: "الجهات",
+    venueScoreTitle: "بطاقة تقييم الجهات",
+    venueHint:
+      "بطاقة استشارية على نسبة الأوامر الأساسية إلى الجهات — جودة التنفيذ والانزلاق والموثوقية لكل جهة. إنها دليل لا مفتاح تبديل: بوابة الجهة تبقى قرار المشغّل.",
+    venuesRecommendedLabel: "الموصى بها",
+    venuesMinSamplesLabel: "أدنى عدد عيّنات",
+    venuesMethodLabel: "الطريقة",
+    venuesWeightsLabel: "الأوزان",
+    venuesUnattributedLabel: "أوامر بلا جهة",
+    venuesAccountBrokerLabel: "وسيط الحساب",
+    venueOrdersLabel: "الأوامر",
+    venueTerminalLabel: "منتهية",
+    venueFilledLabel: "منفَّذة",
+    venuePartialLabel: "جزئية",
+    venueRejectedLabel: "مرفوضة",
+    venueCancelledLabel: "ملغاة",
+    venueRejectRateLabel: "نسبة الرفض",
+    venueAvgCommissionLabel: "متوسط العمولة",
+    venueSamplesLabel: "العيّنات",
+    venueBasisLabel: "الأساس",
+    venueComponentsLabel: "المكوّنات",
+    venueTierStrong: "قوية",
+    venueTierFair: "مقبولة",
+    venueTierWeak: "ضعيفة",
+    venueTierUnproven: "غير مُثبتة",
+    venueReadOnly: "استشاري",
+    recommendedNone: "لا شيء بعد — لا تملك أي جهة أوامر منتهية كافية.",
+    loadingVenues: "جارٍ قراءة بطاقة الجهات…",
+    emptyVenuesTitle: "لا جهات مُهيّأة",
+    emptyVenuesHint:
+      "البطاقة تعرض دائماً مساري MT5 وCEX؛ لا شيء مُبلَّغ بعد.",
+    errorVenuesTitle: "بطاقة الجهات غير متاحة",
+    errorVenuesHint: "السطح يقرأ /execution/venue-score ويتعذر الوصول إليه.",
   },
 };
 
@@ -241,6 +307,7 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
   const t = UI[lang];
   const { data, source } = useData(() => api.getExecutionTruth(), version);
   const recon = useData(() => api.getReconciliation(), version);
+  const venueScore = useData(() => api.getVenueScore(), version);
   const live = source === "live";
   const lc = live ? data?.lifecycle : undefined;
   const mt = live ? data?.metrics : undefined;
@@ -265,6 +332,7 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
         { id: "orders", label: t.ordersTab },
         { id: "positions", label: t.positionsTab },
         { id: "learning", label: t.learningTab },
+        { id: "venues", label: t.venuesTab },
         { id: "reconciliation", label: t.reconciliationTab },
       ]
     : [
@@ -272,6 +340,7 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
         { id: "orders", label: t.ordersTab },
         { id: "positions", label: t.positionsTab },
         { id: "learning", label: t.learningTab },
+        { id: "venues", label: t.venuesTab },
         { id: "reconciliation", label: t.reconciliationTab },
       ];
 
@@ -675,6 +744,119 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
                     </Card>
                   ))
                 )}
+              </>
+            )}
+          </div>
+        );
+      })()}
+
+      {tab === "venues" && (() => {
+        const vs = venueScore.data;
+        const vSrc = venueScore.source;
+        const vLive = vSrc === "live";
+        const rows = vLive ? (vs?.venues ?? []) : [];
+        const tierLabel = (ty: string): string =>
+          ty === "strong" ? t.venueTierStrong
+          : ty === "fair" ? t.venueTierFair
+          : ty === "weak" ? t.venueTierWeak
+          : t.venueTierUnproven;
+        const tierColor = (ty: string): string =>
+          ty === "strong" ? "#22c55e"
+          : ty === "fair" ? "#f59e0b"
+          : ty === "weak" ? "#ef4444"
+          : "#6b7280";
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <span style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                {vLive ? `/execution/venue-score · ${t.venueReadOnly}` : vSrc}
+              </span>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <StateChip label={vLive ? (rtl ? "مباشر" : "LIVE") : vSrc === "loading" ? (rtl ? "جارٍ" : "LOADING") : (rtl ? "متوقف" : "DOWN")} color={vLive ? "#22c55e" : "#f59e0b"} />
+                <Btn variant="ghost" onClick={() => setVersion((v) => v + 1)}>↻ {t.updatedLabel}</Btn>
+              </div>
+            </div>
+            <div style={{ fontSize: "0.72rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+              {t.venueHint}
+            </div>
+            {vSrc === "loading" ? (
+              <LoadingState label={t.loadingVenues} lang={lang} />
+            ) : !vLive ? (
+              <ErrorState title={t.errorVenuesTitle} hint={t.errorVenuesHint} lang={lang} />
+            ) : rows.length === 0 ? (
+              <Card style={{ padding: "1rem" }}>
+                <EmptyState title={t.emptyVenuesTitle} hint={t.emptyVenuesHint} lang={lang} />
+              </Card>
+            ) : (
+              <>
+                <Card>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "0.6rem" }}>
+                    {[
+                      { label: t.venuesRecommendedLabel, value: vs?.recommended ? String(vs.recommended) : t.recommendedNone, color: vs?.recommended ? "#22c55e" : "#6b7280" },
+                      { label: t.venuesMinSamplesLabel, value: String(vs?.min_samples ?? 0), color: "#3b82f6" },
+                      { label: t.venuesMethodLabel, value: field(vs?.method), color: "#6b7280" },
+                      { label: t.venuesUnattributedLabel, value: String(vs?.unattributed_orders ?? 0), color: (vs?.unattributed_orders ?? 0) > 0 ? "#f59e0b" : "#6b7280" },
+                      { label: t.venuesAccountBrokerLabel, value: field(vs?.account_broker), color: "#6b7280" },
+                    ].map((m) => (
+                      <div key={m.label} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "0.7rem", display: "flex", flexDirection: "column", gap: 6 }}>
+                        <div style={{ fontSize: "0.6rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{m.label}</div>
+                        <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.92rem", fontWeight: 600, color: m.color, overflowWrap: "anywhere" }}>{m.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {vs && Object.keys(vs.weights).length > 0 && (
+                    <div style={{ marginTop: 10, fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                      {t.venuesWeightsLabel}: {Object.entries(vs.weights).map(([k, w]) => `${k}=${w}`).join("  ·  ")}
+                    </div>
+                  )}
+                  {vs?.recommendation_basis && (
+                    <div style={{ marginTop: 6, fontSize: "0.68rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+                      {vs.recommendation_basis}
+                    </div>
+                  )}
+                </Card>
+
+                {rows.map((v) => (
+                  <Card key={v.venue}>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginBottom: 8 }}>
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.82rem", fontWeight: 600 }}>{field(v.venue)}</span>
+                      <StateChip label={tierLabel(v.tier)} color={tierColor(v.tier)} />
+                      {vs?.recommended === v.venue ? <StateChip label={t.venuesRecommendedLabel} color="#22c55e" /> : null}
+                      <span style={{ marginInlineStart: "auto", fontFamily: "var(--font-mono)", fontSize: "0.8rem", fontWeight: 600, color: tierColor(v.tier) }}>
+                        {v.scored ? num2(v.score) : "—"}
+                      </span>
+                      <span style={{ fontSize: "0.65rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                        {t.venueSamplesLabel}: {v.samples}
+                      </span>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 6, fontSize: "0.7rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                      <span>{t.venueOrdersLabel}: {v.metrics.orders}</span>
+                      <span>{t.venueTerminalLabel}: {v.metrics.terminal}</span>
+                      <span>{t.venueFilledLabel}: {v.metrics.filled}</span>
+                      <span>{t.venuePartialLabel}: {v.metrics.partial}</span>
+                      <span>{t.venueRejectedLabel}: {v.metrics.rejected}</span>
+                      <span>{t.venueCancelledLabel}: {v.metrics.cancelled}</span>
+                      <span>{t.fillRatioLabel}: {fmtPct(v.metrics.fill_ratio)}</span>
+                      <span>{t.venueRejectRateLabel}: {fmtPct(v.metrics.reject_rate)}</span>
+                      <span>{t.totalVolumeLabel}: {fmtVolume(v.metrics.total_volume)}</span>
+                      <span>{t.avgSlippageLabel}: {v.metrics.avg_slippage == null ? "—" : num2(v.metrics.avg_slippage)}</span>
+                      <span>{t.venueAvgCommissionLabel}: {v.metrics.avg_commission == null ? "—" : num2(v.metrics.avg_commission)}</span>
+                    </div>
+                    {v.components && (
+                      <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 14, fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                        <span style={{ textTransform: "uppercase", letterSpacing: "0.05em" }}>{t.venueComponentsLabel}:</span>
+                        {Object.entries(v.components).map(([k, val]) => <span key={k}>{k}={num2(val)}</span>)}
+                      </div>
+                    )}
+                    <div style={{ marginTop: 6, fontSize: "0.68rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+                      {t.venueBasisLabel}: {v.basis}
+                    </div>
+                  </Card>
+                ))}
+
+                <div style={{ fontSize: "0.68rem", fontFamily: ff(lang), color: "var(--muted-foreground)", borderLeft: "3px solid #f59e0b", borderRight: "none", paddingInlineStart: 8 }}>
+                  {vs?.note}
+                </div>
               </>
             )}
           </div>

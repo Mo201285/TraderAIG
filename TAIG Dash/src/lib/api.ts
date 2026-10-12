@@ -17,6 +17,7 @@ import type {
   EvidenceRow,
   ExecutionTruthView,
   ReconciliationView,
+  VenueScorecardView,
   ExerciseStatus,
   GrowthView,
   HealthView,
@@ -440,6 +441,23 @@ export const api = {
       const res = await authorizedFetch("/execution/reconciliation");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return { ok: true, data: (await res.json()) as ReconciliationView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: empty, source: "mock", error: String(e) };
+    }
+  },
+  async getVenueScore(): Promise<Envelope<VenueScorecardView>> {
+    const empty: VenueScorecardView = {
+      generated_at: 0, read_only: true, is_authorisation: false,
+      trade_authority: "risk/governor.py", method: "", min_samples: 0,
+      weights: {}, venues: [], recommended: null, recommendation_basis: "",
+      configured: { mt5_rail: true, cex_venue: "" }, account_broker: "",
+      unattributed_orders: 0, note: "",
+    };
+    if (!health.live) return { ok: false, data: empty, source: "mock" };
+    try {
+      const res = await authorizedFetch("/execution/venue-score");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as VenueScorecardView, source: "live" };
     } catch (e) {
       return { ok: false, data: empty, source: "mock", error: String(e) };
     }

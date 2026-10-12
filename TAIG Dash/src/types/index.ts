@@ -369,6 +369,49 @@ export interface ExecutionTruthView {
   learning: ExecutionLearningView | null;
 }
 
+export interface VenueScoreMetricsView {
+  venue: string;
+  orders: number;
+  filled: number;
+  partial: number;
+  rejected: number;
+  cancelled: number;
+  terminal: number;
+  fill_ratio: number;
+  reject_rate: number;
+  total_volume: number;
+  avg_slippage: number | null;
+  avg_commission: number | null;
+}
+
+export interface VenueScoreView {
+  venue: string;
+  scored: boolean;
+  score: number | null;
+  tier: string;
+  samples: number;
+  components: Record<string, number> | null;
+  metrics: VenueScoreMetricsView;
+  basis: string;
+}
+
+export interface VenueScorecardView {
+  generated_at: number;
+  read_only: boolean;
+  is_authorisation: boolean;
+  trade_authority: string;
+  method: string;
+  min_samples: number;
+  weights: Record<string, number>;
+  venues: VenueScoreView[];
+  recommended: string | null;
+  recommendation_basis: string;
+  configured: { mt5_rail: boolean; cex_venue: string };
+  account_broker: string;
+  unattributed_orders: number;
+  note: string;
+}
+
 export interface ReconciliationMismatchView {
   type: string;
   position_id: string;

@@ -24,6 +24,8 @@ const UI: Record<Language, Record<string, string>> = {
     change: "Change request",
     driftDetail: "strategy drift monitoring",
     reviewDetail: "promotion review queue",
+    recon: "reconciliation mismatch(es)",
+    reconDetail: "intent vs venue positions",
   },
   ar: {
     title: "التنبيهات",
@@ -37,6 +39,8 @@ const UI: Record<Language, Record<string, string>> = {
     change: "طلب تغيير",
     driftDetail: "مراقبة انحراف الاستراتيجيات",
     reviewDetail: "طابور مراجعة الترقيات",
+    recon: "انحراف مطابقة",
+    reconDetail: "القصد مقابل مراكز الجهة",
   },
 };
 
@@ -64,8 +68,9 @@ export default function NotificationCenter({
   const changes = useData(() => api.getChangeRequests("pending"), version);
   const drift = useData(() => api.getMonitoringDrift(), version);
   const review = useData(() => api.getMonitoringReview(), version);
+  const recon = useData(() => api.getReconciliation(), version);
 
-  const sources = [vetoes, changes, drift, review];
+  const sources = [vetoes, changes, drift, review, recon];
   const live = sources.some((s) => s.source === "live");
   const loading = sources.some((s) => s.source === "loading");
 
@@ -81,6 +86,15 @@ export default function NotificationCenter({
         detail: v.reason,
       });
     }
+  }
+  if (recon.source === "live" && recon.data && recon.data.mismatch_count > 0) {
+    alerts.push({
+      id: "recon",
+      page: "execution",
+      severity: "critical",
+      title: `${recon.data.mismatch_count} ${t.recon}`,
+      detail: t.reconDetail,
+    });
   }
   if (drift.source === "live" && drift.data && drift.data.alerts > 0) {
     alerts.push({
@@ -197,7 +211,7 @@ export default function NotificationCenter({
               </button>
             </div>
 
-            {vetoes.source === "loading" || changes.source === "loading" ? (
+            {loading ? (
               <p style={{ fontSize: "0.76rem", color: "var(--muted-foreground)", fontFamily: ff(lang), margin: 0 }}>{t.loading}</p>
             ) : sources.every((s) => s.source !== "live") ? (
               <p style={{ fontSize: "0.76rem", color: "#f59e0b", fontFamily: ff(lang), margin: 0 }}>{t.down}</p>

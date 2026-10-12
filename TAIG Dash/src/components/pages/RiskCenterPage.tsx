@@ -36,6 +36,34 @@ const UI: Record<string, Record<string, string>> = {
       "The risk read could not be reached; nothing is rendered in its place.",
     updatedLabel: "Read",
     sourceLabel: "SOURCE",
+    allocTab: "Capital Allocation",
+    allocTitle: "Capital Allocation Engine",
+    allocHint:
+      "Advisory risk-parity proposal over the existing aggregation, read from /portfolio/allocation-engine. It places no order and mutates no cap; when evidence is thin it reports unavailable rather than inventing a weight.",
+    allocMethod: "Method",
+    allocStatus: "Status",
+    allocCash: "Cash",
+    allocUniverse: "Universe",
+    allocWeights: "Target weights",
+    allocDetail: "Weight derivation",
+    allocStrategy: "Strategy",
+    allocVol: "σ",
+    allocBase: "base",
+    allocPenalty: "corr penalty",
+    allocCap: "cap",
+    allocWeight: "weight",
+    allocInsufficient: "Insufficient data",
+    allocReason: "Reason",
+    allocProposed: "proposed",
+    corrTitle: "Cross-strategy correlation",
+    corrHint:
+      "Pairwise Pearson correlation of realised PnL over the experience ledger, read from /portfolio/correlation. Pairs below the sample floor are named, not faked.",
+    corrTracked: "Tracked",
+    corrPairs: "Pairs",
+    corrNoPairs: "No pair has enough shared samples yet",
+    corrConcentrated: "concentrated",
+    corrDiversifying: "diversifying",
+    corrInsufficient: "insufficient",
     authority:
       "Read-only surface of the risk governor; every figure derives from a registered route and it is not a trade authority.",
   },
@@ -69,6 +97,34 @@ const UI: Record<string, Record<string, string>> = {
     errorHint: "تعذّر بلوغ قراءة المخاطر؛ ولا يُعرض شيء بدلًا منها.",
     updatedLabel: "قراءة",
     sourceLabel: "المصدر",
+    allocTab: "توزيع رأس المال",
+    allocTitle: "محرّك توزيع رأس المال",
+    allocHint:
+      "مقترح استشاري بترجيح التكافؤ المخاطر فوق التجميع القائم، مقروء من /portfolio/allocation-engine. لا ينفّذ أي أمر ولا يعدّل أي سقف؛ وعند ضعف الأدلة يُبلّغ «غير متاح» بدل اختلاق وزن.",
+    allocMethod: "الطريقة",
+    allocStatus: "الحالة",
+    allocCash: "نقد",
+    allocUniverse: "النطاق",
+    allocWeights: "الأوزان المستهدفة",
+    allocDetail: "اشتقاق الأوزان",
+    allocStrategy: "الاستراتيجية",
+    allocVol: "σ",
+    allocBase: "أساس",
+    allocPenalty: "عقوبة الارتباط",
+    allocCap: "السقف",
+    allocWeight: "الوزن",
+    allocInsufficient: "بيانات غير كافية",
+    allocReason: "السبب",
+    allocProposed: "مقترَح",
+    corrTitle: "الارتباط بين الاستراتيجيات",
+    corrHint:
+      "ارتباط بيرسون الزوجي للربح المحقّق على دفتر الخبرة، مقروء من /portfolio/correlation. الأزواج دون حدّ العيّنات تُسمّى ولا تُلفَّق.",
+    corrTracked: "المتتبَّعة",
+    corrPairs: "الأزواج",
+    corrNoPairs: "لا يوجد زوج بعيّنات مشتركة كافية بعد",
+    corrConcentrated: "مركَّز",
+    corrDiversifying: "مُوزِّع",
+    corrInsufficient: "غير كافٍ",
     authority:
       "سطح للقراءة فقط لحاكم المخاطر؛ كل رقم مشتق من مسار مسجَّل وليس سلطة تداول.",
   },
@@ -92,6 +148,8 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
   const portfolioLive = portfolioSource === "live";
   const { data: challenge, source: challengeSource } = useData(() => api.getChallengeStatus(), version);
   const challengeLive = challengeSource === "live";
+  const allocation = useData(() => api.getAllocationProposal(), version);
+  const correlation = useData(() => api.getCorrelation(), version);
   const gates = limitsLive ? (riskLimits?.gates ?? []) : [];
   const gateFailures = limitsLive ? (riskLimits?.window.failure_counts ?? {}) : {};
   const windowVetoes = limitsLive ? (riskLimits?.window.vetoes ?? 0) : 0;
@@ -112,15 +170,17 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
   const tabs = lang === "en"
     ? [
         { id: "overview", label: "Overview" },
-        { id: "constraints", label: "Active Constraints" },
-        { id: "vetoes", label: "Veto Log" },
-        { id: "explainer", label: "Why Blocked" },
+        { id: "constraints", label: "Constraints" },
+        { id: "allocation", label: t.allocTab },
+        { id: "vetoes", label: "Vetoes" },
+        { id: "explainer", label: "Explainer" },
       ]
     : [
         { id: "overview", label: "نظرة عامة" },
-        { id: "constraints", label: "القيود النشطة" },
-        { id: "vetoes", label: "سجل الرفض" },
-        { id: "explainer", label: "سبب الحظر" },
+        { id: "constraints", label: "القيود" },
+        { id: "allocation", label: t.allocTab },
+        { id: "vetoes", label: "الفيتو" },
+        { id: "explainer", label: "الشرح" },
       ];
 
   const liveExposures = (riskLive ? Object.entries(riskState?.exposure_by_symbol ?? {}) : [])
@@ -507,6 +567,179 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
         </div>
       )}
 
+      {tab === "allocation" && (() => {
+        const prop = allocation.data;
+        const corr = correlation.data;
+        const pLive = allocation.source === "live";
+        const cLive = correlation.source === "live";
+        const proposed = prop?.status === "proposed";
+        const cellHead: React.CSSProperties = {
+          padding: "6px 10px", fontWeight: 600, fontSize: "0.62rem",
+          textTransform: "uppercase", letterSpacing: "0.05em",
+          textAlign: rtl ? "right" : "left", whiteSpace: "nowrap",
+        };
+        const cellBody: React.CSSProperties = {
+          padding: "6px 10px", whiteSpace: "nowrap", fontSize: "0.72rem",
+        };
+        const pill = (label: string, value: string, color?: string) => (
+          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "0.5rem 0.7rem", minWidth: 92 }}>
+            <div style={{ fontSize: "0.58rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              {label}
+            </div>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.95rem", fontWeight: 600, color: color ?? "var(--foreground)", marginTop: 2 }}>
+              {value}
+            </div>
+          </div>
+        );
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            <Card>
+              <SectionLabel lang={lang}>{t.allocTitle}</SectionLabel>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 8 }}>
+                <span style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                  {pLive ? "/portfolio/allocation-engine" : readSource(allocation.source)}
+                </span>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <StateChip
+                    label={pLive ? (rtl ? "مباشر" : "LIVE") : allocation.source === "loading" ? (rtl ? "جارٍ" : "LOADING") : (rtl ? "متوقف" : "DOWN")}
+                    color={pLive ? "#22c55e" : "#f59e0b"}
+                  />
+                  <Btn variant="ghost" onClick={() => setVersion((v) => v + 1)}>↻ {t.updatedLabel}</Btn>
+                </div>
+              </div>
+              <div style={{ fontSize: "0.75rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginTop: 8, lineHeight: 1.5 }}>
+                {t.allocHint}
+              </div>
+
+              {allocation.source === "loading" ? (
+                <div style={{ marginTop: 12 }}><LoadingState lang={lang} /></div>
+              ) : !pLive || !prop ? (
+                <div style={{ marginTop: 12 }}>
+                  <ErrorState lang={lang} title={rtl ? "تعذّر الوصول إلى محرّك التوزيع" : "Allocation engine unreachable"} hint={readSource(allocation.source)} />
+                </div>
+              ) : (
+                <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {pill(t.allocMethod, prop.method)}
+                    {pill(t.allocStatus, proposed ? t.allocProposed : prop.status, proposed ? "#22c55e" : "#f59e0b")}
+                    {pill(t.allocUniverse, String(prop.universe.length))}
+                    {pill(t.allocCash, pct0(prop.cash))}
+                  </div>
+                  <div style={{ fontSize: "0.75rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+                    <span style={{ fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.05em", fontSize: "0.6rem" }}>{t.allocReason}: </span>
+                    {prop.reason}
+                  </div>
+                  {prop.detail.length > 0 ? (
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--font-mono)" }}>
+                        <thead>
+                          <tr style={{ color: "var(--muted-foreground)", borderBottom: "1px solid var(--border)" }}>
+                            <th style={cellHead}>{t.allocStrategy}</th>
+                            <th style={cellHead}>{t.allocVol}</th>
+                            <th style={cellHead}>{t.allocBase}</th>
+                            <th style={cellHead}>{t.allocPenalty}</th>
+                            <th style={cellHead}>{t.allocCap}</th>
+                            <th style={cellHead}>{t.allocWeight}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {prop.detail.map((row) => (
+                            <tr key={row.strategy_id} style={{ borderBottom: "1px solid var(--border)" }}>
+                              <td style={cellBody}>{row.strategy_id}</td>
+                              <td style={cellBody}>{row.volatility}</td>
+                              <td style={cellBody}>{row.base_weight == null ? "—" : String(row.base_weight)}</td>
+                              <td style={cellBody}>{String(row.correlation_penalty)}</td>
+                              <td style={cellBody}>{String(row.cap)}</td>
+                              <td style={{ ...cellBody, color: row.weight > 0 ? "#22c55e" : "var(--muted-foreground)", fontWeight: 600 }}>{String(row.weight)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: "0.72rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+                      {t.allocWeights}: —
+                    </div>
+                  )}
+                  {prop.insufficient_data.length > 0 && (
+                    <div style={{ fontSize: "0.72rem", fontFamily: ff(lang), color: "#f59e0b" }}>
+                      {t.allocInsufficient}: {prop.insufficient_data.join(", ")}
+                    </div>
+                  )}
+                </div>
+              )}
+            </Card>
+
+            <Card>
+              <SectionLabel lang={lang}>{t.corrTitle}</SectionLabel>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 8 }}>
+                <span style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                  {cLive ? "/portfolio/correlation" : readSource(correlation.source)}
+                </span>
+                <StateChip
+                  label={cLive ? (rtl ? "مباشر" : "LIVE") : correlation.source === "loading" ? (rtl ? "جارٍ" : "LOADING") : (rtl ? "متوقف" : "DOWN")}
+                  color={cLive ? "#22c55e" : "#f59e0b"}
+                />
+              </div>
+              <div style={{ fontSize: "0.75rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginTop: 8, lineHeight: 1.5 }}>
+                {t.corrHint}
+              </div>
+              {correlation.source === "loading" ? (
+                <div style={{ marginTop: 12 }}><LoadingState lang={lang} /></div>
+              ) : !cLive || !corr ? (
+                <div style={{ marginTop: 12 }}>
+                  <ErrorState lang={lang} title={rtl ? "تعذّر الوصول إلى مصفوفة الارتباط" : "Correlation unreachable"} hint={readSource(correlation.source)} />
+                </div>
+              ) : (
+                <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {pill(t.corrTracked, String(corr.strategies_tracked))}
+                    {pill(t.corrPairs, String(corr.pairs.length))}
+                  </div>
+                  {corr.pairs.length > 0 ? (
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--font-mono)" }}>
+                        <thead>
+                          <tr style={{ color: "var(--muted-foreground)", borderBottom: "1px solid var(--border)" }}>
+                            <th style={cellHead}>a</th>
+                            <th style={cellHead}>b</th>
+                            <th style={cellHead}>r</th>
+                            <th style={cellHead}>{rtl ? "المعنى" : "meaning"}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {corr.pairs.map((p) => (
+                            <tr key={`${p.a}~${p.b}`} style={{ borderBottom: "1px solid var(--border)" }}>
+                              <td style={cellBody}>{p.a}</td>
+                              <td style={cellBody}>{p.b}</td>
+                              <td style={cellBody}>{String(p.correlation)}</td>
+                              <td style={cellBody}>
+                                {p.concentrated && <span style={{ color: "#ef4444" }}>{t.corrConcentrated}</span>}
+                                {!p.concentrated && p.diversifying && <span style={{ color: "#22c55e" }}>{t.corrDiversifying}</span>}
+                                {!p.concentrated && !p.diversifying && <span style={{ color: "var(--muted-foreground)" }}>—</span>}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: "0.72rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+                      {t.corrNoPairs}
+                    </div>
+                  )}
+                  {corr.insufficient_data.length > 0 && (
+                    <div style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: "#f59e0b" }}>
+                      {t.corrInsufficient}: {corr.insufficient_data.join(", ")}
+                    </div>
+                  )}
+                </div>
+              )}
+            </Card>
+          </div>
+        );
+      })()}
+
       {tab === "vetoes" && (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.65rem" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
@@ -663,7 +896,7 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
       )}
 
       <p style={{ margin: "0.75rem 0 0", fontFamily: "var(--font-mono)", fontSize: "0.66rem", color: "var(--muted-foreground)", textAlign: rtl ? "right" : "left", opacity: 0.6 }}>
-        {t.sourceLabel}: {riskSource}/{portfolioSource}/{challengeSource} · {t.authority}
+        {t.sourceLabel}: {riskSource}/{portfolioSource}/{challengeSource}/{allocation.source}/{correlation.source} · {t.authority}
       </p>
     </div>
   );

@@ -15,6 +15,8 @@ import type {
   DspyModelsView,
   DspyRegistryView,
   DspyStatusView,
+  AllocationProposalView,
+  CorrelationView,
   DeveloperPolicyView,
   DeveloperTokensView,
   EvidenceRow,
@@ -396,6 +398,26 @@ export const api = {
       return { ok: true, data: adaptChallengeStatus(raw), source: "live" };
     } catch (e) {
       return { ok: false, data: empty, source: "mock", error: String(e) };
+    }
+  },
+  async getAllocationProposal(method = "risk_parity"): Promise<Envelope<AllocationProposalView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch(`/portfolio/allocation-engine?method=${encodeURIComponent(method)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as AllocationProposalView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getCorrelation(): Promise<Envelope<CorrelationView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/portfolio/correlation");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as CorrelationView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
     }
   },
   async getExecutionTruth(): Promise<Envelope<ExecutionTruthView>> {

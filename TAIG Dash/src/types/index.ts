@@ -1184,6 +1184,47 @@ export interface DspyRegistryView {
   versions: DspyProgramVersion[];
 }
 
+// ─── Portfolio allocation engine + correlation (S4, read-only) ───────────────
+
+export interface AllocationDetailRow {
+  strategy_id: string;
+  volatility: number;
+  base_weight: number | null;
+  correlation_penalty: number;
+  cap: number;
+  weight: number;
+}
+
+export interface AllocationProposalView {
+  method: string;
+  status: string;
+  universe: string[];
+  weights: Record<string, number>;
+  cash: number;
+  detail: AllocationDetailRow[];
+  insufficient_data: string[];
+  reason: string;
+  generated_at: number;
+}
+
+export interface CorrelationPairView {
+  a: string;
+  b: string;
+  correlation: number;
+  samples: number;
+  net_pnl_a: number;
+  net_pnl_b: number;
+  diversifying: boolean;
+  concentrated: boolean;
+}
+
+export interface CorrelationView {
+  generated_at: number;
+  pairs: CorrelationPairView[];
+  insufficient_data: string[];
+  strategies_tracked: number;
+}
+
 // ─── DSPy model governance (row 784): report-only gate/drift detection ───────
 
 export interface DspyGovernanceGate {

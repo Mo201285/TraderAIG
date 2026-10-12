@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { EvidenceRow, Language, Thesis } from "../../types";
 import { Card, PageHeader, SectionLabel, StateChip, Tab, EmptyState, LoadingState, UnreachableState, ff, fd, isRtl } from "../ui/shared";
 import { useData, api } from "../../lib/useData";
+import ResearchLoopStrip from "../ResearchLoopStrip";
 
 const LADDER_COLORS = ["#64748b", "#3b82f6", "#22c55e", "#22c55e", "#22c55e",
   "#22c55e", "#22c55e", "#22c55e", "#f59e0b", "#ef4444"];
@@ -72,6 +73,8 @@ export default function ResearchPage({ lang }: { lang: Language }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
       <PageHeader title={d.title} subtitle={d.subtitle} lang={lang} />
+
+      <ResearchLoopStrip lang={lang} />
 
       <Tab tabs={d.tabs} active={tab} onChange={setTab} lang={lang} />
 

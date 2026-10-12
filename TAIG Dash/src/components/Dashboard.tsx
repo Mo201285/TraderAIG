@@ -4,6 +4,7 @@ import { useData, api } from "../lib/useData";
 import { EmptyState, LoadingState } from "../design";
 import { SourceBadge, type ProvenanceState } from "./ui/shared";
 import InvestmentIntelligence from "./InvestmentIntelligence";
+import ResearchLoopStrip from "./ResearchLoopStrip";
 
 interface Props {
   lang: Language;
@@ -173,6 +174,9 @@ export default function Dashboard({ lang, user }: Props) {
 
       {/* Your Investment Intelligence (row 755, UX-03) */}
       <InvestmentIntelligence lang={lang} />
+
+      {/* Research Loop — no growth without measurement (row 768/749) */}
+      <ResearchLoopStrip lang={lang} />
 
       {/* Top row */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "1rem" }}>

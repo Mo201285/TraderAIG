@@ -4532,6 +4532,19 @@ def ai_programs_registry() -> Dict:
     return ProgramRegistry().as_dict()
 
 
+@app.get("/research/dspy/governance")
+def ai_programs_governance() -> Dict:
+    """Read-only model governance + drift alerts over the program registry.
+
+    Checks every registered program version against the promotion gate
+    (compiled vs baseline score) and against the model it was compiled on vs
+    the model actually served now. Report-only: it never promotes, quarantines
+    or trades, and it invents no number (a missing baseline is ``ungated``).
+    """
+    from ai.dspy.governance import governance_report
+    return governance_report()
+
+
 # ---------------------------------------------------------------------------
 # User strategy intake — describe -> vet -> test -> governed production
 #

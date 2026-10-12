@@ -24,6 +24,7 @@ from .evaluators.metrics import score_trade, trading_metric
 from .lm import configure_lm, lm_spec
 from .optimizers.run import optimize_program
 from .registry.programs import AIProgramVersion, ProgramRegistry
+from .governance import governance_report
 from .connect import (dspy_metric, pipeline_refine, score_results,
                       pipeline_enabled)
 
@@ -46,6 +47,7 @@ __all__ = [
     "lm_spec",
     "AIProgramVersion",
     "ProgramRegistry",
+    "governance_report",
     "dspy_metric",
     "pipeline_refine",
     "score_results",

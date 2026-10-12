@@ -3359,6 +3359,25 @@ def portfolio_allocation_clear(strategy_id: str) -> Dict:
     return {"strategy_id": strategy_id, "removed": removed}
 
 
+@app.get("/portfolio/allocation-engine")
+def portfolio_allocation_engine(method: str = "risk_parity") -> Dict:
+    """Advisory cross-strategy allocation proposal (S4, read-only).
+
+    Deterministic risk-parity weights over the existing aggregation, damped for
+    concentrated correlation and clamped to each strategy's cap. It proposes
+    only: nothing is ordered, no cap is mutated. When evidence is insufficient
+    it reports ``unavailable`` rather than inventing weights.
+    """
+    from portfolio.allocation import METHODS, PortfolioAllocationEngine
+    from learning.experience import ledger as _ledger
+    if method not in METHODS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown method {method!r}; expected one of "
+                   f"{', '.join(METHODS)}")
+    return PortfolioAllocationEngine(ledger_ref=_ledger).propose(method=method).as_dict()
+
+
 # ---------------------------------------------------------------------------
 # Learning
 # ---------------------------------------------------------------------------

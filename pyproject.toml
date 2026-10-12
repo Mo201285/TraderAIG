@@ -31,3 +31,10 @@ ignore = ["E501", "W291", "W293", "E741"]
 "tests/**/*.py" = ["E402"]
 "scripts/**/*.py" = ["E402"]
 "tools/**/*.py" = ["E402"]
+
+[tool.pytest.ini_options]
+# pytest-asyncio 0.24 warns when the fixture loop scope is unset. The suite has
+# no async tests, but the plugin is a declared dependency, so we pin the default
+# explicitly to keep the CI log clean and the behaviour fixed.
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]

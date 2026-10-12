@@ -460,6 +460,7 @@ def system_health() -> Dict:
     _comp("governance", True, "single Governance OS authority (in-process)")
     _comp("risk", True, "Risk governor armed")
 
+    live = False
     try:
         from execution.mt5_adapter import mt5_adapter
         live = bool(getattr(mt5_adapter, "available", False))
@@ -469,9 +470,33 @@ def system_health() -> Dict:
     except Exception as exc:
         _comp("execution", False, f"probe failed: {exc}")
 
-    _comp("reconciliation", False if live else True,
-          "idle: matches internal state while no live venue is attached",
-          "Healthy" if not live else "Degraded")
+    # Reconciliation reports the *real* ledger the engine recorded when a loop
+    # verified canonical positions against the venue. It no longer hands back a
+    # fixed "Healthy" with a detail that contradicts the venue state: with no
+    # live venue there is nothing to reconcile (Healthy), but a venue attached
+    # with no pass recorded, or a recorded divergence, is genuinely Degraded.
+    try:
+        from core.pipeline import recon_engine
+        _recon = recon_engine.summary(recent=1)
+        if not live:
+            _comp("reconciliation", True,
+                  "idle: no live venue attached, nothing to reconcile",
+                  "Healthy")
+        elif _recon["attempted"] == 0:
+            _comp("reconciliation", False,
+                  "venue attached but no reconciliation pass recorded yet",
+                  "Degraded")
+        elif _recon["last_ok"]:
+            _comp("reconciliation", True,
+                  f"last pass matched ({_recon['attempted']} pass(es))",
+                  "Healthy")
+        else:
+            _comp("reconciliation", False,
+                  f"{_recon['mismatch_count']} divergence(s) recorded over "
+                  f"{_recon['attempted']} pass(es)",
+                  "Degraded")
+    except Exception as exc:
+        _comp("reconciliation", False, f"probe failed: {exc}")
 
     try:
         from learning.experience import ledger

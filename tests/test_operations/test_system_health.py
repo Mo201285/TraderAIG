@@ -153,3 +153,101 @@ def test_market_data_health_is_degraded_when_a_feed_exists_but_nothing_is_fresh(
     finally:
         market_plane.reset()
         market_plane.unregister_feed("mt5")
+
+
+def _patch_venue(monkeypatch, available: bool) -> None:
+    from types import SimpleNamespace
+    monkeypatch.setattr("execution.mt5_adapter.mt5_adapter",
+                        SimpleNamespace(available=available))
+
+
+def _reset_recon(recon_engine):
+    saved = (list(recon_engine._mismatches), recon_engine._checks,
+             recon_engine._last_ok, recon_engine._last_at)
+    recon_engine._mismatches = []
+    recon_engine._checks = 0
+    recon_engine._last_ok = None
+    recon_engine._last_at = None
+    return saved
+
+
+def _restore_recon(recon_engine, saved):
+    recon_engine._mismatches = saved[0]
+    recon_engine._checks = saved[1]
+    recon_engine._last_ok = saved[2]
+    recon_engine._last_at = saved[3]
+
+
+def test_reconciliation_health_is_idle_and_healthy_without_a_live_venue(
+        client, monkeypatch):
+    """No live venue attached means nothing to reconcile -- and that is fine."""
+    from types import SimpleNamespace
+    monkeypatch.setattr("execution.mt5_adapter.mt5_adapter",
+                        SimpleNamespace(available=False))
+    comp = client.get("/system/health").json()["components"]["reconciliation"]
+    assert comp["status"] == "Healthy"
+    assert comp["ok"] is True
+    assert "nothing to reconcile" in comp["detail"]
+
+
+def test_reconciliation_health_degrades_when_a_venue_is_attached_but_unchecked(
+        client, monkeypatch):
+    from types import SimpleNamespace
+    from core.pipeline import recon_engine
+
+    monkeypatch.setattr("execution.mt5_adapter.mt5_adapter",
+                        SimpleNamespace(available=True))
+    saved = (list(recon_engine._mismatches), recon_engine._checks,
+             recon_engine._last_ok, recon_engine._last_at)
+    recon_engine._mismatches = []
+    recon_engine._checks = 0
+    recon_engine._last_ok = None
+    recon_engine._last_at = None
+    try:
+        comp = client.get("/system/health").json()["components"][
+            "reconciliation"]
+        assert comp["status"] == "Degraded"
+        assert comp["ok"] is False
+        assert "no reconciliation pass recorded yet" in comp["detail"]
+    finally:
+        recon_engine._mismatches = saved[0]
+        recon_engine._checks = saved[1]
+        recon_engine._last_ok = saved[2]
+        recon_engine._last_at = saved[3]
+
+
+def test_reconciliation_health_reports_the_last_pass_honestly(client, monkeypatch):
+    from types import SimpleNamespace
+    from core.pipeline import recon_engine
+
+    monkeypatch.setattr("execution.mt5_adapter.mt5_adapter",
+                        SimpleNamespace(available=True))
+    saved = (list(recon_engine._mismatches), recon_engine._checks,
+             recon_engine._last_ok, recon_engine._last_at)
+    recon_engine._mismatches = []
+    recon_engine._checks = 0
+    recon_engine._last_ok = None
+    recon_engine._last_at = None
+    try:
+        clean = {"p1": {"position_id": "p1", "symbol": "EURUSD",
+                        "volume": 0.10, "entry_price": 1.1000}}
+        assert recon_engine.verify(
+            [{"position_id": "p1", "volume": 0.10, "entry_price": 1.1000}],
+            baseline=clean) is True
+        matched = client.get("/system/health").json()["components"][
+            "reconciliation"]
+        assert matched["status"] == "Healthy" and matched["ok"] is True
+        assert "matched" in matched["detail"]
+
+        assert recon_engine.verify(
+            [{"position_id": "p1", "volume": 0.90, "entry_price": 1.1000}],
+            baseline=clean) is False
+        drifted = client.get("/system/health").json()["components"][
+            "reconciliation"]
+        assert drifted["status"] == "Degraded" and drifted["ok"] is False
+        assert "divergence" in drifted["detail"]
+    finally:
+        recon_engine._mismatches = saved[0]
+        recon_engine._checks = saved[1]
+        recon_engine._last_ok = saved[2]
+        recon_engine._last_at = saved[3]

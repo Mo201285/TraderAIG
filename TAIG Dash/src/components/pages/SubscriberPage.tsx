@@ -1,11 +1,9 @@
-import { useState } from "react";
 import type { Language, User, ValidationReport, PaperRequest, StrategyContract } from "../../types";
-import { Card, PageHeader, SectionLabel, StateChip, Btn, ProgressRing, Sparkline, EmptyState, LoadingState, UnreachableState, MetricTile, StatusDot, Grid, TwoCols, ff, fd, isRtl } from "../ui/shared";
+import { Card, PageHeader, SectionLabel, StateChip, ProgressRing, Sparkline, EmptyState, LoadingState, UnreachableState, MetricTile, StatusDot, Grid, TwoCols, ff, fd, isRtl } from "../ui/shared";
 import { useData, api } from "../../lib/useData";
 
 export default function SubscriberPage({ lang, user }: { lang: Language; user: User }) {
   const en = lang === "en";
-  const [renewTab, setRenewTab] = useState<"details" | "grace">("details");
 
   const strategies = useData(() => api.getStrategies());
   const requests = useData(() => api.getPaperRequests());
@@ -71,21 +69,31 @@ export default function SubscriberPage({ lang, user }: { lang: Language; user: U
               {en ? `${unlocked.length} of ${plan.data?.featureSet.length ?? 0} capabilities live` : `${unlocked.length} من ${plan.data?.featureSet.length ?? 0} قدرات مفعّلة`}
             </div>
             <div style={{ fontSize: "0.75rem", color: "var(--muted-foreground)", marginTop: 4, fontFamily: ff(lang) }}>
-              {en ? "Institutional tier · $399/mo · auto-renews Sep 28" : "الباقة المؤسسية · 399$ شهرياً · تجديد تلقائي 28 سبتمبر"}
+              {plan.data
+                ? en
+                  ? `${plan.data.name} tier · $${plan.data.priceMonthly}/mo`
+                  : `باقة ${plan.data.name} · ${plan.data.priceMonthly}$ شهرياً`
+                : en
+                  ? "Plan unavailable — the identity service could not be reached."
+                  : "الخطة غير متاحة — تعذّر الوصول إلى خدمة الهوية."}
             </div>
           </div>
         </Card>
         <Card style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 220 }}>
           <SectionLabel lang={lang}>{en ? "CAPABILITY HEALTH" : "سلامة القدرات"}</SectionLabel>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <StatusDot color="#22c55e" label={en ? "Validation engine: healthy" : "محرك التحقق: سليم"} />
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <StatusDot color="#3b82f6" label={en ? "Paper executor: connected" : "منفذ الورق: متصل"} />
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <StatusDot color="#f59e0b" label={en ? "Replay intelligence: 3 runs queued" : "ذكاء إعادة التشغيل: 3 دفعات مجدولة"} />
-          </div>
+          {[
+            { src: strategies.source, en: "Strategy registry", ar: "سجل الاستراتيجيات" },
+            { src: validation.source, en: "Validation engine", ar: "محرك التحقق" },
+            { src: requests.source, en: "Paper workflow", ar: "سير عمل الورق" },
+          ].map((row) => {
+            const color = row.src === "live" ? "#22c55e" : row.src === "loading" ? "#f59e0b" : "#ef4444";
+            const state = row.src === "live" ? (en ? "live" : "حيّ") : row.src === "loading" ? (en ? "loading" : "تحميل") : en ? "down" : "متوقف";
+            return (
+              <div key={row.en} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <StatusDot color={color} label={`${en ? row.en : row.ar}: ${state}`} />
+              </div>
+            );
+          })}
         </Card>
       </div>
 
@@ -190,21 +198,12 @@ export default function SubscriberPage({ lang, user }: { lang: Language; user: U
                 border: "1px solid rgba(245,158,11,0.2)",
               }}
             >
-              <SectionLabel lang={lang}>{en ? "UPGRADE / RENEWAL" : "الترقية / التجديد"}</SectionLabel>
-              <div style={{ fontSize: "0.8rem", fontFamily: ff(lang), marginBottom: 10 }}>
+              <SectionLabel lang={lang}>{en ? "PLAN & ENTITLEMENTS" : "الخطة والصلاحيات"}</SectionLabel>
+              <div style={{ fontSize: "0.8rem", fontFamily: ff(lang) }}>
                 {en
-                  ? "Your next billing cycle closes Sep 28. Early renewal banks 30 days of replay intelligence at no extra cost."
-                  : "دورة الفوترة القادمة تنتهي 28 سبتمبر. التجديد المبكر يمنحك 30 يوماً من ذكاء إعادة التشغيل دون تكلفة إضافية."}
+                  ? "This dashboard reflects the plan and entitlements your identity currently holds. Renewals and tier changes are handled through your account."
+                  : "تعكس هذه اللوحة الخطة والصلاحيات التي يحملها حسابك حالياً. يُدار التجديد وتغيير الباقة عبر حسابك."}
               </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <Btn variant="primary" onClick={() => setRenewTab("details")}>{en ? "Manage renewal" : "إدارة التجديد"}</Btn>
-                <Btn variant="ghost" onClick={() => setRenewTab("grace")}>{en ? "Review plan details" : "مراجعة تفاصيل الخطة"}</Btn>
-              </div>
-              {renewTab === "grace" && (
-                <div style={{ marginTop: 10, fontSize: "0.72rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
-                  {en ? "Grace window: 3 days after expiry. Validated strategies stay yours; live signal stream pauses." : "مهلة السماح: 3 أيام بعد الانتهاء. استراتيجياتك تبقى لك؛ يتوقف تدفق الإشارات المباشر."}
-                </div>
-              )}
             </Card>
           </div>
         }

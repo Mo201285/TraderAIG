@@ -24,6 +24,23 @@ const UI: Record<string, Record<string, string>> = {
     updatedLabel: "Read",
     sourceLabel: "SOURCE",
     authority: "Read-only surface of the Research Factory; not a trade authority.",
+    growthTitle: "Evidence-Backed Growth",
+    growthHint:
+      "No content without evidence. For each source family: how many evidence rows and packages cite it, and whether it is content-ready (at least one evidence row AND one package). Read from /research/growth.",
+    totalEvidence: "Evidence rows",
+    totalPackages: "Packages",
+    contentReadyLabel: "Content-ready",
+    readyYes: "ready",
+    readyNo: "not ready",
+    familyLabel: "Source family",
+    evidenceCol: "Evidence",
+    packagesCol: "Packages",
+    marketsLabel: "Content-ready markets",
+    noGrowthRows: "No source family has delivered evidence yet.",
+    claimedWarning:
+      "Packages exist with no evidence behind them — the growth surface reports this rather than filling the gap.",
+    growthErrorTitle: "Growth surface unreachable",
+    growthErrorHint: "The growth read could not be reached; nothing is shown in its place.",
   },
   ar: {
     factoryTitle: "مصنع البحث",
@@ -42,6 +59,23 @@ const UI: Record<string, Record<string, string>> = {
     updatedLabel: "قراءة",
     sourceLabel: "المصدر",
     authority: "سطح للقراءة فقط لمصنع البحث؛ ليس سلطة تداول.",
+    growthTitle: "النمو المدعوم بالأدلة",
+    growthHint:
+      "لا محتوى بلا دليل. لكل عائلة مصدر: عدد صفوف الأدلة والحزم التي تستشهد بها، وهل هي جاهزة للمحتوى (صف دليل واحد على الأقل وحزمة واحدة على الأقل). تُقرأ من /research/growth.",
+    totalEvidence: "صفوف الأدلة",
+    totalPackages: "الحزم",
+    contentReadyLabel: "جاهز للمحتوى",
+    readyYes: "جاهز",
+    readyNo: "غير جاهز",
+    familyLabel: "عائلة المصدر",
+    evidenceCol: "الأدلة",
+    packagesCol: "الحزم",
+    marketsLabel: "أسواق جاهزة للمحتوى",
+    noGrowthRows: "لم تُسلّم أي عائلة مصدر أدلة بعد.",
+    claimedWarning:
+      "توجد حزم بلا دليل خلفها — يُبلّغ سطح النمو عن ذلك بدل ملء الفراغ.",
+    growthErrorTitle: "تعذّر الوصول إلى سطح النمو",
+    growthErrorHint: "تعذّر بلوغ قراءة النمو؛ ولا يُعرض شيء بدلًا منها.",
   },
 };
 
@@ -73,11 +107,15 @@ export default function ResearchFactoryExplorer({ lang }: { lang: Language }) {
   const t = UI[lang];
   const [version, setVersion] = useState(0);
   const factory = useData(() => api.getResearchFactory(), version);
+  const growth = useData(() => api.getResearchGrowth(), version);
 
   const stages = factory.data?.stages ?? [];
   const sourceLabel = factory.source;
+  const g = growth.data;
+  const families = g ? Object.entries(g.per_source) : [];
 
   return (
+    <>
     <Card
       style={{
         display: "flex",
@@ -174,5 +212,104 @@ export default function ResearchFactoryExplorer({ lang }: { lang: Language }) {
         {t.sourceLabel}: {sourceLabel} · {t.authority}
       </p>
     </Card>
+
+      <Card style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <SectionLabel lang={lang}>{t.growthTitle}</SectionLabel>
+        <p style={{ margin: 0, fontSize: "0.74rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+          {t.growthHint}
+        </p>
+        {growth.source === "loading" ? (
+          <LoadingState label={t.loadingFactory} lang={lang} />
+        ) : growth.source !== "live" || !g ? (
+          <ErrorState title={t.growthErrorTitle} hint={t.growthErrorHint} lang={lang} />
+        ) : (
+          <>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <span style={chip}>
+                {t.totalEvidence}: <span style={{ fontWeight: 600 }}>{g.total_evidence}</span>
+              </span>
+              <span style={chip}>
+                {t.totalPackages}: <span style={{ fontWeight: 600 }}>{g.total_packages}</span>
+              </span>
+              <span
+                style={{
+                  ...chip,
+                  borderColor: g.content_ready_by_anything ? "rgba(34,197,94,0.4)" : "var(--border)",
+                  color: g.content_ready_by_anything ? "#22c55e" : "var(--muted-foreground)",
+                }}
+              >
+                {t.contentReadyLabel}: {g.content_ready_by_anything ? t.readyYes : t.readyNo}
+              </span>
+            </div>
+
+            {families.length === 0 ? (
+              <EmptyState title={t.noGrowthRows} lang={lang} />
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 10, ...mono }}>
+                  <span>{t.familyLabel}</span>
+                  <span>{t.evidenceCol}</span>
+                  <span>{t.packagesCol}</span>
+                  <span>{t.contentReadyLabel}</span>
+                </div>
+                {families.map(([family, s]) => (
+                  <div
+                    key={family}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr auto auto auto",
+                      gap: 10,
+                      alignItems: "center",
+                      border: "1px solid var(--border)",
+                      borderRadius: 6,
+                      padding: "6px 10px",
+                      background: "rgba(127,127,127,0.04)",
+                    }}
+                  >
+                    <span style={{ fontSize: "0.76rem", fontFamily: ff(lang) }}>{family}</span>
+                    <span style={{ ...mono, textAlign: "right" }}>{s.evidence_count}</span>
+                    <span style={{ ...mono, textAlign: "right" }}>{s.package_count}</span>
+                    <span
+                      style={{
+                        ...chip,
+                        borderColor: s.content_ready ? "rgba(34,197,94,0.4)" : "var(--border)",
+                        color: s.content_ready ? "#22c55e" : "var(--muted-foreground)",
+                      }}
+                    >
+                      {s.content_ready ? t.readyYes : t.readyNo}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ ...mono }}>
+              {t.marketsLabel}:{" "}
+              {g.content_ready_markets.length ? g.content_ready_markets.join(" · ") : t.countUnavailable}
+            </div>
+
+            {g.claimed_by_no_evidence && (
+              <div
+                style={{
+                  fontSize: "0.74rem",
+                  fontFamily: ff(lang),
+                  color: "#f59e0b",
+                  border: "1px solid rgba(245,158,11,0.3)",
+                  background: "rgba(245,158,11,0.06)",
+                  borderRadius: 6,
+                  padding: "8px 10px",
+                }}
+              >
+                {t.claimedWarning}
+              </div>
+            )}
+
+            <p style={{ ...mono, textAlign: rtl ? "right" : "left", opacity: 0.6 }}>
+              {t.sourceLabel}: {growth.source} · {t.authority}
+            </p>
+          </>
+        )}
+      </Card>
+    </>
   );
 }

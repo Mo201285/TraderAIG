@@ -18,6 +18,7 @@ import type {
   ExecutionTruthView,
   ReconciliationView,
   ExerciseStatus,
+  GrowthView,
   HealthView,
   IntakeEntry,
   IntelligenceRouterView,
@@ -683,6 +684,26 @@ export const api = {
       };
     } catch (e) {
       return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  // -- Evidence-Backed Growth (row 748): /research/growth --------------------
+  async getResearchGrowth(): Promise<Envelope<GrowthView>> {
+    const empty: GrowthView = {
+      per_source: {},
+      content_ready_markets: [],
+      content_ready_by_anything: false,
+      total_evidence: 0,
+      total_packages: 0,
+      claimed_by_no_evidence: false,
+    };
+    if (!health.live) return { ok: false, data: empty, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/growth");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { growth?: GrowthView };
+      return { ok: true, data: raw.growth ?? empty, source: "live" };
+    } catch (e) {
+      return { ok: false, data: empty, source: "mock", error: String(e) };
     }
   },
   // -- Change Governance (audited change requests) ---------------------------

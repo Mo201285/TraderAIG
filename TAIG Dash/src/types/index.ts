@@ -1292,6 +1292,23 @@ export interface ResearchFactoryView {
   trade_authority: string;
 }
 
+export interface GrowthSource {
+  evidence_count: number;
+  package_count: number;
+  content_ready: boolean;
+}
+
+export interface GrowthView {
+  per_source: Record<string, GrowthSource>;
+  content_ready_markets: string[];
+  content_ready_by_anything: boolean;
+  total_evidence: number;
+  total_packages: number;
+  claimed_by_no_evidence: boolean;
+  is_authorisation?: boolean;
+  trade_authority?: string;
+}
+
 // ─── Go-live readiness (S12 controlled launch): /system/launch-readiness ─────
 
 export type LaunchCheckSeverity = "hard" | "advisory";

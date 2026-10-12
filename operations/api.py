@@ -23,8 +23,9 @@ from core.state import state
 from decision.candidate import candidate_board
 from decision.opportunity import OpportunityStatus
 from execution.mt5_adapter import mt5_adapter
-from governance.auth import (AuthError, auth, current_caller,
+from governance.auth import (AuthError, Session, auth, current_caller,
                               reset_current_caller, set_current_caller)
+from governance.api_tokens import api_tokens, looks_like_api_token
 from governance.identity import (
     Entitlement,
     RiskPolicy,
@@ -256,6 +257,21 @@ def _verify_presented_session(supplied: Optional[str]):
     return session
 
 
+def _session_for_token(principal) -> Session:
+    """Shape a verified developer token as a session for caller resolution.
+
+    The token authenticates as its OWNER: this is what makes "operator RBAC
+    through the existing identity/entitlement gate" literal -- `_acting_actor()`
+    reads the owner out of the session, so `_guard`/`_own` enforce the owner's
+    real entitlements and ownership. A token grants nothing the owner lacks.
+    """
+    return Session(
+        user_id=principal.user_id,
+        issued_at=principal.created_at,
+        expires_at=principal.expires_at or 0.0,
+        token_id=principal.token_id)
+
+
 def _presented_token(request: Request) -> Optional[str]:
     header = request.headers.get("authorization", "")
     if header.lower().startswith("bearer "):
@@ -277,6 +293,19 @@ def _identify_caller(request: Request) -> None:
         return
     if auth.check_service_token(supplied):
         request.state.auth_kind = "service"
+        return
+    if looks_like_api_token(supplied):
+        try:
+            principal = api_tokens.verify(supplied)
+            if identity.get_user(principal.user_id) is None:
+                raise AuthError("this token's owner no longer exists")
+        except AuthError:
+            request.state.auth_kind = "invalid"
+            return
+        request.state.session = _session_for_token(principal)
+        request.state.auth_kind = "api_token"
+        request.state.api_scopes = principal.scopes
+        api_tokens.record_use(principal.token_id)
         return
     try:
         request.state.session = _verify_presented_session(supplied)
@@ -300,6 +329,21 @@ def _reject_without_session(request: Request):
                 and auth.service_token_allowed(request.method,
                                                request.url.path)):
             request.state.auth_kind = "service"
+        elif supplied and looks_like_api_token(supplied):
+            # A developer token authenticates a mutating request only if it is
+            # NOT read-only: a `read`-scope token is a ceiling that forbids
+            # writes outright, and a write scope is still gated by the owner's
+            # entitlement in `_guard` below.
+            principal = api_tokens.verify(supplied)
+            if identity.get_user(principal.user_id) is None:
+                raise AuthError("this token's owner no longer exists")
+            if not principal.can_write:
+                raise AuthError("this developer token is read-only",
+                                status_code=403)
+            request.state.session = _session_for_token(principal)
+            request.state.auth_kind = "api_token"
+            request.state.api_scopes = principal.scopes
+            api_tokens.record_use(principal.token_id)
         else:
             # A valid service token OUTSIDE its scope is not a session: it is
             # refused here (401) exactly like no credential, so the machine
@@ -2722,6 +2766,102 @@ def logout(request: Request) -> Dict:
     return {"revoked": True,
             "note": "the revocation list is in memory, so a restart un-revokes "
                     "outstanding tokens; they remain bounded by their expiry"}
+
+
+# ---------------------------------------------------------------------------
+# Developer API tokens (S10 Developer Platform)
+# ---------------------------------------------------------------------------
+
+
+def _developer_actor() -> str:
+    """The acting principal, or a 409 -- a token is minted FOR its owner."""
+    actor = _acting_actor()
+    if actor is None:
+        raise HTTPException(
+            status_code=409,
+            detail=("no acting principal exists to hold a developer token; "
+                    "create a user first"))
+    return actor
+
+
+@app.get("/developer/policy")
+def developer_policy() -> Dict:
+    """The developer-token policy: the bounded scopes, the prefix, the TTL and
+    whether the registry is durable. Read-only; never an authority."""
+    policy = api_tokens.policy()
+    policy["enforcement_enabled"] = auth.enforcement_enabled()
+    policy["note"] = ("a token authenticates as its owner and is a ceiling over "
+                      "the owner's entitlements; a write scope still needs the "
+                      "owner's entitlement")
+    return {"ok": True, **policy}
+
+
+@app.get("/developer/tokens")
+def developer_list_tokens() -> Dict:
+    """List the acting principal's developer tokens. Never returns a secret."""
+    actor = _developer_actor()
+    rows = [t.as_dict() for t in api_tokens.list_all(user_id=actor)]
+    return {"ok": True, "count": len(rows), "tokens": rows,
+            "read_only": True, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/developer/tokens/{token_id}")
+def developer_get_token(token_id: str) -> Dict:
+    """Read one of the acting principal's tokens, or a distinct 404."""
+    _developer_actor()
+    record = api_tokens.get(token_id)
+    if record is None:
+        raise HTTPException(status_code=404,
+                            detail="no such developer token")
+    _own(record.user_id, action="read")
+    return {"ok": True, "token": record.as_dict(), "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/developer/tokens")
+def developer_mint_token(payload: Optional[Dict] = None) -> Dict:
+    """Mint a scoped developer token for the acting principal.
+
+    The plaintext is returned ONCE (under ``token``); only its digest is stored.
+    Scopes are a ceiling -- a write scope still passes the owner's entitlement
+    gate on each request. The mint is audited.
+    """
+    actor = _developer_actor()
+    payload = payload or {}
+    try:
+        minted = api_tokens.mint(
+            actor,
+            label=str(payload.get("label") or ""),
+            scopes=payload.get("scopes") or ("read",),
+            ttl_seconds=payload.get("ttl_seconds"))
+    except AuthError as exc:
+        status_code = getattr(exc, "status_code", 400) or 400
+        return JSONResponse(status_code=status_code, content={
+            "ok": False, "reason": "invalid_token_request", "detail": exc.detail})
+    identity.record_audit(
+        actor, "developer.token_minted", "ApiToken", minted["token_id"],
+        {"label": minted["label"], "scopes": minted["scopes"],
+         "prefix": minted["prefix"]})
+    return {"ok": True, **minted,
+            "warning": ("store this token now; it is not retrievable again"),
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/developer/tokens/{token_id}/revoke")
+def developer_revoke_token(token_id: str) -> Dict:
+    """Revoke one of the acting principal's tokens. Durable; 404 if unknown."""
+    actor = _developer_actor()
+    record = api_tokens.get(token_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="no such developer token")
+    _own(record.user_id, action="revoke")
+    revoked = api_tokens.revoke(token_id).as_dict()
+    identity.record_audit(actor, "developer.token_revoked", "ApiToken",
+                          token_id, {"label": revoked["label"]})
+    return {"ok": True, "token": revoked, "action": "revoked",
+            "durable": api_tokens.durable,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
 
 
 @app.post("/users", status_code=status.HTTP_201_CREATED)

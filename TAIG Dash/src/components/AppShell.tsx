@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { translations } from "../i18n/translations";
+import { useBackendStatus } from "../lib/useData";
 import type { Language, User } from "../types";
+import { SourceBadge } from "./ui/shared";
 import Dashboard from "./Dashboard";
 import ChartPage from "./pages/ChartPage";
 import ResearchPage from "./pages/ResearchPage";
@@ -125,6 +127,7 @@ export default function AppShell({ user, lang, onLangToggle, onLogout }: Props) 
   const [collapsed, setCollapsed] = useState(false);
   const isRtl = lang === "ar";
   const t = translations[lang];
+  const backend = useBackendStatus();
 
   const navItems = NAV_EN.map((item, i) => ({
     ...item,
@@ -319,23 +322,34 @@ export default function AppShell({ user, lang, onLangToggle, onLogout }: Props) 
 
           <div style={{ flex: 1 }} />
 
-          {/* Mode chip */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 5,
-              padding: "4px 10px",
-              borderRadius: 20,
-              background: "rgba(59,130,246,0.08)",
-              border: "1px solid rgba(59,130,246,0.2)",
-            }}
-          >
-            <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#3b82f6" }} />
-            <span style={{ fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "#3b82f6", letterSpacing: "0.05em" }}>
-              {isRtl ? "وضع الورق" : "PAPER"}
-            </span>
-          </div>
+          {/* Provenance: is the backend actually answering? */}
+          <SourceBadge
+            reachable={backend.reachable}
+            loading={backend.loading}
+            lastSync={backend.lastSync}
+            overall={backend.overall}
+            lang={lang}
+          />
+
+          {/* Mode chip — only claim PAPER once the backend confirms it is up */}
+          {backend.reachable && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                padding: "4px 10px",
+                borderRadius: 20,
+                background: "rgba(59,130,246,0.08)",
+                border: "1px solid rgba(59,130,246,0.2)",
+              }}
+            >
+              <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#3b82f6" }} />
+              <span style={{ fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "#3b82f6", letterSpacing: "0.05em" }}>
+                {isRtl ? "وضع الورق" : "PAPER"}
+              </span>
+            </div>
+          )}
 
           {/* Lang toggle */}
           <button

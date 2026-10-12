@@ -299,7 +299,7 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>;
       return { ok: true, data: adaptRiskState(raw), source: "live" };
     } catch (e) {
-      return { ok: true, data: empty, source: "mock", error: String(e) };
+      return { ok: false, data: empty, source: "mock", error: String(e) };
     }
   },
   async getRiskLimits(): Promise<Envelope<RiskLimitsView>> {
@@ -314,7 +314,7 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>;
       return { ok: true, data: adaptRiskLimits(raw), source: "live" };
     } catch (e) {
-      return { ok: true, data: empty, source: "mock", error: String(e) };
+      return { ok: false, data: empty, source: "mock", error: String(e) };
     }
   },
   async getVetoes(): Promise<Envelope<RiskVeto[]>> {
@@ -325,7 +325,7 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>[];
       return { ok: true, data: raw.map(adaptVeto), source: "live" };
     } catch (e) {
-      return { ok: true, data: mockRiskVetoes, source: "mock", error: String(e) };
+      return { ok: false, data: mockRiskVetoes, source: "mock", error: String(e) };
     }
   },
   async getPortfolioState(): Promise<Envelope<PortfolioStateView>> {
@@ -342,7 +342,7 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>;
       return { ok: true, data: adaptPortfolioState(raw), source: "live" };
     } catch (e) {
-      return { ok: true, data: empty, source: "mock", error: String(e) };
+      return { ok: false, data: empty, source: "mock", error: String(e) };
     }
   },
   async getChallengeStatus(): Promise<Envelope<ChallengeStatusView>> {
@@ -354,7 +354,7 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>;
       return { ok: true, data: adaptChallengeStatus(raw), source: "live" };
     } catch (e) {
-      return { ok: true, data: empty, source: "mock", error: String(e) };
+      return { ok: false, data: empty, source: "mock", error: String(e) };
     }
   },
   async getExecutionTruth(): Promise<Envelope<ExecutionTruthView>> {
@@ -391,7 +391,7 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>;
       return { ok: true, data: adaptExecutionTruth(raw), source: "live" };
     } catch (e) {
-      return { ok: true, data: empty, source: "mock", error: String(e) };
+      return { ok: false, data: empty, source: "mock", error: String(e) };
     }
   },
   async getExercise(): Promise<Envelope<ExerciseStatus>> {
@@ -403,7 +403,7 @@ export const api = {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return { ok: true, data: (await res.json()) as ExerciseStatus, source: "live" };
     } catch (e) {
-      return { ok: true, data: { running: false, last_run: null, duration_s: 0, error: null }, source: "mock", error: String(e) };
+      return { ok: false, data: { running: false, last_run: null, duration_s: 0, error: null }, source: "mock", error: String(e) };
     }
   },
   async runExercise(seconds = 15): Promise<Envelope<ExerciseStatus>> {
@@ -417,7 +417,7 @@ export const api = {
       const raw = (await res.json()) as Record<string, any>[];
       return { ok: true, data: raw.map(adaptExperience), source: "live" };
     } catch (e) {
-      return { ok: true, data: mockExperiences, source: "mock", error: String(e) };
+      return { ok: false, data: mockExperiences, source: "mock", error: String(e) };
     }
   },
   async getLearningStats(): Promise<Envelope<LearningStatsView>> {
@@ -428,7 +428,8 @@ export const api = {
       const counts = (await res.json()) as Record<string, number>;
       return { ok: true, data: { counts, total: Object.values(counts).reduce((a, b) => a + b, 0), distinct: Object.keys(counts).length }, source: "live" };
     } catch (e) {
-      return { ok: true, data: { counts: {}, total: 0, distinct: 0 }, source: "mock", error: String(e) };}
+      return { ok: false, data: { counts: {}, total: 0, distinct: 0 }, source: "mock", error: String(e) };
+    }
   },
   async getAudit(): Promise<Envelope<AuditEntry[]>> {
     if (!health.live) return { ok: true, data: mockAudit, source: "mock" };

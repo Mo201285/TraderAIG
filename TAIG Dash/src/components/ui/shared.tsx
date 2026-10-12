@@ -393,6 +393,87 @@ export function StatusDot({ color, label }: { color: string; label?: string }) {
   );
 }
 
+function clockTime(ts: number): string {
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/**
+ * Global provenance badge. Never let the chrome imply live data when the
+ * backend is unreachable: shows LIVE / CHECKING / OFFLINE plus the last time we
+ * actually heard from the API, so a stale screen is visible at a glance.
+ */
+export function SourceBadge({
+  reachable,
+  loading = false,
+  lastSync,
+  overall,
+  lang,
+}: {
+  reachable: boolean;
+  loading?: boolean;
+  lastSync?: number | null;
+  overall?: string;
+  lang: Language;
+}) {
+  const state = loading ? "checking" : reachable ? "live" : "offline";
+  const map: Record<string, { color: string; en: string; ar: string }> = {
+    checking: { color: "#64748b", en: "CHECKING", ar: "جارٍ الفحص" },
+    live: { color: "#22c55e", en: "LIVE", ar: "مباشر" },
+    offline: { color: "#f59e0b", en: "OFFLINE", ar: "غير متصل" },
+  };
+  const m = map[state];
+  const label = lang === "ar" ? m.ar : m.en;
+  let color = m.color;
+  if (state === "live") {
+    const o = (overall ?? "").toLowerCase();
+    color = o === "healthy" ? "#22c55e" : o === "error" || o === "disconnected" ? "#ef4444" : "#f59e0b";
+  }
+  const sub =
+    state === "offline"
+      ? lastSync
+        ? `${lang === "ar" ? "آخر مزامنة" : "last sync"} ${clockTime(lastSync)}`
+        : lang === "ar"
+          ? "لا مزامنة"
+          : "no sync"
+      : state === "live" && overall
+        ? overall
+        : null;
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        flexDirection: "column",
+        alignItems: lang === "ar" ? "flex-start" : "flex-end",
+        gap: 1,
+      }}
+    >
+      <div
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 5,
+          padding: "4px 10px",
+          borderRadius: 20,
+          background: `${color}14`,
+          border: `1px solid ${color}30`,
+        }}
+      >
+        <span style={{ width: 5, height: 5, borderRadius: "50%", background: color }} />
+        <span style={{ fontSize: "0.68rem", fontFamily: "var(--font-mono)", color, letterSpacing: "0.05em" }}>
+          {label}
+        </span>
+      </div>
+      {sub && (
+        <span style={{ fontSize: "0.58rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", opacity: 0.7 }}>
+          {sub}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export {
   EmptyState,
   ErrorState,

@@ -7,6 +7,50 @@ export interface AsyncData<T> {
   error?: string;
 }
 
+export interface BackendStatus {
+  reachable: boolean;
+  loading: boolean;
+  overall: string;
+  lastSync: number | null;
+  error?: string;
+}
+
+/**
+ * One provenance source for the whole shell: is the backend answering, what is
+ * its overall health, and when did we last hear from it. Polled so the UI can
+ * never leave a stale green light on screen after the backend drops.
+ */
+export function useBackendStatus(pollMs = 15000): BackendStatus {
+  const [status, setStatus] = useState<BackendStatus>({
+    reachable: false,
+    loading: true,
+    overall: "unknown",
+    lastSync: null,
+  });
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      const env = await api.getSystemHealth();
+      if (!alive) return;
+      const ok = env.ok && env.source === "live";
+      setStatus((prev) => ({
+        reachable: ok,
+        loading: false,
+        overall: ok ? env.data?.overall ?? "unknown" : "offline",
+        lastSync: ok ? Date.now() : prev.lastSync,
+        error: env.error,
+      }));
+    };
+    tick();
+    const id = setInterval(tick, pollMs);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [pollMs]);
+  return status;
+}
+
 export function useData<T>(
   loader: () => Promise<{ ok: boolean; data: T; source: "live" | "mock"; error?: string }>,
   version: number = 0,

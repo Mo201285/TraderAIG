@@ -6689,3 +6689,16 @@ def execution_truth() -> Dict:
         "metrics": metrics,
         "learning": learning,
     }
+
+
+@app.get("/execution/venue-score")
+def execution_venue_score() -> Dict:
+    """Read-only venue scorecard (S5 Execution Network).
+
+    An evidence-only, advisory score over the canonical orders' venue
+    attribution (fill ratio / slippage / rejection), surface the MT5 rail and
+    the configured CEX venue even with no evidence, and never invent a score
+    from too little history. It places no order and grants no authority.
+    """
+    from execution.venue_score import VenueScorecard
+    return VenueScorecard().scorecard()

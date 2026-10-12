@@ -942,6 +942,7 @@ class LiveMT5Executor:
             tp=candidate.take_profit,
             candidate_id=candidate.candidate_id,
             strategy_id=getattr(candidate, "strategy_id", None),
+            venue="mt5",  # the broker rail (see execution/venue_score.MT5_VENUE)
             status=OrderStatus.SUBMITTED,
         )
         state.add_order(order)

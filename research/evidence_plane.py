@@ -116,13 +116,19 @@ class EvidencePlaneService:
                markets: Optional[List[str]] = None,
                timeframes: Optional[List[str]] = None,
                regimes: Optional[List[str]] = None,
-               hypothesis: str = "", note: str = "") -> Dict[str, Any]:
+               hypothesis: str = "", partner_id: str = "",
+               note: str = "") -> Dict[str, Any]:
         """Store one evidence item, idempotently (same payload -> same row).
 
         `payload` is the normalised matter the hash de-duplicates on: two
         deliveries of the same paper/event/snapshot produce the same digest and
         return the stored row with ``is_new=False``. A caller that already has
         a canonical digest may hand it in via `content_hash` instead.
+
+        `partner_id`, when given, attributes the matter to a registered active
+        evidence partner (S9 ecosystem); an unknown or non-active partner is
+        refused (ValueError), so external matter is never attributed to a name
+        nobody vouched for.
 
         Unknown `source_kind` and out-of-ladder defaults are `ValueError` here
         (ready to map to HTTP 4xx upstream).
@@ -138,7 +144,8 @@ class EvidencePlaneService:
             relevance=relevance, confidence=confidence,
             source_quality=source_quality,
             markets=markets, timeframes=timeframes, regimes=regimes,
-            hypothesis=hypothesis, trust_ladder=start, note=note))
+            hypothesis=hypothesis, trust_ladder=start, partner_id=partner_id,
+            note=note))
 
     # -- classification: the structured reading ------------------------------
 
@@ -176,10 +183,12 @@ class EvidencePlaneService:
 
     def list_all(self, *, source_kind: str = "", topic: str = "",
                  market: str = "", regime: str = "",
+                 partner_id: str = "",
                  min_trust: Optional[int] = None,
                  limit: int = 10_000) -> List[Dict[str, Any]]:
         rows = self._repo.list_all(source_kind=source_kind, topic=topic,
                                    market=market, regime=regime,
+                                   partner_id=partner_id,
                                    min_trust=min_trust, limit=limit)
         return [_enrich_evidence(r) for r in rows]
 

@@ -101,6 +101,12 @@ def _required_schema() -> dict[str, dict[str, str]]:
         # and inventing one from `object_type` would attribute a historical
         # decision to a login it never touched.
         "audit": {"account_id": "TEXT"},
+        # Partner attribution (S9 ecosystem). Additive and nullable: evidence or
+        # a source written before partners existed has no partner to name, and
+        # inventing one would attribute external matter to a provider that never
+        # supplied it -- an unattributed row stays unattributed.
+        "source_registry": {"partner_id": "TEXT"},
+        "evidence_items": {"partner_id": "TEXT"},
     }
 
 

@@ -1519,6 +1519,8 @@ def evidence_intake(payload: Optional[Dict] = None) -> Dict:
             timeframes=normalized.get("timeframes"),
             regimes=normalized.get("regimes"),
             hypothesis=str(normalized.get("hypothesis") or "").strip(),
+            partner_id=str(normalized.get("partner_id")
+                           or payload.get("partner_id") or "").strip(),
             note=str(normalized.get("note") or "").strip())
     except ValueError as exc:
         return JSONResponse(status_code=400, content={
@@ -1627,6 +1629,7 @@ def evidence_advance_trust(evidence_id: str,
 @app.get("/evidence")
 def list_evidence(source_kind: str = "", topic: str = "",
                   market: str = "", regime: str = "",
+                  partner_id: str = "",
                   min_trust: Optional[int] = None,
                   limit: int = 10_000) -> Dict:
     """List evidence rows, filtered. Institutional knowledge, never a signal
@@ -1652,7 +1655,8 @@ def list_evidence(source_kind: str = "", topic: str = "",
     try:
         rows = EvidencePlaneService().list_all(
             source_kind=source_kind, topic=topic, market=market,
-            regime=regime, min_trust=min_trust, limit=limit)
+            regime=regime, partner_id=partner_id, min_trust=min_trust,
+            limit=limit)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(status_code=503, content={
             "ok": False, "reason": "store_unavailable",
@@ -1969,6 +1973,11 @@ def _research_sources_service():
     return SourceRegistryService()
 
 
+def _research_partners_service():
+    from research.sources.partners import PartnerService
+    return PartnerService()
+
+
 def _research_queue_service():
     from research.queue.research_queue import ResearchQueueService
     return ResearchQueueService()
@@ -2012,6 +2021,7 @@ def research_register_source(payload: Optional[Dict] = None) -> Dict:
             cost=payload.get("cost", "free"),
             license=payload.get("license", ""),
             status=payload.get("status", "active"),
+            partner_id=payload.get("partner_id", ""),
             note=payload.get("note", ""))
     except ValueError as exc:
         return JSONResponse(status_code=400, content={
@@ -2087,6 +2097,129 @@ def research_mark_source_synced(source_id: str) -> Dict:
             "detail": "the source registry could not be updated",
             "error": str(exc)})
     return {"ok": True, "source": source, "action": "synced",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/research/partners")
+def research_register_partner(payload: Optional[Dict] = None) -> Dict:
+    """Register one external evidence partner (S9 ecosystem).
+
+    A partner is the accountable identity behind a stream of external matter:
+    a canonical slug, a name, one of the `kind` families and a lifecycle
+    `status`. Unknown kind/status, a malformed slug and a duplicate partner_id
+    are refused (400). Governed onboarding -- the operator is authenticated.
+    A partner is a knowledge provider, never a permission.
+    """
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    payload = payload or {}
+    try:
+        partner = _research_partners_service().register(
+            partner_id=payload.get("partner_id", ""),
+            name=payload.get("name", ""),
+            kind=payload.get("kind", ""),
+            status=payload.get("status", "active"),
+            contact=payload.get("contact", ""),
+            homepage=payload.get("homepage", ""),
+            note=payload.get("note", ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_partner", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the partner registry could not be written",
+            "error": str(exc)})
+    return {"ok": True, "partner": partner, "action": "registered",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/partners/summary")
+def research_partners_summary() -> Dict:
+    """The partner roster's live state: totals, per-kind/per-status buckets and
+    real per-partner evidence/source counts (never fabricated)."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        summary = _research_partners_service().summary()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the partner registry could not be read",
+            "error": str(exc)})
+    return {"ok": True, **summary, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/partners")
+def research_list_partners(kind: str = "", status: str = "") -> Dict:
+    """List the registered evidence partners; filter by kind or status."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        rows = _research_partners_service().list_all(kind=kind, status=status)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_filter", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the partner registry could not be read",
+            "error": str(exc)})
+    return {"ok": True, "count": len(rows), "partners": rows,
+            "read_only": True, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/research/partners/{partner_id}")
+def research_get_partner(partner_id: str) -> Dict:
+    """Read one registered partner, or a distinct 404."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        partner = _research_partners_service().get(partner_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the partner registry could not be read",
+            "error": str(exc)})
+    if partner is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "partner_id": partner_id,
+            "reason": "unknown_partner", "detail": "no such registered partner"})
+    return {"ok": True, "partner": partner, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/research/partners/{partner_id}/status")
+def research_set_partner_status(partner_id: str,
+                                payload: Optional[Dict] = None) -> Dict:
+    """Move a partner along its lifecycle (active / suspended / retired).
+
+    A non-active partner cannot receive new evidence attribution (attribution
+    is fail-closed at the Evidence Plane).
+    """
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    payload = payload or {}
+    try:
+        partner = _research_partners_service().set_status(
+            partner_id, str(payload.get("status") or ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "partner_id": partner_id,
+            "reason": "invalid_partner", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the partner registry could not be updated",
+            "error": str(exc)})
+    return {"ok": True, "partner": partner, "action": "status_updated",
             "is_authorisation": False, "trade_authority": "risk/governor.py"}
 
 

@@ -410,6 +410,7 @@ class EvidenceRecord(Base):
     evidence_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     source_kind: Mapped[str] = mapped_column(String(32), index=True)
     external_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    partner_id: Mapped[str] = mapped_column(String(96), default="", index=True)
     source_uri: Mapped[str] = mapped_column(Text, default="")
     topic: Mapped[str] = mapped_column(String(128), default="", index=True)
     headline: Mapped[str] = mapped_column(Text, default="")
@@ -483,6 +484,7 @@ class SourceRegistryRecord(Base):
     source_id: Mapped[str] = mapped_column(String(96), primary_key=True)
     source_type: Mapped[str] = mapped_column(String(32), default="", index=True)
     provider: Mapped[str] = mapped_column(String(128), default="")
+    partner_id: Mapped[str] = mapped_column(String(96), default="", index=True)
     kind: Mapped[str] = mapped_column(String(32), default="", index=True)
     url_or_feed: Mapped[str] = mapped_column(String(512), default="")
     frequency: Mapped[str] = mapped_column(String(32), default="")
@@ -583,3 +585,35 @@ class ResearchMissionRecord(Base):
     updated_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
     started_at: Mapped[str] = mapped_column(String(64), default="")
     finished_at: Mapped[str] = mapped_column(String(64), default="")
+
+
+class EvidencePartnerRecord(Base):
+    '''A durable external evidence provider (S9 ecosystem, partner slice).
+
+    The Evidence Plane (row 746) accepts matter from the outside world, but a
+    **partner** is the accountable identity behind a stream of that matter: the
+    academic group, data vendor, community or institution that supplies it.
+    Where a source registry row says *where* knowledge can come from, a partner
+    row says *who* is answerable for it -- a durable identity with a canonical
+    slug `partner_id`, a name, the partner `kind`, a lifecycle `status`
+    (active / suspended / retired) and evidence attribution.
+
+    Attribution is explicit and fail-closed: evidence ingested from a partner
+    carries the `partner_id`, and an unknown partner is refused rather than
+    silently accepted. Self-contained (no ForeignKeys -- the evidence side is
+    external and transient) and deliberately carries **no trade-permission
+    column**: a partner is a knowledge provider, never permission (rows
+    741/742/746/748 invariants).
+    '''
+
+    __tablename__ = "evidence_partners"
+
+    partner_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), default="")
+    kind: Mapped[str] = mapped_column(String(32), default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    contact: Mapped[str] = mapped_column(String(256), default="")
+    homepage: Mapped[str] = mapped_column(String(512), default="")
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
+    updated_at: Mapped[str] = mapped_column(String(64), default=_now_iso)

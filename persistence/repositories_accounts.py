@@ -41,6 +41,7 @@ from persistence.models_accounts import (
     AccountConnectionRecord,
     AccountIdentityRecord,
     AccountRecord,
+    EvidencePartnerRecord,
     EvidenceRecord,
     ExternalProviderRecord,
     ExternalReferralEvent,
@@ -552,6 +553,7 @@ def _row_to_evidence(row: EvidenceRecord) -> Dict[str, Any]:
         "evidence_id": row.evidence_id,
         "source_kind": row.source_kind,
         "external_id": row.external_id,
+        "partner_id": row.partner_id,
         "source_uri": row.source_uri,
         "topic": row.topic,
         "headline": row.headline,
@@ -906,11 +908,14 @@ class EvidenceRepository:
                timeframes: Optional[List[str]] = None,
                regimes: Optional[List[str]] = None,
                hypothesis: str = "", trust_ladder: int = MIN_TRUST_LEVEL,
-               note: str = "") -> Dict[str, Any]:
+               partner_id: str = "", note: str = "") -> Dict[str, Any]:
         """Store one evidence item, or return the identical stored one.
 
         Returns ``{**row, "is_new": bool}``. Uniqueness is content-based, so a
         re-delivery is idempotent -- the intake contract n8n works against.
+        When ``partner_id`` is given it must name an *active* registered
+        partner (fail-closed): external matter is attributed to an accountable
+        provider, never to a name nobody vouched for.
         """
         kind = self._validate_kind(source_kind)
         level = self._validate_trust(trust_ladder)
@@ -923,10 +928,12 @@ class EvidenceRepository:
             ).scalars().first()
             if existing is not None:
                 return {**_row_to_evidence(existing), "is_new": False}
+            pid = _resolve_partner(session, partner_id)
             row = EvidenceRecord(
                 evidence_id=uuid.uuid4().hex,
                 source_kind=kind,
                 external_id=str(external_id or "").strip(),
+                partner_id=pid,
                 source_uri=str(source_uri or ""),
                 topic=str(topic or "").strip(),
                 headline=str(headline or ""),
@@ -953,6 +960,7 @@ class EvidenceRepository:
 
     def list_all(self, *, source_kind: str = "", topic: str = "",
                  market: str = "", regime: str = "",
+                 partner_id: str = "",
                  min_trust: Optional[int] = None,
                  limit: int = 10_000) -> List[Dict[str, Any]]:
         with self._db() as session:
@@ -962,6 +970,9 @@ class EvidenceRepository:
                     EvidenceRecord.source_kind == self._validate_kind(source_kind))
             if topic:
                 query = query.where(EvidenceRecord.topic == str(topic).strip())
+            if partner_id:
+                query = query.where(
+                    EvidenceRecord.partner_id == str(partner_id).strip())
             if min_trust is not None:
                 level = self._validate_trust(min_trust)
                 query = query.where(EvidenceRecord.trust_ladder >= level)
@@ -1829,6 +1840,13 @@ RMI_REGISTRY_KINDS = ("arxiv", "ssrn", "github", "macro", "market", "news",
 SOURCE_STATUSES = ("active", "retired")
 SOURCE_COSTS = ("free", "tiered", "paid")
 
+# External evidence providers (S9 ecosystem). A partner's `kind` says what sort
+# of provider it is; its `status` is a lifecycle (a suspended or retired partner
+# cannot receive new evidence attribution).
+PARTNER_KINDS = ("academic", "data_vendor", "community", "institution",
+                 "individual")
+PARTNER_STATUSES = ("active", "suspended", "retired")
+
 QUEUE_STATUSES = ("queued", "active", "completed", "superseded")
 QUEUE_FROM = {
     "active": ("queued",),
@@ -1853,6 +1871,28 @@ def _validate_unit(v, name: str) -> float:
         raise ValueError(f"{name} must be a number in 0..1") from exc
     if value < 0.0 or value > 1.0:
         raise ValueError(f"{name} must be in 0..1, got {value!r}")
+    return value
+
+
+def _resolve_partner(session, partner_id: str) -> str:
+    """Resolve an attribution to an active partner, or refuse (fail-closed).
+
+    An empty id means "no partner" (returns ""). A non-empty id must name a
+    registered, *active* partner: attributing external evidence to an unknown
+    name, or to a suspended/retired provider, is refused rather than silently
+    stored.
+    """
+    value = str(partner_id or "").strip()
+    if not value:
+        return ""
+    row = session.get(EvidencePartnerRecord, value)
+    if row is None:
+        raise ValueError(
+            f"unknown partner {value!r}; register it before attributing evidence")
+    if row.status != "active":
+        raise ValueError(
+            f"partner {value!r} is {row.status}; only an active partner may "
+            "receive new evidence")
     return value
 
 
@@ -1885,6 +1925,7 @@ def _row_to_source(row: SourceRegistryRecord) -> Dict[str, Any]:
         "source_id": row.source_id,
         "source_type": row.source_type,
         "provider": row.provider,
+        "partner_id": row.partner_id,
         "kind": row.kind,
         "url_or_feed": row.url_or_feed,
         "frequency": row.frequency,
@@ -1899,6 +1940,153 @@ def _row_to_source(row: SourceRegistryRecord) -> Dict[str, Any]:
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
+
+
+def _row_to_partner(row: EvidencePartnerRecord) -> Dict[str, Any]:
+    return {
+        "partner_id": row.partner_id,
+        "name": row.name,
+        "kind": row.kind,
+        "status": row.status,
+        "contact": row.contact,
+        "homepage": row.homepage,
+        "note": row.note,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+class EvidencePartnerRepository:
+    """Durable ledger of external evidence providers (S9 ecosystem).
+
+    A partner is the accountable identity behind a stream of external matter.
+    Attribution is fail-closed: an unknown or non-active partner cannot receive
+    new evidence, and a slug that is not a canonical lowercase identifier is
+    refused. The registry is reference data -- a partner is a knowledge
+    provider, never a permission.
+    """
+
+    def __init__(self, session: Optional[Session] = None) -> None:
+        self._injected = session
+        self._session = session
+
+    @contextmanager
+    def _db(self):
+        if self._injected is not None:
+            yield self._injected
+            return
+        session = self._session or make_live_session()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    def register(self, *, partner_id: str, name: str, kind: str,
+                 status: str = "active", contact: str = "",
+                 homepage: str = "", note: str = "") -> Dict[str, Any]:
+        value = str(partner_id or "").strip()
+        if not _source_id_ok(value):
+            raise ValueError(
+                "partner_id must be a lowercase slug (letters/digits/_/./-)")
+        if not str(name or "").strip():
+            raise ValueError("a partner needs a name")
+        if str(kind or "").strip() not in PARTNER_KINDS:
+            raise ValueError(
+                "unknown partner kind; known kinds are "
+                f"{', '.join(PARTNER_KINDS)}")
+        if str(status or "").strip() not in PARTNER_STATUSES:
+            raise ValueError(
+                "unknown partner status; known statuses are "
+                f"{', '.join(PARTNER_STATUSES)}")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._db() as session:
+            if session.get(EvidencePartnerRecord, value) is not None:
+                raise ValueError(f"partner {value!r} is already registered")
+            row = EvidencePartnerRecord(
+                partner_id=value,
+                name=str(name).strip(),
+                kind=str(kind).strip(),
+                status=str(status).strip(),
+                contact=str(contact or "").strip(),
+                homepage=str(homepage or "").strip(),
+                note=str(note or "").strip(),
+                created_at=now,
+            )
+            session.add(row)
+            session.commit()
+            return _row_to_partner(row)
+
+    def get(self, partner_id: str) -> Optional[Dict[str, Any]]:
+        with self._db() as session:
+            row = session.get(EvidencePartnerRecord, str(partner_id or ""))
+        return _row_to_partner(row) if row is not None else None
+
+    def list_all(self, *, kind: str = "", status: str = "",
+                 limit: int = 10_000) -> List[Dict[str, Any]]:
+        with self._db() as session:
+            query = select(EvidencePartnerRecord)
+            if kind:
+                if kind not in PARTNER_KINDS:
+                    raise ValueError("unknown partner kind filter")
+                query = query.where(EvidencePartnerRecord.kind == kind)
+            if status:
+                if status not in PARTNER_STATUSES:
+                    raise ValueError("unknown partner status filter")
+                query = query.where(EvidencePartnerRecord.status == status)
+            rows = session.execute(
+                query.order_by(EvidencePartnerRecord.partner_id).limit(limit)
+            ).scalars().all()
+        return [_row_to_partner(r) for r in rows]
+
+    def set_status(self, partner_id: str, status: str) -> Dict[str, Any]:
+        if status not in PARTNER_STATUSES:
+            raise ValueError(
+                f"unknown partner status {status!r}; known statuses are "
+                f"{', '.join(PARTNER_STATUSES)}")
+        with self._db() as session:
+            row = session.get(EvidencePartnerRecord, str(partner_id or ""))
+            if row is None:
+                raise ValueError(f"no registered partner {partner_id!r}")
+            row.status = status
+            row.updated_at = datetime.now(timezone.utc).isoformat()
+            session.commit()
+            return _row_to_partner(row)
+
+    def summary(self) -> Dict[str, Any]:
+        """Partner roster plus real attribution counts (never fabricated)."""
+        partners = self.list_all()
+        per_kind: Dict[str, int] = {}
+        per_status: Dict[str, int] = {}
+        for row in partners:
+            per_kind[row["kind"]] = per_kind.get(row["kind"], 0) + 1
+            per_status[row["status"]] = per_status.get(row["status"], 0) + 1
+        with self._db() as session:
+            evidence_counts = dict(session.execute(
+                select(EvidenceRecord.partner_id, func.count())
+                .where(EvidenceRecord.partner_id != "")
+                .group_by(EvidenceRecord.partner_id)).all())
+            source_counts = dict(session.execute(
+                select(SourceRegistryRecord.partner_id, func.count())
+                .where(SourceRegistryRecord.partner_id != "")
+                .group_by(SourceRegistryRecord.partner_id)).all())
+            attributed_evidence = sum(evidence_counts.values())
+            total_evidence = session.execute(
+                select(func.count()).select_from(EvidenceRecord)).scalar() or 0
+        per_partner = {
+            row["partner_id"]: {
+                "evidence": int(evidence_counts.get(row["partner_id"], 0)),
+                "sources": int(source_counts.get(row["partner_id"], 0)),
+            } for row in partners
+        }
+        return {
+            "total": len(partners),
+            "per_kind": per_kind,
+            "per_status": per_status,
+            "active": per_status.get("active", 0),
+            "attributed_evidence": int(attributed_evidence),
+            "unattributed_evidence": int(total_evidence - attributed_evidence),
+            "per_partner": per_partner,
+        }
 
 
 class SourceRegistryRepository:
@@ -1933,7 +2121,7 @@ class SourceRegistryRepository:
                  topics: Optional[List[str]] = None,
                  reliability: float = 0.0, cost: str = "free",
                  license: str = "", status: str = "active",
-                 note: str = "") -> Dict[str, Any]:
+                 partner_id: str = "", note: str = "") -> Dict[str, Any]:
         value = str(source_id or "").strip()
         if not _source_id_ok(value):
             raise ValueError(
@@ -1961,10 +2149,12 @@ class SourceRegistryRepository:
         with self._db() as session:
             if session.get(SourceRegistryRecord, value) is not None:
                 raise ValueError(f"source {value!r} is already registered")
+            pid = _resolve_partner(session, partner_id)
             row = SourceRegistryRecord(
                 source_id=value,
                 source_type=str(source_type).strip(),
                 provider=str(provider).strip(),
+                partner_id=pid,
                 kind=str(kind).strip(),
                 url_or_feed=str(url_or_feed or "").strip(),
                 frequency=str(frequency or "").strip(),
@@ -1989,7 +2179,8 @@ class SourceRegistryRepository:
         return _row_to_source(row) if row is not None else None
 
     def list_all(self, *, source_type: str = "", kind: str = "",
-                 status: str = "", limit: int = 10_000) -> List[Dict[str, Any]]:
+                 status: str = "", partner_id: str = "",
+                 limit: int = 10_000) -> List[Dict[str, Any]]:
         with self._db() as session:
             query = select(SourceRegistryRecord)
             if source_type:
@@ -2004,6 +2195,9 @@ class SourceRegistryRepository:
                 if status not in SOURCE_STATUSES:
                     raise ValueError("unknown status filter")
                 query = query.where(SourceRegistryRecord.status == status)
+            if partner_id:
+                query = query.where(
+                    SourceRegistryRecord.partner_id == str(partner_id).strip())
             rows = session.execute(
                 query.order_by(SourceRegistryRecord.source_id).limit(limit)
             ).scalars().all()

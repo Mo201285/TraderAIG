@@ -1,5 +1,6 @@
-﻿import { useState, type CSSProperties } from "react";
-import type { Language, PaperRequest, PaperRequestState, LearningExperience } from "../../types";
+﻿import { useState } from "react";
+import type { Language, PaperRequest, PaperRequestState, LearningExperience, OpportunityRow } from "../../types";
+import OpportunityDossier from "../OpportunityDossier";
 import {
   Btn,
   Card,
@@ -51,9 +52,6 @@ interface Strings {
   approveHandoff: string;
   veto: string;
   approved: string;
-  governorChecks: string;
-  confidence: string;
-  decisionTrail: string;
 }
 
 const UI: Record<Language, Strings> = {
@@ -98,9 +96,6 @@ const UI: Record<Language, Strings> = {
     approveHandoff: "Approve Handoff",
     veto: "Veto",
     approved: "approved",
-    governorChecks: "Governor checks",
-    confidence: "confidence",
-    decisionTrail: "Decision trail",
   },
   ar: {
     title: "مركز سير عمل الورق",
@@ -143,9 +138,6 @@ const UI: Record<Language, Strings> = {
     approveHandoff: "موافقة على التسليم",
     veto: "رفض",
     approved: "موافَق عليه",
-    governorChecks: "فحوصات الحاكم",
-    confidence: "الثقة",
-    decisionTrail: "مسار القرار",
   },
 };
 
@@ -163,24 +155,6 @@ const STATE_META: Record<PaperRequestState, { en: string; ar: string; color: str
 const DIR_META: Record<string, { en: string; ar: string; color: string }> = {
   long: { en: "LONG", ar: "شراء", color: "#22c55e" },
   short: { en: "SHORT", ar: "بيع", color: "#ef4444" },
-};
-
-const OPP_STATUS_COLOR: Record<string, string> = {
-  scan: "#8b5cf6",
-  qualified: "#f59e0b",
-  approved: "#22c55e",
-  executed: "#3b82f6",
-  rejected: "#ef4444",
-  expired: "#94a3b8",
-};
-
-const META_LABEL: CSSProperties = {
-  fontSize: "0.6rem",
-  fontFamily: "var(--font-mono)",
-  color: "var(--muted-foreground)",
-  textTransform: "uppercase",
-  letterSpacing: "0.05em",
-  marginBottom: 6,
 };
 
 const fmt = (n: number | null | undefined) =>
@@ -203,6 +177,24 @@ export default function PaperWorkflowPage({ lang }: { lang: Language }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [dossier, setDossier] = useState<OpportunityRow | null>(null);
+  const [dossierBusy, setDossierBusy] = useState<string | null>(null);
+  const [dossierErr, setDossierErr] = useState<string | null>(null);
+
+  const openRow = async (id: string) => {
+    if (expanded === id) {
+      setExpanded(null);
+      return;
+    }
+    setExpanded(id);
+    setDossier(null);
+    setDossierErr(null);
+    setDossierBusy(id);
+    const env = await api.getOpportunity(id);
+    if (env.ok) setDossier(env.data);
+    else setDossierErr(env.error ?? t.unreachable);
+    setDossierBusy(null);
+  };
 
   const reqs = useData(() => api.getPaperRequests(), version);
   const exps = useData(() => api.getExperiences(), version);
@@ -414,7 +406,7 @@ export default function PaperWorkflowPage({ lang }: { lang: Language }) {
                   <Card key={r.id}>
                     <div
                       style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}
-                      onClick={() => setExpanded(expanded === r.id ? null : r.id)}
+                      onClick={() => openRow(r.id)}
                     >
                       <div
                         style={{
@@ -531,72 +523,26 @@ export default function PaperWorkflowPage({ lang }: { lang: Language }) {
                             {r.riskReason}
                           </div>
                         )}
-                        {(() => {
-                          const checks = r.evidence?.risk_decision?.checks ?? [];
-                          const conf = r.evidence?.candidate?.confidence;
-                          const reasons = (r.screenReasons ?? []).filter(Boolean);
-                          const trail = r.history ?? [];
-                          if (!checks.length && !reasons.length && !trail.length) return null;
-                          const chip = (color: string): CSSProperties => ({
-                            fontSize: "0.62rem",
-                            fontFamily: "var(--font-mono)",
-                            color,
-                            background: color + "16",
-                            border: "1px solid " + color + "28",
-                            padding: "1px 6px",
-                            borderRadius: 8,
-                          });
-                          return (
-                            <div style={{ marginBottom: "0.75rem" }}>
-                              {reasons.length > 0 && (
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-                                  {reasons.map((s, i) => (
-                                    <span key={i} style={chip("#f59e0b")}>
-                                      {s}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                              {checks.length > 0 && (
-                                <div style={{ marginBottom: 8 }}>
-                                  <div style={META_LABEL}>
-                                    {t.governorChecks}
-                                    {typeof conf === "number" ? " · " + t.confidence + " " + conf.toFixed(2) : ""}
-                                  </div>
-                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                                    {checks.map((c) => (
-                                      <span key={c.name} style={chip(c.passed ? "#22c55e" : "#ef4444")}>
-                                        {(c.passed ? "✓ " : "✕ ") + c.name}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                              {trail.length > 0 && (
-                                <div>
-                                  <div style={META_LABEL}>{t.decisionTrail}</div>
-                                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                                    {trail.map((h, i) => (
-                                      <div
-                                        key={i}
-                                        style={{
-                                          fontFamily: "var(--font-mono)",
-                                          fontSize: "0.66rem",
-                                          color: "var(--muted-foreground)",
-                                        }}
-                                      >
-                                        <span style={{ color: OPP_STATUS_COLOR[h.status] ?? "#94a3b8" }}>
-                                          {h.status}
-                                        </span>
-                                        {" · " + when(h.ts) + (h.note ? " · " + h.note : "")}
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })()}
+                        {dossierBusy === r.id ? (
+                          <div style={{ marginBottom: "0.75rem" }}>
+                            <LoadingState lang={lang} />
+                          </div>
+                        ) : dossierErr ? (
+                          <div
+                            style={{
+                              marginBottom: "0.75rem",
+                              fontSize: "0.72rem",
+                              fontFamily: ff(lang),
+                              color: "#fca5a5",
+                            }}
+                          >
+                            {dossierErr}
+                          </div>
+                        ) : dossier && dossier.opportunity_id === r.id ? (
+                          <div style={{ marginBottom: "0.75rem" }}>
+                            <OpportunityDossier row={dossier} lang={lang} />
+                          </div>
+                        ) : null}
                         {(() => {
                           const st = r.opportunityStatus;
                           const canApprove = st === "qualified";

@@ -887,6 +887,17 @@ export const api = {
       return { ok: false, data: [], source: "mock", error: String(e) };
     }
   },
+  async getOpportunity(id: string): Promise<Envelope<OpportunityRow>> {
+    const empty = {} as OpportunityRow;
+    if (!health.live) return { ok: false, data: empty, source: "mock" };
+    try {
+      const res = await authorizedFetch(`/opportunities/${encodeURIComponent(id)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as OpportunityRow, source: "live" };
+    } catch (e) {
+      return { ok: false, data: empty, source: "mock", error: String(e) };
+    }
+  },
   async getOpportunities(): Promise<Envelope<OpportunityRow[]>> {
     if (!health.live) return { ok: true, data: [], source: "mock" };
     try {

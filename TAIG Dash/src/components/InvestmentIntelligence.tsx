@@ -1,8 +1,10 @@
+import { useState } from "react";
 import type { ReactNode } from "react";
 import type { Language, OpportunityRow } from "../types";
 import { Card, SectionLabel, ff, fd, isRtl } from "./ui/shared";
 import { EmptyState, ErrorState, LoadingState, StatusChip } from "../design";
 import { useData, api, type AsyncData } from "../lib/useData";
+import OpportunityDossier from "./OpportunityDossier";
 
 const UI: Record<Language, Record<string, string>> = {
   en: {
@@ -169,6 +171,7 @@ function opportunityEvidence(
 export default function InvestmentIntelligence({ lang }: { lang: Language }) {
   const t = UI[lang];
   const rtl = isRtl(lang);
+  const [openDossier, setOpenDossier] = useState<string | null>(null);
 
   const regimes = useData(() => api.getRegimeSnapshot());
   const opportunities = useData(() => api.getOpportunities());
@@ -293,6 +296,8 @@ export default function InvestmentIntelligence({ lang }: { lang: Language }) {
                   const ev = opportunityEvidence(o, t);
                   const conf = typeof o.confidence === "number" ? o.confidence.toFixed(2) : "—";
                   const rr = typeof o.risk_reward === "number" ? o.risk_reward.toFixed(2) : null;
+                  const open = openDossier === o.opportunity_id;
+                  const toggle = () => setOpenDossier(open ? null : o.opportunity_id);
                   return (
                     <div
                       key={o.opportunity_id}
@@ -301,7 +306,7 @@ export default function InvestmentIntelligence({ lang }: { lang: Language }) {
                         borderTop: "1px solid var(--border)",
                       }}
                     >
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div onClick={toggle} style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.72rem", fontWeight: 600 }}>
                           {o.symbol}
                         </span>
@@ -319,9 +324,14 @@ export default function InvestmentIntelligence({ lang }: { lang: Language }) {
                         >
                           {o.score}
                         </span>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.6rem", color: "var(--muted-foreground)" }}>
+                          {open ? "▾" : "▸"}
+                        </span>
                       </div>
                       <div
+                        onClick={toggle}
                         style={{
+                          cursor: "pointer",
                           marginTop: 2,
                           fontFamily: "var(--font-mono)",
                           fontSize: "0.6rem",
@@ -332,6 +342,11 @@ export default function InvestmentIntelligence({ lang }: { lang: Language }) {
                         {t.conf} {conf}
                         {rr ? " · " + t.rr + " " + rr : ""} · {ev.line}
                       </div>
+                      {open && (
+                        <div style={{ marginTop: 8 }}>
+                          <OpportunityDossier row={o} lang={lang} />
+                        </div>
+                      )}
                     </div>
                   );
                 })}

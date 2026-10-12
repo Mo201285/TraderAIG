@@ -427,11 +427,17 @@ export default function DeveloperHubPage({ lang }: { lang: Language }) {
           <div>
             <div style={tileLabel}>{t.repoTitle}</div>
             <div style={tileValue}>
-              {repoHealth.source === "loading" ? "…" : repoHealth.data?.overall || "—"}
+              {repoHealth.source === "loading"
+                ? "…"
+                : repoHealth.source === "live"
+                  ? repoHealth.data?.overall || "—"
+                  : "—"}
             </div>
             <div style={tileSub}>
               {t.overall} · /system/health · {t.components}:{" "}
-              {repoHealth.data ? Object.keys(repoHealth.data.components).length : "—"}
+              {repoHealth.source === "live" && repoHealth.data
+                ? Object.keys(repoHealth.data.components).length
+                : "—"}
             </div>
           </div>
           <div>

@@ -11,6 +11,7 @@ import type {
   ChartTimeframes,
   CopyFollower,
   DriftStatusView,
+  DspyGovernanceView,
   DspyModelsView,
   DspyRegistryView,
   DspyStatusView,
@@ -1098,6 +1099,20 @@ export const api = {
       return {
         ok: true,
         data: (await res.json()) as DspyRegistryView,
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getDspyGovernance(): Promise<Envelope<DspyGovernanceView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/dspy/governance");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return {
+        ok: true,
+        data: (await res.json()) as DspyGovernanceView,
         source: "live",
       };
     } catch (e) {

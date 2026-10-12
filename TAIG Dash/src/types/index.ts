@@ -1184,6 +1184,54 @@ export interface DspyRegistryView {
   versions: DspyProgramVersion[];
 }
 
+// ─── DSPy model governance (row 784): report-only gate/drift detection ───────
+
+export interface DspyGovernanceGate {
+  state: string;
+  compiled_score: number | null;
+  baseline_score: number | null;
+  margin: number | null;
+}
+
+export interface DspyGovernanceModel {
+  state: string;
+  compiled_on: string | null;
+  served_model: string | null;
+}
+
+export interface DspyGovernanceProgram {
+  program: string;
+  version: string;
+  status: string;
+  promoted: boolean;
+  gate: DspyGovernanceGate;
+  model: DspyGovernanceModel;
+  alert: boolean;
+}
+
+export interface DspyGovernanceAlert {
+  kind: string;
+  severity: string;
+  program: string;
+  version: string;
+  status: string;
+  detail: string;
+}
+
+export interface DspyGovernanceView {
+  ok: boolean;
+  route: string;
+  served: {
+    provider: string;
+    model: string;
+    local_reachable: boolean;
+    available_models: string[];
+  };
+  programs: DspyGovernanceProgram[];
+  alerts: DspyGovernanceAlert[];
+  note: string;
+}
+
 // ─── Developer Hub (row 756, M11.3): route catalogue from the registered app ─
 
 export interface RouteParameter {

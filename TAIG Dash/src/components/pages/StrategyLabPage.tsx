@@ -111,6 +111,19 @@ const AI_UI: Record<Language, Record<string, string>> = {
     created: "Created",
     registryEmpty: "No compiled versions",
     registryEmptyHint: "The version ledger reads /research/dspy/registry.",
+    govTitle: "Model governance",
+    govEmpty: "Governance unanswered",
+    govEmptyHint: "The governance card reads /research/dspy/governance.",
+    govProvider: "Provider",
+    govModel: "Model",
+    govAvailableModels: "Available models",
+    govPrograms: "Program versions",
+    govGate: "Gate",
+    govMargin: "Margin",
+    govModelState: "Model state",
+    govPromoted: "Promoted",
+    govAlerts: "Alerts",
+    govNoAlerts: "No governance alerts",
   },
   ar: {
     aiTab: "برامج الذكاء الاصطناعي",
@@ -151,6 +164,19 @@ const AI_UI: Record<Language, Record<string, string>> = {
     created: "أُنشئ",
     registryEmpty: "لا إصدارات مُجمَّعة",
     registryEmptyHint: "سجل الإصدارات يقرأ /research/dspy/registry.",
+    govTitle: "حوكمة النماذج",
+    govEmpty: "لم تُجب الحوكمة",
+    govEmptyHint: "بطاقة الحوكمة تقرأ /research/dspy/governance.",
+    govProvider: "المزوّد",
+    govModel: "النموذج",
+    govAvailableModels: "النماذج المتاحة",
+    govPrograms: "إصدارات البرامج",
+    govGate: "البوابة",
+    govMargin: "الهامش",
+    govModelState: "حالة النموذج",
+    govPromoted: "مُرقَّى",
+    govAlerts: "التنبيهات",
+    govNoAlerts: "لا تنبيهات حوكمة",
   },
 };
 
@@ -161,6 +187,19 @@ const VSTATUS_COLORS: Record<string, string> = {
   paper: "#3b82f6",
   production: "#a78bfa",
   quarantined: "#ef4444",
+};
+
+const GOV_GATE_COLORS: Record<string, string> = {
+  passed: "#22c55e",
+  failed: "#ef4444",
+  regressed: "#ef4444",
+  ungated: "#64748b",
+};
+
+const GOV_SEVERITY_COLORS: Record<string, string> = {
+  high: "#ef4444",
+  medium: "#f59e0b",
+  low: "#3b82f6",
 };
 
 function famName(lang: Language, id: string): string {
@@ -203,6 +242,7 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
   const dspyStatus = useData(() => api.getDspyStatus(), refresh);
   const dspyModels = useData(() => api.getDspyModels(), refresh);
   const dspyRegistry = useData(() => api.getDspyRegistry(), refresh);
+  const dspyGovernance = useData(() => api.getDspyGovernance(), refresh);
 
   const policyQ = useData(() => api.getDrawdownPolicy(), refresh);
   const [mode, setMode] = useState<DrawdownModeKind>("governed");
@@ -876,6 +916,67 @@ export default function StrategyLabPage({ lang }: { lang: Language }) {
                 ))}
                 {!dspyRegistry.data.versions.length && <span style={{ fontSize: "0.8rem" }}>—</span>}
               </div>
+            </Card>
+          )}
+
+          {dspyGovernance.source === "loading" ? (
+            <Card><LoadingState label={t.loading} lang={lang} /></Card>
+          ) : !dspyGovernance.data ? (
+            <Card><EmptyState title={t.govEmpty} hint={t.govEmptyHint} /></Card>
+          ) : (
+            <Card>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <SectionLabel lang={lang}>{t.govTitle}</SectionLabel>
+                <span style={{ fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                  {t.source}: {dspyGovernance.source === "live" ? t.live : t.mock}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                <span style={aiChip}>{t.govProvider}: {dspyGovernance.data.served.provider}</span>
+                <span style={aiChip}>{t.govModel}: {dspyGovernance.data.served.model}</span>
+                <StateChip
+                  label={dspyGovernance.data.served.local_reachable ? t.reachable : t.unreachable}
+                  color={dspyGovernance.data.served.local_reachable ? "#22c55e" : "#f59e0b"}
+                />
+                <span style={aiChip}>{t.govAvailableModels}: {dspyGovernance.data.served.available_models.length}</span>
+              </div>
+
+              <SectionLabel lang={lang}>{t.govPrograms} ({dspyGovernance.data.programs.length})</SectionLabel>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 6 }}>
+                {dspyGovernance.data.programs.map((p) => (
+                  <div key={p.version} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: "0.68rem", fontFamily: ff(lang), background: p.alert ? "#ef444411" : "var(--muted)", border: p.alert ? "1px solid #ef444433" : "1px solid var(--border)", borderRadius: 6, padding: "6px 9px" }}>
+                    <span style={{ fontFamily: "var(--font-mono)", color: "var(--foreground)" }}>{p.version}</span>
+                    <StateChip label={p.gate.state} color={GOV_GATE_COLORS[p.gate.state] ?? "#64748b"} />
+                    <span style={aiChip}>{t.govGate}: {p.gate.compiled_score == null ? "—" : p.gate.compiled_score} / {p.gate.baseline_score == null ? "—" : p.gate.baseline_score}</span>
+                    <span style={aiChip}>{t.govMargin}: {p.gate.margin == null ? "—" : p.gate.margin}</span>
+                    <span style={aiChip}>{t.govModelState}: {p.model.state}</span>
+                    <span style={aiChip}>{t.govPromoted}: {p.promoted ? "✓" : "—"}</span>
+                    {p.alert ? <span style={{ marginInlineStart: "auto", color: "#ef4444", fontWeight: 600 }}>⚠</span> : null}
+                  </div>
+                ))}
+                {!dspyGovernance.data.programs.length && <span style={{ fontSize: "0.8rem" }}>—</span>}
+              </div>
+
+              <SectionLabel lang={lang}>{t.govAlerts} ({dspyGovernance.data.alerts.length})</SectionLabel>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 6 }}>
+                {dspyGovernance.data.alerts.map((a, i) => (
+                  <div key={`${a.version}-${a.kind}-${i}`} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: "0.68rem", fontFamily: ff(lang) }}>
+                    <StateChip label={a.severity} color={GOV_SEVERITY_COLORS[a.severity] ?? "#64748b"} />
+                    <span style={{ fontFamily: "var(--font-mono)", color: "var(--foreground)" }}>{a.version}</span>
+                    <span style={{ color: "var(--muted-foreground)" }}>{a.kind}</span>
+                    <span style={{ color: "var(--muted-foreground)", flex: "1 1 220px" }}>{a.detail}</span>
+                  </div>
+                ))}
+                {!dspyGovernance.data.alerts.length && (
+                  <span style={{ fontSize: "0.72rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>{t.govNoAlerts}</span>
+                )}
+              </div>
+
+              {dspyGovernance.data.note && (
+                <div style={{ fontSize: "0.66rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginTop: 10, borderLeft: rtl ? "none" : "3px solid #3b82f6", borderRight: rtl ? "3px solid #3b82f6" : "none", paddingInlineStart: 8 }}>
+                  {dspyGovernance.data.note}
+                </div>
+              )}
             </Card>
           )}
         </div>

@@ -20,6 +20,7 @@ import type {
   PnlAttributionView,
   StrategyNftView,
   ResearchRewardPolicyView,
+  PartnerNetworkView,
   DeveloperPolicyView,
   DeveloperTokensView,
   EvidenceRow,
@@ -452,6 +453,16 @@ export const api = {
       const res = await authorizedFetch("/economy/research-reward/policy");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return { ok: true, data: (await res.json()) as ResearchRewardPolicyView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getPartnerNetwork(): Promise<Envelope<PartnerNetworkView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/partner-network");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as PartnerNetworkView, source: "live" };
     } catch (e) {
       return { ok: false, data: null, source: "mock", error: String(e) };
     }

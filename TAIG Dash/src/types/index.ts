@@ -1184,6 +1184,50 @@ export interface DspyRegistryView {
   versions: DspyProgramVersion[];
 }
 
+// ─── Partner network (S11): provider registry joined to order venues ─────────
+
+export interface PartnerView {
+  provider_id: string;
+  name: string;
+  provider_type: string;
+  supported_venues: string[];
+  registry_status: string;
+  attestation_status: string;
+  attested_by: string;
+  attested_at: string;
+}
+
+export interface PartnerVenuePartner {
+  provider_id: string;
+  name: string;
+  attestation_status: string;
+}
+
+export interface PartnerVenueView {
+  venue: string;
+  executed: boolean;
+  state: string;
+  partners: PartnerVenuePartner[];
+}
+
+export interface PartnerCoverageView {
+  registered_partners: number;
+  attested_partners: number;
+  pending_attestations: number;
+  venues: number;
+  venues_accounted: number;
+  executing_venues_unaccounted: string[];
+  executing_venues_pending: string[];
+}
+
+export interface PartnerNetworkView {
+  generated_at: number;
+  partners: PartnerView[];
+  venues: PartnerVenueView[];
+  coverage: PartnerCoverageView;
+  note: string;
+}
+
 // ─── Company P&L attribution (S8, read-only accountability) ──────────────────
 
 export interface PnlCompanySummary {

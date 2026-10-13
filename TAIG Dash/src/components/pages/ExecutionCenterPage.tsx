@@ -145,6 +145,31 @@ const UI: Record<string, Record<string, string>> = {
       "The scorecard always surfaces the MT5 and CEX rails; none are reported yet.",
     errorVenuesTitle: "Venue scorecard unreachable",
     errorVenuesHint: "The surface reads /execution/venue-score and it could not be reached.",
+    partnersTab: "Partners",
+    partnersTitle: "Partner network",
+    partnersHint:
+      "Registered provider integrations and the order venues they account for, read from /partner-network. A venue's state is derived from real execution (the S5 scorecard), never asserted; an attestation records onboarding, never a trade permission.",
+    partnersRegistered: "Registered",
+    partnersAttested: "Attested",
+    partnersPending: "Pending",
+    partnersVenues: "Venues",
+    partnersVenuesAccounted: "Venues accounted",
+    partnersCoverage: "Coverage",
+    partnersProvider: "Provider",
+    partnersType: "Type",
+    partnersSupported: "Supported venues",
+    partnersRegistry: "Registry",
+    partnersAttestation: "Attestation",
+    partnersVenue: "Venue",
+    partnersState: "State",
+    partnersExecuting: "executed",
+    partnersUnattributed: "unattributed",
+    partnersPendingAttest: "pending attestation",
+    partnersAccounting: "accounting partner",
+    partnersEmpty: "No partner integrations registered yet",
+    partnersEmptyHint: "Reads /partner-network; nothing is registered yet.",
+    partnersError: "Partner network unreachable",
+    partnersErrorHint: "The surface reads /partner-network and it could not be reached.",
   },
   ar: {
     pipelineLabel: "مسار التنفيذ",
@@ -286,6 +311,31 @@ const UI: Record<string, Record<string, string>> = {
       "البطاقة تعرض دائماً مساري MT5 وCEX؛ لا شيء مُبلَّغ بعد.",
     errorVenuesTitle: "بطاقة الجهات غير متاحة",
     errorVenuesHint: "السطح يقرأ /execution/venue-score ويتعذر الوصول إليه.",
+    partnersTab: "المزوّدون",
+    partnersTitle: "شبكة المزوّدين",
+    partnersHint:
+      "تكاملات المزوّدين المسجّلة وجهات التنفيذ التي تُحسب لهم، مقروءة من /partner-network. حالة الجهة تُشتق من تنفيذ فعلي (بطاقة S5)، ولا تُفترض؛ والإثبات يسجّل الإلحاق، وليس إذن تداول.",
+    partnersRegistered: "مسجّل",
+    partnersAttested: "مُثبت",
+    partnersPending: "معلّق",
+    partnersVenues: "الجهات",
+    partnersVenuesAccounted: "جهات محسوبة",
+    partnersCoverage: "التغطية",
+    partnersProvider: "المزوّد",
+    partnersType: "النوع",
+    partnersSupported: "الجهات المدعومة",
+    partnersRegistry: "السجل",
+    partnersAttestation: "الإثبات",
+    partnersVenue: "الجهة",
+    partnersState: "الحالة",
+    partnersExecuting: "نفّذت",
+    partnersUnattributed: "غير منسوب",
+    partnersPendingAttest: "بانتظار الإثبات",
+    partnersAccounting: "المزوّد المحسوب",
+    partnersEmpty: "لا تكاملات مزوّدين مسجّلة بعد",
+    partnersEmptyHint: "يقرأ /partner-network؛ لا شيء مسجّل بعد.",
+    partnersError: "شبكة المزوّدين غير متاحة",
+    partnersErrorHint: "السطح يقرأ /partner-network ويتعذر الوصول إليه.",
   },
 };
 
@@ -308,6 +358,7 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
   const { data, source } = useData(() => api.getExecutionTruth(), version);
   const recon = useData(() => api.getReconciliation(), version);
   const venueScore = useData(() => api.getVenueScore(), version);
+  const partnerNet = useData(() => api.getPartnerNetwork(), version);
   const live = source === "live";
   const lc = live ? data?.lifecycle : undefined;
   const mt = live ? data?.metrics : undefined;
@@ -333,6 +384,7 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
         { id: "positions", label: t.positionsTab },
         { id: "learning", label: t.learningTab },
         { id: "venues", label: t.venuesTab },
+        { id: "partners", label: t.partnersTab },
         { id: "reconciliation", label: t.reconciliationTab },
       ]
     : [
@@ -341,6 +393,7 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
         { id: "positions", label: t.positionsTab },
         { id: "learning", label: t.learningTab },
         { id: "venues", label: t.venuesTab },
+        { id: "partners", label: t.partnersTab },
         { id: "reconciliation", label: t.reconciliationTab },
       ];
 
@@ -863,9 +916,113 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
         );
       })()}
 
+      {tab === "partners" && (() => {
+        const p = partnerNet.data;
+        const pLive = partnerNet.source === "live";
+        const stateColor = (s: string) =>
+          s === "accounted" ? "#22c55e" : s === "pending_attestation" ? "#f59e0b" : "#6b7280";
+        const stateLabel = (s: string) =>
+          s === "accounted" ? (rtl ? "محسوب" : "accounted")
+            : s === "pending_attestation" ? t.partnersPendingAttest
+            : t.partnersUnattributed;
+        const attColor = (s: string) =>
+          s === "attested" ? "#22c55e" : s === "pending" ? "#f59e0b" : "#6b7280";
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <span style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                {pLive ? "/partner-network" : partnerNet.source}
+              </span>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <StateChip label={pLive ? (rtl ? "مباشر" : "LIVE") : partnerNet.source === "loading" ? (rtl ? "جارٍ" : "LOADING") : (rtl ? "متوقف" : "DOWN")} color={pLive ? "#22c55e" : "#f59e0b"} />
+                <Btn variant="ghost" onClick={() => setVersion((v) => v + 1)}>↻ {t.updatedLabel}</Btn>
+              </div>
+            </div>
+            <div style={{ fontSize: "0.72rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+              {t.partnersHint}
+            </div>
+            {partnerNet.source === "loading" ? (
+              <LoadingState label={t.loadingVenues} lang={lang} />
+            ) : !pLive || !p ? (
+              <ErrorState title={t.partnersError} hint={t.partnersErrorHint} lang={lang} />
+            ) : (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "0.6rem" }}>
+                  {[
+                    { label: t.partnersRegistered, value: String(p.coverage.registered_partners), color: "#3b82f6" },
+                    { label: t.partnersAttested, value: String(p.coverage.attested_partners), color: "#22c55e" },
+                    { label: t.partnersPending, value: String(p.coverage.pending_attestations), color: "#f59e0b" },
+                    { label: t.partnersVenues, value: String(p.coverage.venues), color: "#3b82f6" },
+                    { label: t.partnersVenuesAccounted, value: String(p.coverage.venues_accounted), color: "#22c55e" },
+                  ].map((m) => (
+                    <div key={m.label} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "0.7rem", display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div style={{ fontSize: "0.6rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{m.label}</div>
+                      <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.92rem", fontWeight: 600, color: m.color }}>{m.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <Card>
+                  <SectionLabel lang={lang}>{t.partnersTitle}</SectionLabel>
+                  {p.partners.length === 0 ? (
+                    <EmptyState title={t.partnersEmpty} hint={t.partnersEmptyHint} lang={lang} />
+                  ) : (
+                    <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                      {p.partners.map((row) => (
+                        <div key={row.provider_id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "0.7rem" }}>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+                            <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.82rem", fontWeight: 600 }}>{row.name || row.provider_id}</span>
+                            <span style={{ fontSize: "0.65rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>{row.provider_id}</span>
+                            <StateChip label={row.attestation_status} color={attColor(row.attestation_status)} />
+                            <StateChip label={row.registry_status} color="#3b82f6" />
+                          </div>
+                          <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 14, fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                            <span>{t.partnersType}: {row.provider_type}</span>
+                            <span>{t.partnersSupported}: {row.supported_venues.length ? row.supported_venues.join(", ") : "—"}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Card>
+
+                <Card>
+                  <SectionLabel lang={lang}>{t.partnersVenues}</SectionLabel>
+                  {p.venues.length === 0 ? (
+                    <EmptyState title={t.emptyVenuesTitle} hint={t.emptyVenuesHint} lang={lang} />
+                  ) : (
+                    <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                      {p.venues.map((v) => (
+                        <div key={v.venue} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "0.7rem" }}>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+                            <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.82rem", fontWeight: 600 }}>{v.venue}</span>
+                            <StateChip label={stateLabel(v.state)} color={stateColor(v.state)} />
+                            {v.executed && <StateChip label={t.partnersExecuting} color="#3b82f6" />}
+                          </div>
+                          <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 14, fontSize: "0.68rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                            {v.partners.length === 0 ? <span>—</span> : v.partners.map((pp) => (
+                              <span key={pp.provider_id}>{t.partnersAccounting}: {pp.name || pp.provider_id} · {pp.attestation_status}</span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Card>
+
+                {p.note && (
+                  <div style={{ fontSize: "0.68rem", fontFamily: ff(lang), color: "var(--muted-foreground)", borderLeft: rtl ? "none" : "3px solid #f59e0b", borderRight: rtl ? "3px solid #f59e0b" : "none", paddingInlineStart: 8 }}>
+                    {p.note}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })()}
+
       <p style={{ margin: "0.75rem 0 0", fontFamily: "var(--font-mono)", fontSize: "0.66rem", color: "var(--muted-foreground)", textAlign: rtl ? "right" : "left", opacity: 0.6 }}>
-        {t.sourceLabel}: {source} · {t.authority}
-      </p>
+        {t.sourceLabel}: {source} · {t.authority}      </p>
     </div>
   );
 }

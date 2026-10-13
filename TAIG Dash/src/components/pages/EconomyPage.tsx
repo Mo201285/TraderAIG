@@ -108,6 +108,29 @@ const ECON: Record<string, Record<string, string>> = {
     pnlEmpty: "No realised PnL recorded yet",
     pnlEmptyHint:
       "Attribution appears once the experience ledger holds realised results; nothing is invented.",
+    nftTitle: "Strategy tokens (marketplace)",
+    nftHint:
+      "Verified strategies minted as tokens and traded through the one wallet ledger, read from /economy/nfts. Ownership is a certificate only — never a trade permission.",
+    nftEmpty: "No strategy tokens minted yet",
+    nftEmptyHint:
+      "A token appears once a VALIDATED strategy with a passing validation and a recorded owner is minted.",
+    nftStage: "stage",
+    nftTier: "valuation",
+    nftOwner: "owner",
+    nftForSale: "for sale",
+    nftNotListed: "not listed",
+    nftPrice: "price",
+    nftToken: "token",
+    rewardTitle: "Research reward policy",
+    rewardHint:
+      "How research is rewarded, read from /economy/research-reward/policy. Credits are bounded and settled through the wallet ledger; rewarded on passing validation only.",
+    rewardMin: "min credits",
+    rewardMax: "max credits",
+    rewardBase: "base",
+    rewardBonus: "quality bonus",
+    rewardWeights: "weights",
+    rewardBoundedBy: "bounded by",
+    rewardOn: "rewarded on",
   },
   ar: {
     page: "اقتصاد XTAIG",
@@ -203,6 +226,29 @@ const ECON: Record<string, Record<string, string>> = {
     pnlEmpty: "لا يوجد ربح/خسارة فعلي مسجّل بعد",
     pnlEmptyHint:
       "يظهر التوزيع بعد تسجيل نتائج فعلية في دفتر الخبرة؛ ولا يُختلق شيء.",
+    nftTitle: "رموز الاستراتيجيات (السوق)",
+    nftHint:
+      "استراتيجيات مُثبتة تُسكّ كرموز وتُتداول عبر دفتر المحفظة الواحد، مقروءة من /economy/nfts. الملكية شهادة فقط — وليست إذن تداول أبداً.",
+    nftEmpty: "لا رموز استراتيجيات مسكوكة بعد",
+    nftEmptyHint:
+      "يظهر الرمز بعد سكّ استراتيجية مُثبتة (VALIDATED) بتحقّق ناجح ومالك مسجّل.",
+    nftStage: "المرحلة",
+    nftTier: "التقييم",
+    nftOwner: "المالك",
+    nftForSale: "معروض",
+    nftNotListed: "غير معروض",
+    nftPrice: "السعر",
+    nftToken: "الرمز",
+    rewardTitle: "سياسة مكافأة البحث",
+    rewardHint:
+      "كيف يُكافأ البحث، مقروءة من /economy/research-reward/policy. الأرصدة محدودة وتُسوّى عبر دفتر المحفظة؛ والمكافأة على التحقّق الناجح فقط.",
+    rewardMin: "أدنى أرصدة",
+    rewardMax: "أقصى أرصدة",
+    rewardBase: "الأساس",
+    rewardBonus: "مكافأة الجودة",
+    rewardWeights: "الأوزان",
+    rewardBoundedBy: "مقيّد بـ",
+    rewardOn: "يُكافأ عند",
   },
 };
 
@@ -261,6 +307,8 @@ export default function EconomyPage({
   const wallet = useData(() => api.getWallet(user.id), version);
   const products = useData(() => api.getProducts(user.id), version);
   const pnl = useData(() => api.getPnlAttribution(), version);
+  const nfts = useData(() => api.getStrategyNfts(), version);
+  const reward = useData(() => api.getResearchRewardPolicy(), version);
 
   const s = status.data;
   const w = wallet.data;
@@ -511,6 +559,83 @@ export default function EconomyPage({
               </div>
             );
           })()
+        )}
+      </Card>
+
+      {/* 1c. Strategy tokens — GET /economy/nfts */}
+      <Card>
+        <SectionLabel lang={lang}>{t.nftTitle}</SectionLabel>
+        <div style={{ fontSize: "0.68rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginTop: 4, marginBottom: 8 }}>
+          {t.nftHint}
+        </div>
+        {nfts.source === "loading" ? (
+          <LoadingState label={t.loading} lang={lang} />
+        ) : nfts.error ? (
+          <ErrorState title={t.loadError} hint={nfts.error} lang={lang} />
+        ) : (nfts.data?.length ?? 0) === 0 ? (
+          <EmptyState title={t.nftEmpty} hint={t.nftEmptyHint} lang={lang} />
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+            {(nfts.data ?? []).map((n) => (
+              <div key={n.token_id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "0.7rem" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.66rem", color: "var(--muted-foreground)" }}>
+                    {t.nftToken}: {n.token_id}
+                  </span>
+                  <StateChip
+                    label={n.for_sale ? t.nftForSale : t.nftNotListed}
+                    color={n.for_sale ? "#22c55e" : "var(--muted-foreground)"}
+                  />
+                  {n.for_sale && n.listing && (
+                    <span style={{ marginInlineStart: "auto", fontFamily: "var(--font-mono)", fontSize: "0.8rem" }}>
+                      {t.nftPrice}: {money(n.listing.price_usd)}
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: "0.875rem", fontFamily: ff(lang), marginTop: 4 }}>
+                  {n.strategy_id}
+                </div>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 4 }}>
+                  <span style={labelStyle}>{t.nftStage}: <b style={monoStyle}>{dash(n.stage)}</b></span>
+                  <span style={labelStyle}>{t.nftTier}: <b style={monoStyle}>{dash(n.valuation_tier)} · {n.valuation_score}</b></span>
+                  <span style={labelStyle}>{t.nftOwner}: <b style={monoStyle}>{dash(n.owner)}</b></span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* 1d. Research reward policy — GET /economy/research-reward/policy */}
+      <Card>
+        <SectionLabel lang={lang}>{t.rewardTitle}</SectionLabel>
+        <div style={{ fontSize: "0.68rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginTop: 4, marginBottom: 8 }}>
+          {t.rewardHint}
+        </div>
+        {reward.source === "loading" ? (
+          <LoadingState label={t.loading} lang={lang} />
+        ) : !reward.data ? (
+          <ErrorState title={t.loadError} hint={reward.error} lang={lang} />
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <Grid cols={4}>
+              <MetricTile label={t.rewardBase} value={String(reward.data.base_credits)} lang={lang} />
+              <MetricTile label={t.rewardBonus} value={String(reward.data.quality_bonus)} lang={lang} />
+              <MetricTile label={t.rewardMin} value={String(reward.data.min_credits)} lang={lang} />
+              <MetricTile label={t.rewardMax} value={String(reward.data.max_credits)} lang={lang} />
+            </Grid>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {Object.entries(reward.data.weights).map(([k, v]) => (
+                <div key={k} style={rowStyle}>
+                  <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.72rem" }}>{k}</span>
+                  <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.72rem", color: "var(--muted-foreground)" }}>{v}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: "0.66rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+              <span style={labelStyle}>{t.rewardOn}: </span>{reward.data.rewarded_on} · <span style={labelStyle}>{t.rewardBoundedBy}: </span>{reward.data.bounded_by}
+            </div>
+          </div>
         )}
       </Card>
 

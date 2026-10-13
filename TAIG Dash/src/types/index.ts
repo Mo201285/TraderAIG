@@ -1239,6 +1239,49 @@ export interface PnlAttributionView {
   min_samples: number;
 }
 
+// ─── Strategy NFTs (economy marketplace, read-only) ──────────────────────────
+
+export interface NftListingView {
+  price_usd: number;
+  listed_at: string;
+}
+
+export interface NftHistoryEntry {
+  event: string;
+  at: string;
+  price_usd?: number;
+  from?: string;
+  to?: string;
+}
+
+export interface StrategyNftView {
+  token_id: string;
+  strategy_id: string;
+  provenance: string;
+  owner: string;
+  stage: string;
+  family: string;
+  asset: string;
+  valuation_tier: string;
+  valuation_score: number;
+  created_at: string;
+  for_sale: boolean;
+  listing: NftListingView | null;
+  history: NftHistoryEntry[];
+}
+
+export interface ResearchRewardPolicyView {
+  ok: boolean;
+  source: string;
+  min_credits: number;
+  max_credits: number;
+  base_credits: number;
+  quality_bonus: number;
+  weights: Record<string, number>;
+  bounded_by: string;
+  rewarded_on: string;
+}
+
 // ─── Portfolio allocation engine + correlation (S4, read-only) ───────────────
 
 export interface AllocationDetailRow {

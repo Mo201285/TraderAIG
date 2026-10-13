@@ -308,6 +308,8 @@ export default function EconomyPage({
   const products = useData(() => api.getProducts(user.id), version);
   const pnl = useData(() => api.getPnlAttribution(), version);
   const nfts = useData(() => api.getStrategyNfts(), version);
+  const [nftId, setNftId] = useState<string>("");
+  const nftDetail = useData(() => (nftId ? api.getStrategyNft(nftId) : Promise.resolve({ ok: true, data: null, source: "live" } as any)), version + (nftId ? 0 : 1000));
   const reward = useData(() => api.getResearchRewardPolicy(), version);
 
   const s = status.data;

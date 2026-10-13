@@ -450,6 +450,20 @@ export const api = {
       return { ok: false, data: null, source: "mock", error: String(e) };
     }
   },
+  async getStrategyNft(tokenId: string): Promise<Envelope<StrategyNftView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch(`/economy/nfts/${encodeURIComponent(tokenId)}`);
+      if (res.status === 404) {
+        return { ok: true, data: null, source: "live" };
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { token?: StrategyNftView };
+      return { ok: true, data: (raw.token ?? null) as StrategyNftView | null, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
   async getStrategyNfts(): Promise<Envelope<StrategyNftView[]>> {
     const empty: StrategyNftView[] = [];
     if (!health.live) return { ok: true, data: empty, source: "mock" };

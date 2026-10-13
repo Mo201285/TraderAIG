@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type {
+  EvidencePartnerRow,
   EvidenceRow,
   IntelligenceRouterView,
   Language,
@@ -8,6 +9,7 @@ import type {
   ResearchPackageRow,
   ResearchQueueItem,
   ResearchQueueSummary,
+  ResearchPartnersSummary,
   ResearchSourceRow,
   TrustSummary,
 } from "../../types";
@@ -24,7 +26,7 @@ import {
 import { EmptyState, ErrorState, LoadingState, StatusChip } from "../../design";
 import { useData, api } from "../../lib/useData";
 
-type TabId = "sources" | "queue" | "intelligence" | "evidence" | "active" | "missions";
+type TabId = "sources" | "partners" | "queue" | "intelligence" | "evidence" | "active" | "missions";
 
 const UI: Record<string, Record<string, string>> = {
   en: {
@@ -46,6 +48,23 @@ const UI: Record<string, Record<string, string>> = {
     reliability: "Reliability",
     lastSync: "Last sync",
     never: "Never",
+    // Evidence partners (S9 ecosystem)
+    partnersTab: "Evidence Partners",
+    partnersTitle: "Registered evidence partners",
+    partnersEmpty: "No evidence partners registered",
+    partnersEmptyHint:
+      "Register a partner with POST /research/partners to attribute external evidence (S9 ecosystem).",
+    pTotal: "Partners",
+    pActive: "Active",
+    pAttributed: "Attributed evidence",
+    pUnattributed: "Unattributed evidence",
+    pByKind: "By kind",
+    pByStatus: "By status",
+    pEvidence: "evidence",
+    pSources: "sources",
+    pContact: "Contact",
+    pHomepage: "Homepage",
+    pUpdated: "Updated",
     // Queue
     queueTab: "Research Queue",
     queueTitle: "Scored queue (top down)",
@@ -134,6 +153,23 @@ const UI: Record<string, Record<string, string>> = {
     reliability: "الموثوقية",
     lastSync: "آخر مزامنة",
     never: "أبداً",
+    // Evidence partners (S9 ecosystem)
+    partnersTab: "شركاء الأدلة",
+    partnersTitle: "شركاء الأدلة المُسجَّلون",
+    partnersEmpty: "لا شركاء أدلة مُسجَّلين",
+    partnersEmptyHint:
+      "سجّل شريكاً عبر POST /research/partners لنسبة الأدلة الخارجية (منظومة S9).",
+    pTotal: "الشركاء",
+    pActive: "نشط",
+    pAttributed: "أدلة منسوبة",
+    pUnattributed: "أدلة غير منسوبة",
+    pByKind: "حسب النوع",
+    pByStatus: "حسب الحالة",
+    pEvidence: "دليل",
+    pSources: "مصدر",
+    pContact: "التواصل",
+    pHomepage: "الصفحة",
+    pUpdated: "آخر تحديث",
     queueTab: "قائمة البحث",
     queueTitle: "قائمة مُنقَّطة (الأعلى أولاً)",
     queueEmpty: "القائمة فارغة",
@@ -222,6 +258,8 @@ export default function IntelligencePage({ lang }: { lang: Language }) {
   const [version, setVersion] = useState(0);
 
   const sources = useData(() => api.getResearchSources(), version);
+  const partners = useData(() => api.getResearchPartners(), version);
+  const partnersSummary = useData(() => api.getResearchPartnersSummary(), version);
   const queue = useData(() => api.getResearchQueue(), version);
   const queueSummary = useData(() => api.getResearchQueueSummary(), version);
   const packages = useData(() => api.getResearchPackages(), version);
@@ -266,6 +304,7 @@ export default function IntelligencePage({ lang }: { lang: Language }) {
 
   const tabs = [
     { id: "sources", label: t.sourcesTab },
+    { id: "partners", label: t.partnersTab },
     { id: "queue", label: t.queueTab },
     { id: "intelligence", label: t.intelTab },
     { id: "evidence", label: t.evidenceTab },
@@ -329,6 +368,56 @@ export default function IntelligencePage({ lang }: { lang: Language }) {
               ))}
             </div>
           ))}
+
+      {/* 1b. Evidence Partners (S9 ecosystem) */}
+      {tab === "partners" &&
+        (partners.source === "loading" ? loading(t.loading) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginTop: 10 }}>
+            {partnersSummary.data && (
+              <Card>
+                <div style={{ display: "flex", gap: 24, alignItems: "flex-start", flexWrap: "wrap" }}>
+                  {([
+                    [t.pTotal, partnersSummary.data.total],
+                    [t.pActive, partnersSummary.data.active],
+                    [t.pAttributed, partnersSummary.data.attributed_evidence],
+                    [t.pUnattributed, partnersSummary.data.unattributed_evidence],
+                  ] as Array<[string, number]>).map(([label, value]) => (
+                    <div key={label}>
+                      <div style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", letterSpacing: "0.07em" }}>{label}</div>
+                      <div style={{ fontFamily: "var(--font-mono)", fontSize: "1.1rem", fontWeight: 600 }}>{value}</div>
+                    </div>
+                  ))}
+                  <div style={{ minWidth: 150 }}>
+                    <div style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", letterSpacing: "0.07em", marginBottom: 6 }}>{t.pByStatus}</div>
+                    {Object.entries(partnersSummary.data.per_status).map(([status, count]) => (
+                      <div key={status} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, fontSize: "0.72rem", marginBottom: 3 }}>
+                        <StateChip label={status} color={MISSION_COLORS[status] ?? "var(--muted-foreground)"} />
+                        <span style={{ fontFamily: "var(--font-mono)" }}>{count}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ minWidth: 150 }}>
+                    <div style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)", letterSpacing: "0.07em", marginBottom: 6 }}>{t.pByKind}</div>
+                    {Object.entries(partnersSummary.data.per_kind).map(([kind, count]) => (
+                      <div key={kind} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: "0.72rem", fontFamily: ff(lang) }}>
+                        <span style={{ color: "var(--muted-foreground)" }}>{kind}</span>
+                        <span style={{ fontFamily: "var(--font-mono)" }}>{count}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </Card>
+            )}
+            {!partners.data?.length
+              ? (partners.error ? failed(partners.error) : empty(t.partnersEmpty, t.partnersEmptyHint))
+              : (<>
+                <SectionLabel lang={lang}>{t.partnersTitle} ({partners.data.length})</SectionLabel>
+                {partners.data.map((p) => (
+                  <PartnerRow key={p.partner_id} p={p} lang={lang} t={t}
+                    attributed={partnersSummary.data?.per_partner[p.partner_id]} />
+                ))}
+              </>)}
+          </div>))}
 
       {/* 2. Research Queue */}
       {tab === "queue" &&
@@ -476,6 +565,48 @@ export default function IntelligencePage({ lang }: { lang: Language }) {
           </div>
         ))}
     </div>
+  );
+}
+
+function PartnerRow({ p, lang, t, attributed }: {
+  p: EvidencePartnerRow; lang: Language; t: Record<string, string>;
+  attributed?: { evidence: number; sources: number };
+}) {
+  const mono = (size: string): React.CSSProperties => ({ fontSize: size, fontFamily: "var(--font-mono)" });
+  return (
+    <Card style={{ display: "flex", gap: 14, alignItems: "center" }}>
+      <div style={{
+        width: 40, height: 40, background: "var(--muted)", border: "1px solid var(--border)",
+        borderRadius: 7, display: "flex", alignItems: "center", justifyContent: "center",
+        fontFamily: "var(--font-mono)", fontSize: "0.6rem", fontWeight: 700,
+        color: "var(--muted-foreground)", flexShrink: 0, textTransform: "uppercase",
+      }}>{p.kind.slice(0, 4)}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
+          <span style={{ ...mono("0.65rem"), color: "var(--muted-foreground)" }}>{p.partner_id}</span>
+          <StatusChip status={p.status} lang={lang} />
+          <span style={{
+            fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)",
+            background: "var(--muted)", border: "1px solid var(--border)", padding: "2px 6px", borderRadius: 8,
+          }}>{p.kind}</span>
+        </div>
+        <div style={{ fontSize: "0.875rem", fontFamily: ff(lang), fontWeight: 500 }}>{dash(p.name)}</div>
+        <div style={{ fontSize: "0.72rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginTop: 2, display: "flex", gap: 12, flexWrap: "wrap" }}>
+          {p.contact && <span>{t.pContact}: {p.contact}</span>}
+          {p.homepage && <span>{t.pHomepage}: {p.homepage}</span>}
+          <span>{t.pUpdated}: {when(p.updated_at)}</span>
+        </div>
+        {p.note && (
+          <div style={{ fontSize: "0.7rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginTop: 3 }}>{p.note}</div>
+        )}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 1, flexShrink: 0 }}>
+        <span style={{ ...mono("1rem"), fontWeight: 600 }}>{attributed?.evidence ?? 0}</span>
+        <span style={{ fontSize: "0.58rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>{t.pEvidence}</span>
+        <span style={{ ...mono("0.85rem"), marginTop: 2 }}>{attributed?.sources ?? 0}</span>
+        <span style={{ fontSize: "0.58rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>{t.pSources}</span>
+      </div>
+    </Card>
   );
 }
 

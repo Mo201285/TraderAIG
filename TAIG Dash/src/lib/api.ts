@@ -55,8 +55,10 @@ import type {
   RegimeSnapshot,
   ResearchFactoryView,
   ResearchGateRow,
+  EvidencePartnerRow,
   ResearchMissionRow,
   ResearchPackageRow,
+  ResearchPartnersSummary,
   ResearchPromotionsView,
   ResearchQueueItem,
   ResearchQueueSummary,
@@ -917,6 +919,31 @@ export const api = {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const raw = (await res.json()) as { queue?: ResearchQueueSummary };
       return { ok: true, data: raw.queue ?? null, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getResearchPartners(kind?: string, status?: string): Promise<Envelope<EvidencePartnerRow[]>> {
+    if (!health.live) return { ok: true, data: [], source: "mock" };
+    try {
+      const params = new URLSearchParams();
+      if (kind) params.set("kind", kind);
+      if (status) params.set("status", status);
+      const qs = params.toString();
+      const res = await authorizedFetch(`/research/partners${qs ? `?${qs}` : ""}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { partners?: Record<string, any>[] };
+      return { ok: true, data: (raw.partners ?? []) as EvidencePartnerRow[], source: "live" };
+    } catch (e) {
+      return { ok: false, data: [], source: "mock", error: String(e) };
+    }
+  },
+  async getResearchPartnersSummary(): Promise<Envelope<ResearchPartnersSummary | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/research/partners/summary");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as ResearchPartnersSummary, source: "live" };
     } catch (e) {
       return { ok: false, data: null, source: "mock", error: String(e) };
     }

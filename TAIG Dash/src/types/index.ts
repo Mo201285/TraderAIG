@@ -716,6 +716,34 @@ export interface ResearchSourceRow {
   trade_authority?: string;
 }
 
+// ─── Evidence Partners (S9 ecosystem): /research/partners --------------------
+export interface EvidencePartnerRow {
+  partner_id: string;
+  name: string;
+  kind: "academic" | "data_vendor" | "community" | "institution" | "individual" | string;
+  status: "active" | "suspended" | "retired" | string;
+  contact: string;
+  homepage: string;
+  note: string;
+  created_at: string;
+  updated_at: string;
+  is_authorisation?: boolean;
+  trade_authority?: string;
+}
+
+export interface ResearchPartnersSummary {
+  total: number;
+  per_kind: Record<string, number>;
+  per_status: Record<string, number>;
+  active: number;
+  attributed_evidence: number;
+  unattributed_evidence: number;
+  per_partner: Record<string, { evidence: number; sources: number }>;
+  read_only?: boolean;
+  is_authorisation?: boolean;
+  trade_authority?: string;
+}
+
 export interface ResearchQueueItem {
   item_id: string;
   problem: string;

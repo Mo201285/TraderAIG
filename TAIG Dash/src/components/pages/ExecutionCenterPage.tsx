@@ -359,6 +359,8 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
   const recon = useData(() => api.getReconciliation(), version);
   const venueScore = useData(() => api.getVenueScore(), version);
   const partnerNet = useData(() => api.getPartnerNetwork(), version);
+  const partnerAtt = useData(() => api.getPartnerAttestations(), version);
+  const partnerPolicy = useData(() => api.getPartnerPolicy(), version);
   const live = source === "live";
   const lc = live ? data?.lifecycle : undefined;
   const mt = live ? data?.metrics : undefined;
@@ -719,8 +721,53 @@ export default function ExecutionCenterPage({ lang }: { lang: Language }) {
                   <span>{t.winsLabel}: {learning.wins} / {t.lossesLabel}: {learning.losses}</span>
                 </div>
               </Card>
-            </>
-          )}
+              </>
+            )}
+            {partnerPolicy.data && (
+              <Card>
+                <SectionLabel lang={lang}>{rtl ? "عقد الإقرار" : "Attestation policy"}</SectionLabel>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
+                  <div style={{ fontSize: "0.68rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>{partnerPolicy.data.policy.attestation_meaning}</div>
+                  <div style={{ fontSize: "0.68rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>{partnerPolicy.data.policy.not_an_authority}</div>
+                  <div style={{ fontSize: "0.68rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>{partnerPolicy.data.policy.evidence_note}</div>
+                </div>
+              </Card>
+            )}
+            <Card>
+              <SectionLabel lang={lang}>{rtl ? "سجّل الإقرارات" : "Attestations"}</SectionLabel>
+              {partnerAtt.source === "loading" ? (
+                <LoadingState label={t.loadingVenues} lang={lang} />
+              ) : !partnerAtt.data?.length ? (
+                <EmptyState title={t.partnersEmpty} hint={rtl ? "لا توجد إقرارات بعد" : "No attestations recorded"} lang={lang} />
+              ) : (
+                <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: "0.5rem", overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--font-mono)", fontSize: "0.68rem" }}>
+                    <thead>
+                      <tr style={{ color: "var(--muted-foreground)", borderBottom: "1px solid var(--border)" }}>
+                        <th style={{ padding: "4px 8px", textAlign: rtl ? "right" : "left", whiteSpace: "nowrap" }}>{rtl ? "المزوّد" : "provider_id"}</th>
+                        <th style={{ padding: "4px 8px", textAlign: rtl ? "right" : "left", whiteSpace: "nowrap" }}>{rtl ? "الاسم" : "name"}</th>
+                        <th style={{ padding: "4px 8px", textAlign: rtl ? "right" : "left", whiteSpace: "nowrap" }}>{rtl ? "النوع" : "type"}</th>
+                        <th style={{ padding: "4px 8px", textAlign: rtl ? "right" : "left", whiteSpace: "nowrap" }}>{rtl ? "الحالة" : "status"}</th>
+                        <th style={{ padding: "4px 8px", textAlign: rtl ? "right" : "left", whiteSpace: "nowrap" }}>{rtl ? "مقرّر" : "attested_by"}</th>
+                        <th style={{ padding: "4px 8px", textAlign: rtl ? "right" : "left", whiteSpace: "nowrap" }}>{rtl ? "التاريخ" : "attested_at"}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {partnerAtt.data.map((a) => (
+                        <tr key={a.provider_id} style={{ borderBottom: "1px solid var(--border)" }}>
+                          <td style={{ padding: "4px 8px" }}>{a.provider_id}</td>
+                          <td style={{ padding: "4px 8px" }}>{a.provider_name}</td>
+                          <td style={{ padding: "4px 8px" }}>{a.provider_type}</td>
+                          <td style={{ padding: "4px 8px" }}>{a.status}</td>
+                          <td style={{ padding: "4px 8px" }}>{a.attested_by}</td>
+                          <td style={{ padding: "4px 8px" }}>{a.attested_at.replace("T", " ").replace("Z", "").slice(0, 16)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
         </div>
       )}
 

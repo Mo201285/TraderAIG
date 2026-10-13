@@ -21,6 +21,8 @@ import type {
   PnlAttributionView,
   StrategyNftView,
   ResearchRewardPolicyView,
+  PartnerAttestationView,
+  PartnerPolicyView,
   PartnerNetworkView,
   DeveloperPolicyView,
   DeveloperTokensView,
@@ -466,6 +468,27 @@ export const api = {
       const res = await authorizedFetch("/economy/research-reward/policy");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return { ok: true, data: (await res.json()) as ResearchRewardPolicyView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getPartnerAttestations(): Promise<Envelope<PartnerAttestationView[]>> {
+    if (!health.live) return { ok: true, data: [], source: "mock" };
+    try {
+      const res = await authorizedFetch("/partner-network/attestations");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as { attestations?: Record<string, any>[] };
+      return { ok: true, data: (raw.attestations ?? []) as PartnerAttestationView[], source: "live" };
+    } catch (e) {
+      return { ok: false, data: [], source: "mock", error: String(e) };
+    }
+  },
+  async getPartnerPolicy(): Promise<Envelope<PartnerPolicyView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/partner-network/policy");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as PartnerPolicyView, source: "live" };
     } catch (e) {
       return { ok: false, data: null, source: "mock", error: String(e) };
     }

@@ -1256,6 +1256,34 @@ export interface PartnerNetworkView {
   note: string;
 }
 
+export interface PartnerAttestationView {
+  provider_id: string;
+  provider_name: string;
+  provider_type: string;
+  supported_venues: string[];
+  status: string;
+  attested_by: string;
+  attested_at: string;
+  note: string;
+  created_at: string;
+  updated_at: string;
+  is_authorisation?: boolean;
+  trade_authority?: string;
+}
+
+export interface PartnerPolicyView {
+  policy: {
+    attestation_statuses: string[];
+    venue_states: string[];
+    attestation_meaning: string;
+    not_an_authority: string;
+    data_feeds_note: string;
+    evidence_note: string;
+  };
+  is_authorisation?: boolean;
+  trade_authority?: string;
+}
+
 // ─── Company P&L attribution (S8, read-only accountability) ──────────────────
 
 export interface PnlCompanySummary {

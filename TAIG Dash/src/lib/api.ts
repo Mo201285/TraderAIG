@@ -16,6 +16,7 @@ import type {
   DspyRegistryView,
   DspyStatusView,
   AllocationProposalView,
+  AllocationBoardView,
   CorrelationView,
   PnlAttributionView,
   StrategyNftView,
@@ -422,6 +423,16 @@ export const api = {
       const res = await authorizedFetch("/portfolio/correlation");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return { ok: true, data: (await res.json()) as CorrelationView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getAllocationBoard(): Promise<Envelope<AllocationBoardView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const res = await authorizedFetch("/portfolio/allocation");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as AllocationBoardView, source: "live" };
     } catch (e) {
       return { ok: false, data: null, source: "mock", error: String(e) };
     }

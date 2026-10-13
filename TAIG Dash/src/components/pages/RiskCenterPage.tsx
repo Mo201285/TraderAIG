@@ -64,6 +64,19 @@ const UI: Record<string, Record<string, string>> = {
     corrConcentrated: "concentrated",
     corrDiversifying: "diversifying",
     corrInsufficient: "insufficient",
+    capsTitle: "Allocation caps board",
+    capsHint:
+      "Explicit per-strategy caps and the gate's live view, read from /portfolio/allocation. The institutional default applies wherever no explicit cap is set; the gate never widens a cap.",
+    capsDefault: "Institutional default",
+    capsExplicit: "Explicit caps",
+    capsNone: "No explicit caps set",
+    capsLive: "Gate (live)",
+    capsStrategy: "Strategy",
+    capsCap: "cap",
+    capsUsed: "used",
+    capsProjected: "projected gross",
+    capsOk: "ok",
+    capsBlocked: "blocked",
     authority:
       "Read-only surface of the risk governor; every figure derives from a registered route and it is not a trade authority.",
   },
@@ -125,6 +138,19 @@ const UI: Record<string, Record<string, string>> = {
     corrConcentrated: "مركَّز",
     corrDiversifying: "مُوزِّع",
     corrInsufficient: "غير كافٍ",
+    capsTitle: "لوحة سقوف التوزيع",
+    capsHint:
+      "السقوف الصريحة لكل استراتيجية ومرأى البوّابة الحيّ، مقروءان من /portfolio/allocation. يُطبَّق السقف المؤسسي حيث لا سقف صريح؛ والبوّابة لا توسّع أي سقف.",
+    capsDefault: "السقف المؤسسي",
+    capsExplicit: "السقوف الصريحة",
+    capsNone: "لا سقوف صريحة",
+    capsLive: "البوّابة (حيّ)",
+    capsStrategy: "الاستراتيجية",
+    capsCap: "السقف",
+    capsUsed: "المستخدم",
+    capsProjected: "الإجمالي المتوقّع",
+    capsOk: "مقبول",
+    capsBlocked: "محظور",
     authority:
       "سطح للقراءة فقط لحاكم المخاطر؛ كل رقم مشتق من مسار مسجَّل وليس سلطة تداول.",
   },
@@ -150,6 +176,7 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
   const challengeLive = challengeSource === "live";
   const allocation = useData(() => api.getAllocationProposal(), version);
   const correlation = useData(() => api.getCorrelation(), version);
+  const allocationBoard = useData(() => api.getAllocationBoard(), version);
   const gates = limitsLive ? (riskLimits?.gates ?? []) : [];
   const gateFailures = limitsLive ? (riskLimits?.window.failure_counts ?? {}) : {};
   const windowVetoes = limitsLive ? (riskLimits?.window.vetoes ?? 0) : 0;
@@ -572,6 +599,8 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
         const corr = correlation.data;
         const pLive = allocation.source === "live";
         const cLive = correlation.source === "live";
+        const board = allocationBoard.data;
+        const bLive = allocationBoard.source === "live";
         const proposed = prop?.status === "proposed";
         const cellHead: React.CSSProperties = {
           padding: "6px 10px", fontWeight: 600, fontSize: "0.62rem",
@@ -731,6 +760,75 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
                   {corr.insufficient_data.length > 0 && (
                     <div style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: "#f59e0b" }}>
                       {t.corrInsufficient}: {corr.insufficient_data.join(", ")}
+                    </div>
+                  )}
+                </div>
+              )}
+            </Card>
+
+            <Card>
+              <SectionLabel lang={lang}>{t.capsTitle}</SectionLabel>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 8 }}>
+                <span style={{ fontSize: "0.72rem", fontFamily: "var(--font-mono)", color: "var(--muted-foreground)" }}>
+                  {bLive ? "/portfolio/allocation" : readSource(allocationBoard.source)}
+                </span>
+                <StateChip
+                  label={bLive ? (rtl ? "مباشر" : "LIVE") : allocationBoard.source === "loading" ? (rtl ? "جارٍ" : "LOADING") : (rtl ? "متوقف" : "DOWN")}
+                  color={bLive ? "#22c55e" : "#f59e0b"}
+                />
+              </div>
+              <div style={{ fontSize: "0.75rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginTop: 8, lineHeight: 1.5 }}>
+                {t.capsHint}
+              </div>
+              {allocationBoard.source === "loading" ? (
+                <div style={{ marginTop: 12 }}><LoadingState lang={lang} /></div>
+              ) : !bLive || !board ? (
+                <div style={{ marginTop: 12 }}>
+                  <ErrorState lang={lang} title={rtl ? "تعذّر الوصول إلى لوحة السقوف" : "Caps board unreachable"} hint={readSource(allocationBoard.source)} />
+                </div>
+              ) : (
+                <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {pill(t.capsDefault, pct0(board.institutional_default_cap))}
+                    {pill(t.capsExplicit, String(Object.keys(board.explicit_caps).length))}
+                  </div>
+                  {Object.keys(board.explicit_caps).length > 0 ? (
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--font-mono)" }}>
+                        <thead>
+                          <tr style={{ color: "var(--muted-foreground)", borderBottom: "1px solid var(--border)" }}>
+                            <th style={cellHead}>{t.capsStrategy}</th>
+                            <th style={cellHead}>{t.capsCap}</th>
+                            <th style={cellHead}>{t.capsUsed}</th>
+                            <th style={cellHead}>{t.capsProjected}</th>
+                            <th style={cellHead}>{t.capsOk}</th>
+                            <th style={cellHead}>{t.allocReason}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(board.explicit_caps)
+                            .sort((a, b) => a[0].localeCompare(b[0]))
+                            .map(([sid, cap]) => {
+                              const d = board.live_gate[sid];
+                              return (
+                                <tr key={sid} style={{ borderBottom: "1px solid var(--border)" }}>
+                                  <td style={cellBody}>{sid}</td>
+                                  <td style={cellBody}>{pct0(cap)}</td>
+                                  <td style={cellBody}>{d ? pct0(d.used_fraction) : "—"}</td>
+                                  <td style={cellBody}>{d ? String(d.projected_gross) : "—"}</td>
+                                  <td style={{ ...cellBody, color: d ? (d.ok ? "#22c55e" : "#ef4444") : "var(--muted-foreground)", fontWeight: 600 }}>
+                                    {d ? (d.ok ? t.capsOk : t.capsBlocked) : "—"}
+                                  </td>
+                                  <td style={{ ...cellBody, whiteSpace: "normal", color: "var(--muted-foreground)", maxWidth: 260 }}>{d ? d.reason : "—"}</td>
+                                </tr>
+                              );
+                            })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: "0.72rem", fontFamily: ff(lang), color: "var(--muted-foreground)" }}>
+                      {t.capsNone}
                     </div>
                   )}
                 </div>
@@ -896,7 +994,7 @@ export default function RiskCenterPage({ lang }: { lang: Language }) {
       )}
 
       <p style={{ margin: "0.75rem 0 0", fontFamily: "var(--font-mono)", fontSize: "0.66rem", color: "var(--muted-foreground)", textAlign: rtl ? "right" : "left", opacity: 0.6 }}>
-        {t.sourceLabel}: {riskSource}/{portfolioSource}/{challengeSource}/{allocation.source}/{correlation.source} · {t.authority}
+        {t.sourceLabel}: {riskSource}/{portfolioSource}/{challengeSource}/{allocation.source}/{correlation.source}/{allocationBoard.source} · {t.authority}
       </p>
     </div>
   );

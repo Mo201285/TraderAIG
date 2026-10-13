@@ -1395,6 +1395,22 @@ export interface CorrelationView {
   strategies_tracked: number;
 }
 
+export interface AllocationDecisionView {
+  strategy_id: string;
+  ok: boolean;
+  used_fraction: number;
+  cap_fraction: number;
+  projected_gross: number;
+  reason: string;
+  checked_at: number;
+}
+
+export interface AllocationBoardView {
+  institutional_default_cap: number;
+  explicit_caps: Record<string, number>;
+  live_gate: Record<string, AllocationDecisionView>;
+}
+
 // ─── DSPy model governance (row 784): report-only gate/drift detection ───────
 
 export interface DspyGovernanceGate {

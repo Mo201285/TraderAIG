@@ -87,6 +87,27 @@ const ECON: Record<string, Record<string, string>> = {
     amount: "Amount",
     when: "When",
     ledger: "Ledger",
+    pnlTitle: "Company P&L attribution",
+    pnlHint:
+      "Where the AI company's realised PnL came from and who is accountable, read from /company/pnl-attribution. A strategy with no recorded owner rolls into unattributed; thin evidence is marked unproven — never dressed up as a track record.",
+    pnlNet: "Net P&L",
+    pnlAttributed: "Attributed",
+    pnlUnattributed: "Unattributed",
+    pnlCoverage: "Coverage",
+    pnlTrades: "Trades",
+    pnlStrategies: "Strategies",
+    pnlByDesk: "By desk",
+    pnlByOwner: "By owner",
+    pnlByStrategy: "By strategy",
+    pnlDesk: "Desk",
+    pnlOwner: "Owner",
+    pnlStrategy: "Strategy",
+    pnlProven: "proven",
+    pnlUnproven: "unproven",
+    pnlUnattributedFlag: "unattributed",
+    pnlEmpty: "No realised PnL recorded yet",
+    pnlEmptyHint:
+      "Attribution appears once the experience ledger holds realised results; nothing is invented.",
   },
   ar: {
     page: "اقتصاد XTAIG",
@@ -161,6 +182,27 @@ const ECON: Record<string, Record<string, string>> = {
     amount: "المبلغ",
     when: "الوقت",
     ledger: "الدفتر",
+    pnlTitle: "توزيع أرباح الشركة",
+    pnlHint:
+      "من أين جاء الربح/الخسارة الفعلي للشركة ومن المسؤول عنه، مقروء من /company/pnl-attribution. الاستراتيجية بلا مالك مسجّل تُدرج ضمن «غير مُوزّع»، والأدلة الضئيلة تُعلَّم «غير مُثبت» — ولا تُزخرف كسجل أداء.",
+    pnlNet: "صافي الربح/الخسارة",
+    pnlAttributed: "مُوزّع",
+    pnlUnattributed: "غير مُوزّع",
+    pnlCoverage: "التغطية",
+    pnlTrades: "الصفقات",
+    pnlStrategies: "الاستراتيجيات",
+    pnlByDesk: "حسب المكتب",
+    pnlByOwner: "حسب المالك",
+    pnlByStrategy: "حسب الاستراتيجية",
+    pnlDesk: "المكتب",
+    pnlOwner: "المالك",
+    pnlStrategy: "الاستراتيجية",
+    pnlProven: "مُثبت",
+    pnlUnproven: "غير مُثبت",
+    pnlUnattributedFlag: "غير مُوزّع",
+    pnlEmpty: "لا يوجد ربح/خسارة فعلي مسجّل بعد",
+    pnlEmptyHint:
+      "يظهر التوزيع بعد تسجيل نتائج فعلية في دفتر الخبرة؛ ولا يُختلق شيء.",
   },
 };
 
@@ -218,6 +260,7 @@ export default function EconomyPage({
   const providers = useData(() => api.getPaymentProviders(), version);
   const wallet = useData(() => api.getWallet(user.id), version);
   const products = useData(() => api.getProducts(user.id), version);
+  const pnl = useData(() => api.getPnlAttribution(), version);
 
   const s = status.data;
   const w = wallet.data;
@@ -312,6 +355,163 @@ export default function EconomyPage({
         >
           {t.guardBody}
         </div>
+      </Card>
+
+      {/* 1b. Company P&L attribution — GET /company/pnl-attribution (S8) */}
+      <Card>
+        <SectionLabel lang={lang}>{t.pnlTitle}</SectionLabel>
+        <div
+          style={{
+            fontSize: "0.68rem",
+            fontFamily: ff(lang),
+            color: "var(--muted-foreground)",
+            marginTop: 4,
+            marginBottom: 8,
+          }}
+        >
+          {t.pnlHint}
+        </div>
+        {pnl.source === "loading" ? (
+          <LoadingState label={t.loading} lang={lang} />
+        ) : !pnl.data ? (
+          <ErrorState title={t.loadError} hint={pnl.error} lang={lang} />
+        ) : pnl.data.by_strategy.length === 0 ? (
+          <EmptyState title={t.pnlEmpty} hint={t.pnlEmptyHint} lang={lang} />
+        ) : (
+          (() => {
+            const p = pnl.data!;
+            const c = p.company;
+            const sign = (v: number) =>
+              v > 0 ? "#22c55e" : v < 0 ? "#ef4444" : "var(--muted-foreground)";
+            const head: React.CSSProperties = {
+              padding: "5px 9px",
+              fontWeight: 600,
+              fontSize: "0.6rem",
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+              textAlign: lang === "ar" ? "right" : "left",
+              whiteSpace: "nowrap",
+              color: "var(--muted-foreground)",
+            };
+            const body: React.CSSProperties = {
+              padding: "5px 9px",
+              whiteSpace: "nowrap",
+              fontSize: "0.72rem",
+              fontFamily: "var(--font-mono)",
+            };
+            const rollupTable = (
+              rows: { name: string; row: { net_pnl: number; trades: number; strategies: number; proven: boolean } }[],
+              nameLabel: string,
+            ) => (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                      <th style={head}>{nameLabel}</th>
+                      <th style={head}>{t.pnlTrades}</th>
+                      <th style={head}>{t.pnlStrategies}</th>
+                      <th style={head}>{t.pnlNet}</th>
+                      <th style={head}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(({ name, row }) => (
+                      <tr key={name} style={{ borderBottom: "1px solid var(--border)" }}>
+                        <td style={body}>{name}</td>
+                        <td style={body}>{row.trades}</td>
+                        <td style={body}>{row.strategies}</td>
+                        <td style={{ ...body, color: sign(row.net_pnl) }}>{money(row.net_pnl)}</td>
+                        <td style={body}>
+                          <StateChip
+                            label={row.proven ? t.pnlProven : t.pnlUnproven}
+                            color={row.proven ? "#22c55e" : "#f59e0b"}
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <Grid cols={4}>
+                  <MetricTile label={t.pnlNet} value={money(c.net_pnl)} tone="accent" lang={lang} />
+                  <MetricTile label={t.pnlAttributed} value={money(c.attributed_pnl)} lang={lang} />
+                  <MetricTile label={t.pnlUnattributed} value={money(c.unattributed_pnl)} lang={lang} />
+                  <MetricTile
+                    label={t.pnlCoverage}
+                    value={c.attribution_coverage == null ? "—" : `${Math.round(c.attribution_coverage * 100)}%`}
+                    lang={lang}
+                  />
+                </Grid>
+
+                <div>
+                  <div style={{ fontSize: "0.62rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginBottom: 4 }}>
+                    {t.pnlByDesk}
+                  </div>
+                  {rollupTable(
+                    p.by_desk.map((d) => ({
+                      name: d.desk === "unattributed" ? t.pnlUnattributedFlag : d.desk,
+                      row: d,
+                    })),
+                    t.pnlDesk,
+                  )}
+                </div>
+
+                <div>
+                  <div style={{ fontSize: "0.62rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginBottom: 4 }}>
+                    {t.pnlByOwner}
+                  </div>
+                  {rollupTable(
+                    p.by_owner.map((o) => ({
+                      name: o.owner === "unattributed" ? t.pnlUnattributedFlag : o.owner,
+                      row: o,
+                    })),
+                    t.pnlOwner,
+                  )}
+                </div>
+
+                <div>
+                  <div style={{ fontSize: "0.62rem", fontFamily: ff(lang), color: "var(--muted-foreground)", marginBottom: 4 }}>
+                    {t.pnlByStrategy}
+                  </div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                          <th style={head}>{t.pnlStrategy}</th>
+                          <th style={head}>{t.pnlDesk}</th>
+                          <th style={head}>{t.pnlOwner}</th>
+                          <th style={head}>{t.pnlTrades}</th>
+                          <th style={head}>{t.pnlNet}</th>
+                          <th style={head}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {p.by_strategy.map((r) => (
+                          <tr key={r.strategy_id} style={{ borderBottom: "1px solid var(--border)" }}>
+                            <td style={body}>{r.strategy_id === "unattributed" ? t.pnlUnattributedFlag : r.strategy_id}</td>
+                            <td style={body}>{r.desk === "unattributed" ? t.pnlUnattributedFlag : r.desk}</td>
+                            <td style={body}>{r.owner === "unattributed" ? t.pnlUnattributedFlag : r.owner}</td>
+                            <td style={body}>{r.total_trades}</td>
+                            <td style={{ ...body, color: sign(r.net_pnl) }}>{money(r.net_pnl)}</td>
+                            <td style={body}>
+                              <StateChip
+                                label={r.proven ? t.pnlProven : t.pnlUnproven}
+                                color={r.proven ? "#22c55e" : "#f59e0b"}
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            );
+          })()
+        )}
       </Card>
 
       {/* 2. Service access — GET /payments/status + /payments/wallet/{user} */}

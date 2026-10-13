@@ -17,6 +17,7 @@ import type {
   DspyStatusView,
   AllocationProposalView,
   CorrelationView,
+  PnlAttributionView,
   DeveloperPolicyView,
   DeveloperTokensView,
   EvidenceRow,
@@ -416,6 +417,17 @@ export const api = {
       const res = await authorizedFetch("/portfolio/correlation");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return { ok: true, data: (await res.json()) as CorrelationView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getPnlAttribution(ownership?: "system" | "manual"): Promise<Envelope<PnlAttributionView | null>> {
+    if (!health.live) return { ok: true, data: null, source: "mock" };
+    try {
+      const q = ownership ? `?ownership=${encodeURIComponent(ownership)}` : "";
+      const res = await authorizedFetch(`/company/pnl-attribution${q}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as PnlAttributionView, source: "live" };
     } catch (e) {
       return { ok: false, data: null, source: "mock", error: String(e) };
     }

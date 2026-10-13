@@ -1184,6 +1184,61 @@ export interface DspyRegistryView {
   versions: DspyProgramVersion[];
 }
 
+// ─── Company P&L attribution (S8, read-only accountability) ──────────────────
+
+export interface PnlCompanySummary {
+  net_pnl: number;
+  trades: number;
+  strategies: number;
+  desks: number;
+  owners: number;
+  attributed_pnl: number;
+  unattributed_pnl: number;
+  attribution_coverage: number | null;
+}
+
+export interface PnlStrategyRow {
+  strategy_id: string;
+  desk: string;
+  owner: string;
+  total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+  gross_pnl: number;
+  net_pnl: number;
+  win_rate: number;
+  profit_factor: number;
+  max_drawdown: number;
+  proven: boolean;
+}
+
+export interface PnlDeskRow {
+  desk: string;
+  net_pnl: number;
+  trades: number;
+  strategies: number;
+  proven: boolean;
+  owners: string[];
+}
+
+export interface PnlOwnerRow {
+  owner: string;
+  net_pnl: number;
+  trades: number;
+  strategies: number;
+  proven: boolean;
+  desks: string[];
+}
+
+export interface PnlAttributionView {
+  generated_at: number;
+  company: PnlCompanySummary;
+  by_strategy: PnlStrategyRow[];
+  by_desk: PnlDeskRow[];
+  by_owner: PnlOwnerRow[];
+  min_samples: number;
+}
+
 // ─── Portfolio allocation engine + correlation (S4, read-only) ───────────────
 
 export interface AllocationDetailRow {

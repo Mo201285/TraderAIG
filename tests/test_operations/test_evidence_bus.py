@@ -162,6 +162,45 @@ def test_unpinned_normalised_payload_is_accepted(bus):
     assert r["items"][0]["source_kind"] == "arxiv"
 
 
+def test_a_delivered_item_attributes_its_partner(bus, session):
+    """The batch seam must attribute matter to a registered partner exactly as
+    the single-intake route (`POST /evidence/intake`) does, and must refuse an
+    unregistered name rather than quietly storing the row unattributed.
+
+    Attribution is the point of the partner ledger: a delivery that lands with
+    `partner_id=""` is indistinguishable from one from nobody, which is the
+    failure this pins.
+    """
+    from sqlalchemy import delete as _delete
+
+    from persistence.repositories_accounts import (
+        EvidencePartnerRecord, EvidencePartnerRepository)
+
+    session.execute(_delete(EvidencePartnerRecord))
+    session.commit()
+    EvidencePartnerRepository(session).register(
+        partner_id="datahub_wire", name="DataHub Wire",
+        kind="data_vendor", status="active")
+
+    accepted = bus.deliver([{
+        "source_kind": "arxiv", "external_id": "2401.9001",
+        "headline": "attributed paper", "payload_hash": "9" * 64,
+        "partner_id": "datahub_wire"}])
+    assert accepted["accepted"] == 1, accepted["items"]
+    rows = bus._service.list_all()
+    assert len(rows) == 1
+    assert rows[0]["partner_id"] == "datahub_wire"
+
+    # An unknown partner is refused at the seam, not stored unattributed.
+    refused = bus.deliver([{
+        "source_kind": "arxiv", "external_id": "2401.9002",
+        "headline": "ghost paper", "payload_hash": "a7" * 32,
+        "partner_id": "nobody_vouched_for"}])
+    assert refused["accepted"] == 0 and refused["rejected"] == 1
+    assert refused["items"][0]["reason"] == "invalid_intake"
+    assert len(bus._service.list_all()) == 1  # the refused row never landed
+
+
 def test_store_failure_is_reported_per_item_not_fatal(session):
     svc = EvidencePlaneService(EvidenceRepository(session))
     original = svc.ingest

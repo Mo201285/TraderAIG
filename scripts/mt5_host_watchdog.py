@@ -67,14 +67,24 @@ def resolve_market_dir() -> Path:
 
 
 def resolve_terminal_path() -> Optional[Path]:
-    """Configured terminal executable, or None when the operator has not set it."""
+    """Configured terminal executable, or None when it cannot be resolved.
+
+    `MT5_TERMINAL_PATH` wins when set; otherwise the in-repo portable terminal
+    is auto-detected (`mt5-dev` then `mt5-portable`) on any host / drive letter,
+    mirroring `core.config._resolve_terminal_path` so the boot task and the
+    server never disagree about which terminal is "the" terminal.
+    """
     raw = os.getenv("MT5_TERMINAL_PATH")
-    if not raw:
-        return None
-    path = Path(raw)
-    if path.is_dir():
-        path = path / DEFAULT_EXE
-    return path
+    if raw:
+        path = Path(raw)
+        if path.is_dir():
+            path = path / DEFAULT_EXE
+        return path
+    for folder in ("mt5-dev", "mt5-portable"):
+        candidate = _root / folder / DEFAULT_EXE
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def newest_frame_age(market_dir: Path, now: Optional[float] = None) -> Optional[float]:

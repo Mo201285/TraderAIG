@@ -76,6 +76,38 @@ def _operator(client, monkeypatch, plan="institutional", password="correct-horse
     return uid, email, password
 
 
+def test_login_and_authority_resolve_the_same_email_the_same_way(
+        client, monkeypatch):
+    """Login and the acting principal must agree about who an address is.
+
+    `principal_user_id` resolves `IDENTITY_PRIMARY_EMAIL` case-insensitively
+    while login resolved it case-sensitively, so the deployment could name a
+    user as the acting principal and then refuse that same user's password --
+    the plaque on the door disagreeing with the door itself. Line 413 of
+    `identity.verify_password` made it worse: it probed `self._users` with an
+    email, and that map is keyed by user_id, so the probe that looked like a
+    case-insensitive fast path was dead code.
+    """
+    email = f"Mixed{time.time_ns()}@X.Co"
+    uid = client.post("/users", json={"email": email}).json()["user_id"]
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", email)
+    password = "correct-horse-battery"
+    assert client.post("/auth/password",
+                       json={"password": password}).status_code == 200
+
+    for typed in (email, email.lower(), email.upper(), email.swapcase()):
+        res = client.post("/auth/login",
+                          json={"email": typed, "password": password})
+        assert res.status_code == 200, f"login failed for {typed!r}"
+        assert res.json()["user_id"] == uid
+
+    # The wrong password is still refused for every variant: this widens WHO
+    # may log in, never WHAT proves it.
+    wrong = client.post("/auth/login",
+                        json={"email": email.lower(), "password": "nope"})
+    assert wrong.status_code == 401
+
+
 # ---------------------------------------------------------------------------
 # hashing
 # ---------------------------------------------------------------------------
@@ -350,6 +382,7 @@ def test_one_callers_session_does_not_affect_the_next_request(client, monkeypatc
     monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", op_email)
 
     monkeypatch.setenv("TRADERAIG_AUTH", "1")
+    monkeypatch.setenv("AUTH_SERVICE_TOKEN", "machine-token-value")
     other_token = client.post("/auth/login", json={
         "email": _email_of(client, other),
         "password": "other-password-123"}).json()["token"]
@@ -358,8 +391,19 @@ def test_one_callers_session_does_not_affect_the_next_request(client, monkeypatc
     assert client.get(f"/users/{op}",
                       headers={"Authorization": f"Bearer {other_token}"}).status_code == 403
 
-    # request 2: no credential at all must be the server principal
-    assert client.get(f"/users/{op}").status_code == 200
+    # request 2: a caller that authenticated without a SESSION must still be
+    # judged as the server principal, not as request 1's user.
+    #
+    # This used to be a request with no credential at all. Reads are gated now,
+    # so "no credential" is a 401 before any route runs and can no longer show
+    # who was judged -- the session-less caller is therefore represented by the
+    # machine token, which authenticates and deliberately carries no session.
+    # The bare-unauthenticated-read behaviour it used to assert is covered
+    # separately by `test_no_session_presented_keeps_the_server_principal_...`
+    # with enforcement off.
+    assert client.get(f"/users/{op}",
+                      headers={"X-Service-Token": "machine-token-value"}
+                      ).status_code == 200
 
     # request 3: the operator's own session still works afterwards
     op_token = client.post("/auth/login", json={
@@ -744,6 +788,9 @@ def test_with_enforcement_off_a_post_still_works(client, monkeypatch):
 
 
 def test_with_enforcement_on_a_post_without_a_token_is_refused(client, monkeypatch):
+    # Enrol first, with the door open — this is the only order that works.
+    _uid, op_email, op_password = _operator(client, monkeypatch,
+                                            plan="institutional")
     monkeypatch.setenv("TRADERAIG_AUTH", "1")
     res = client.post("/users", json={"email": f"nope{time.time_ns()}@x.co"})
     assert res.status_code == 401
@@ -751,7 +798,19 @@ def test_with_enforcement_on_a_post_without_a_token_is_refused(client, monkeypat
 
     health = client.get("/system/health").json()
     assert health["auth"]["enforcement_enabled"] is True
-    assert health["tenancy"]["authenticated"] is True
+    # The gate being on is NOT the same as this caller being authenticated, and
+    # `/system/health` is an open path — the very response an anonymous caller
+    # gets. It used to answer `authenticated: true` here purely because
+    # enforcement was switched on, telling a caller with no credential at all
+    # that it had proved who it is.
+    assert health["tenancy"]["authenticated"] is False
+
+    # ...and the same endpoint reports True to a caller that DID sign in
+    token = client.post("/auth/login", json={
+        "email": op_email, "password": op_password}).json()["token"]
+    mine = client.get("/system/health",
+                      headers={"Authorization": f"Bearer {token}"}).json()
+    assert mine["tenancy"]["authenticated"] is True
 
 
 def test_with_enforcement_on_a_session_token_is_accepted(client, monkeypatch):
@@ -783,13 +842,52 @@ def test_the_supervisor_can_still_reach_the_rails(client, monkeypatch):
                        headers={"X-Service-Token": "wrong-token"}).status_code == 401
 
 
-def test_reads_stay_open_even_with_enforcement_on(client, monkeypatch):
-    """And the system says so rather than letting a login screen imply
-    otherwise: there is one shared canonical state, so an authenticated reader
-    would read the operator's positions anyway."""
+def test_reads_require_a_credential_when_enforcement_is_on(client, monkeypatch):
+    """Reads are gated now, and the system says so rather than letting a login
+    screen imply otherwise.
+
+    Before this, `GET /users` handed the whole address book and `GET /account`
+    the balance to a caller with no credential, while the POST beside them
+    demanded a password. Gating the reader is the fix.
+
+    Honest scope, stated in the same breath: this authenticates the reader and
+    does NOT isolate their data. There is one shared canonical state, so an
+    authenticated reader still reads the operator's positions and ledger --
+    `model` stays `single-tenant` and `data_isolated_per_user` is False right
+    next to `reads_gated: true`. Half a guarantee described as a whole one is
+    how this roadmap got into trouble.
+    """
     monkeypatch.setenv("TRADERAIG_AUTH", "1")
-    assert client.get("/users").status_code == 200
-    assert client.get("/system/health").json()["auth"]["reads_gated"] is False
+
+    assert client.get("/users").status_code == 401
+    assert client.get("/account").status_code == 401
+
+    health = client.get("/system/health").json()
+    assert health["auth"]["reads_gated"] is True
+    assert health["tenancy"]["reads_gated"] is True
+    assert health["tenancy"]["model"] == "single-tenant"
+    assert health["tenancy"]["data_isolated_per_user"] is False
+
+    # the open paths are still open, so a denied caller can see WHY it is denied
+    assert client.get("/system/health").status_code == 200
+
+
+def test_the_machine_token_may_read(client, monkeypatch):
+    """A watchdog cannot watch what it may not read.
+
+    `ensure_backend` polls `/system/health` with no credential and the MT5
+    autostart reads `/mt5/engine` with the service token. Reads being gated
+    without a machine path through the gate would take the 24/7 supervisor
+    offline the instant enforcement came on -- the same
+    'platform takes itself offline' shape this project keeps undoing.
+    """
+    monkeypatch.setenv("TRADERAIG_AUTH", "1")
+    monkeypatch.setenv("AUTH_SERVICE_TOKEN", "machine-token-value")
+
+    assert client.get("/users", headers={
+        "X-Service-Token": "machine-token-value"}).status_code == 200
+    assert client.get("/users", headers={
+        "X-Service-Token": "wrong-token"}).status_code == 401
 
 
 def test_the_provider_webhook_stays_reachable_without_a_session(client, monkeypatch):
@@ -802,31 +900,53 @@ def test_the_provider_webhook_stays_reachable_without_a_session(client, monkeypa
     assert auth_svc.requires_session("POST", "/payments/webhook") is False
 
 
-def test_every_mutating_route_is_covered_by_the_policy(client):
+def test_every_route_is_covered_by_the_policy(client):
     """Walks the real route table instead of trusting the policy function.
 
-    If someone adds a POST and puts it on the open list, or the policy stops
+    If someone adds a route and puts it on the open list, or the policy stops
     covering a method, this fails. A security policy that is only asserted
     against itself is a comment, not a control.
+
+    Reads are walked too, now that they are gated: the original version skipped
+    GET/HEAD/OPTIONS entirely, which is how an enforced write path beside an
+    open read path passed this suite for so long.
     """
     from governance.auth import OPEN_PATHS, auth as auth_svc
     from operations.api import app
 
     open_paths = {p.rstrip("/") for p in OPEN_PATHS}
+
+    def is_open(path: str) -> bool:
+        """Mirror the policy's two exemptions exactly.
+
+        `/docs/oauth2-redirect` is a FastAPI docs subpath that the policy
+        exempts by prefix rather than by listing, so counting only literal
+        OPEN_PATHS entries would report a deliberate exemption as a hole.
+        """
+        clean = path.rstrip("/")
+        return (clean in open_paths or clean.startswith("/docs")
+                or clean.startswith("/redoc"))
+
     mutating = 0
+    reading = 0
     for route in app.routes:
         path = getattr(route, "path", "")
         methods = getattr(route, "methods", None) or set()
         for method in methods:
-            if method.upper() in ("GET", "HEAD", "OPTIONS"):
+            upper = method.upper()
+            if upper in ("HEAD", "OPTIONS"):
                 continue
-            mutating += 1
+            if upper in ("GET",):
+                reading += 1
+            else:
+                mutating += 1
             needs = auth_svc.requires_session(method, path)
-            if path.rstrip("/") in open_paths:
+            if is_open(path):
                 assert not needs, f"{method} {path} is open but policy disagrees"
             else:
-                assert needs, f"{method} {path} is MUTATING but not covered by policy"
+                assert needs, f"{method} {path} is not covered by policy"
     assert mutating > 20, "route table looks unexpectedly small; the walk is not testing anything"
+    assert reading > 50, "read walk looks unexpectedly small; the walk is not testing anything"
 
 
 def test_claiming_enforcement_while_no_credential_exists_is_refused(client, monkeypatch):
@@ -905,8 +1025,11 @@ def test_service_token_allowed_behaviour(client):
     assert auth_svc.service_token_allowed("POST", "/users") is False
     assert auth_svc.service_token_allowed("POST", "/payments/charge") is False
     assert auth_svc.service_token_allowed("POST", "/mt5/sync?x=1") is True
-    # reads are never gated, so the question does not arise for them
-    assert auth_svc.service_token_allowed("GET", "/paper/engine/start") is False
+    # Reads are gated now, and the machine rails read to do their job, so the
+    # service token passes the gate for ANY read -- but it still does not widen
+    # by a single path what the machine credential may WRITE.
+    assert auth_svc.service_token_allowed("GET", "/paper/engine/start") is True
+    assert auth_svc.service_token_allowed("GET", "/users") is True
 
 
 def test_a_valid_service_token_is_refused_on_a_human_route(client, monkeypatch):

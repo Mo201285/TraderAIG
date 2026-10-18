@@ -100,33 +100,50 @@ def test_no_fabricated_institutional_metrics_in_the_translation_catalogue():
         "fabricated institutional metrics are back in: " + ", ".join(offenders))
 
 
-def test_login_screen_has_no_credential_form():
-    """A password field on a deployment with no auth layer is a false promise.
+def test_login_screen_authenticates_against_the_server():
+    """A credential form is only honest if the server verifies it.
 
-    Asserted on the component rather than on rendered output: what matters is
-    that the screen cannot collect a credential it will never verify.
+    This asserted the OPPOSITE until the session layer landed. On a build with
+    no authentication a password field that verifies nothing is a false promise
+    — worse than none, because it teaches the operator the deployment is
+    authenticated when it is not — so the screen was deliberately form-free.
+
+    The premise is gone: `TRADERAIG_AUTH=1` gates reads as well as writes, and
+    `POST /auth/login` performs a real scrypt check. What must be pinned now is
+    the thing this test always cared about, one layer out: the box on screen
+    actually exchanges credentials with the server instead of collecting them.
     """
     login = DASH / "components" / "LoginPage.tsx"
     assert login.exists(), "LoginPage.tsx is missing"
     body = _strip_comments(_read(login))
-    assert "type=\"password\"" not in body, (
-        "LoginPage re-introduced a password field on a build with no "
-        "authentication layer")
-    assert "<form" not in body, (
-        "LoginPage re-introduced a credential form; the screen must report the "
-        "deployment identity read from the API instead")
+    assert "type=\"password\"" in body, (
+        "the login screen has no password field, but reads and writes are gated "
+        "now — an operator could not obtain a session")
+    assert "<form" in body, "the credential box must be a real form"
+    assert "/auth/login" in body, (
+        "the form must POST to the server's login endpoint; a form that never "
+        "calls it authenticates nothing, which is the failure this test exists "
+        "to prevent")
 
 
-def test_login_screen_surfaces_the_missing_auth_layer():
+def test_login_screen_surfaces_its_own_auth_state():
     """The honest state must be visible, not merely true.
 
-    A build that is unauthenticated has to say so on its front door, otherwise
+    A screen that is not authenticated has to say so on its front door, otherwise
     the operator reads "no error" as "secured".
+
+    And the opposite direction is checked too: the old wording claimed the build
+    had "no authentication layer", which was true when written and is now the
+    reverse of the truth. A stale security claim is the same failure as a fabricated
+    one — it is just a lie nobody updated.
     """
     body = _strip_comments(_read(DASH / "components" / "LoginPage.tsx"))
     assert "NOT AUTHENTICATED" in body, (
-        "the login screen must state that this deployment is not "
-        "authenticated (§28.4/§28.18)")
+        "the login screen must state that this caller is not authenticated "
+        "(§28.4/§28.18)")
+    assert "no authentication layer" not in body, (
+        "the login screen still claims this build has no authentication layer, "
+        "but reads and writes are gated behind a session")
 
 
 def test_backend_reports_its_own_tenancy_model():

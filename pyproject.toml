@@ -12,6 +12,8 @@ exclude = [
     ".pytest_cache",
     "__pycache__",
     "logs",
+    "_llm",
+    "_runtime",
     "mt5-dev",
     "mt5-portable",
     "TAIG Dash",

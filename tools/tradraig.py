@@ -41,8 +41,10 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 DASH_DIR = os.path.join(ROOT, "TAIG Dash")
 LOG_DIR = os.path.join(ROOT, "logs")
-OLLAMA_EXE = r"E:\MLL\Ollama\ollama.exe"
-OLLAMA_MODELS_DIR = r"E:\MLL\models"
+# Local LLM runtime ships inside the repo (`_llm\`), resolved relative to ROOT so
+# it survives any drive letter; both are overridable by env for an external host.
+OLLAMA_EXE = os.environ.get("OLLAMA_EXE") or os.path.join(ROOT, "_llm", "Ollama", "ollama.exe")
+OLLAMA_MODELS_DIR = os.environ.get("OLLAMA_MODELS") or os.path.join(ROOT, "_llm", "models")
 
 API_PORT = int(os.environ.get("API_PORT", "8000"))
 DASH_PORT = 8443
@@ -96,7 +98,8 @@ I18N = {
         "f_recommendations": "Recommendations", "f_chart_tf": "Chart Timeframes",
         "f_chart_ctx": "Chart Context",
         "live": "live", "empty": "empty", "static": "static", "missing": "missing",
-        "down": "down", "board_note": "expected static (no live engine queue)",
+        "down": "down", "refused": "refused",
+        "board_note": "expected static (no live engine queue)",
         "u_created": "identity created", "u_create_offline": "API down — identities require the backend (single governance authority)",
         "u_list_empty": "no identities yet — run: tradraig user create --email you@corp.com --plan institutional",
         "u_api_down": "API down",
@@ -141,7 +144,8 @@ I18N = {
         "f_recommendations": "التوصيات", "f_chart_tf": "أطر الرسم",
         "f_chart_ctx": "سياق الرسم",
         "live": "حيّ", "empty": "فارغ", "static": "ثابت", "missing": "ناقص",
-        "down": "متوقف", "board_note": "ثابت متوقع (بلا طابور محرك حي)",
+        "down": "متوقف", "refused": "ممنوع",
+        "board_note": "ثابت متوقع (بلا طابور محرك حي)",
         "u_created": "أُنشئت الهوية", "u_create_offline": "الواجهة متوقفة — إنشاء الهوية يتطلب الخادم (سلطة حوكمة واحدة)",
         "u_list_empty": "لا هويات بعد — نفّذ: tradraig user create --email you@corp.com --plan institutional",
         "u_api_down": "الواجهة متوقفة",
@@ -217,11 +221,25 @@ def port_listening(port: int, timeout: float = 0.8) -> bool:
         sock.close()
 
 
-def http_json(url: str, timeout: float = 2.5) -> Tuple[bool, Any]:
+def http_json(url: str, timeout: float = 12.0) -> Tuple[bool, Any]:
+    # 12s, not 2.5s: on a mechanical HDD the first (cold) response from the
+    # backend or Ollama can take several seconds, and a tight timeout reports
+    # a live service as down (false FAIL in `doctor`).
+    #
+    # Reads carry the console's credential too. Gating reads means an undressed
+    # `urlopen` on `/users`, `/portfolio/state` or even `/health` comes back
+    # 401, and `doctor` would report a perfectly healthy backend as down — the
+    # failure mode that makes an operator restart a service that never broke.
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, headers=service_headers())
     try:
-        import urllib.request
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return True, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # A refusal is not an outage. Split them so the caller can tell "the
+        # server is not running" from "you are not signed in".
+        return False, f"HTTP {exc.code}: {exc.reason}"
     except Exception as exc:
         return False, str(exc)
 
@@ -291,12 +309,25 @@ def http_post_json(url: str, payload: Dict[str, Any],
         return None, str(exc)
 
 
-def feed_probe(url: str, timeout: float = 4.0) -> Dict[str, Any]:
-    """Probe one dashboard feed: status-code, payload size, kind."""
+def feed_probe(url: str, timeout: float = 20.0) -> Dict[str, Any]:
+    """Probe one dashboard feed: status-code, payload size, kind.
+
+    The default is generous on purpose: on a mechanical HDD a cold corpus
+    feed (e.g. /observations) can legitimately take several seconds, and a
+    tight timeout reports a healthy endpoint as "down".
+
+    It sends the console's credential because these are exactly the feeds the
+    dashboard reads — probing them without one would 401 the moment reads are
+    gated and `board` would declare every widget missing. A 401/403 that still
+    happens after that gets its own kind: "missing" would tell the operator the
+    feed does not exist when in fact it exists and refused them, which is a
+    different repair (sign in) from the other one (start the backend).
+    """
     import urllib.error
     import urllib.request
+    req = urllib.request.Request(url, headers=service_headers())
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read()
             status = int(resp.status)
             return {
@@ -305,6 +336,8 @@ def feed_probe(url: str, timeout: float = 4.0) -> Dict[str, Any]:
                 "kind": "empty" if len(body) < 4 else "live",
             }
     except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return {"status": exc.code, "bytes": 0, "kind": "refused"}
         return {"status": exc.code, "bytes": 0,
                 "kind": "static" if exc.code == 404 else "missing"}
     except Exception:
@@ -648,6 +681,23 @@ def cmd_login(args: argparse.Namespace) -> int:
     print(token)
     print(f"{_ANSI['dim']}export TRADERAIG_SESSION_TOKEN={token}"
           f"{_ANSI['off']}")
+    # Mirror into the vault so the next console invocation finds a session
+    # without the operator re-exporting it. Best-effort and never fatal: a
+    # session that cannot be stored still works for this shell via the export
+    # printed above, and refusing the login because the disk is read-only would
+    # be strictly worse than forgetting the convenience.
+    stored = False
+    try:
+        from core.secrets_vault import vault
+        stored = vault.is_persistable() and vault.set("auth.session_token", token)
+    except Exception:  # noqa: BLE001 - convenience only; never break login
+        stored = False
+    if stored:
+        print(f"{_ANSI['dim']}session also stored in the vault slot "
+              f"auth.session_token{_ANSI['off']}")
+    else:
+        print(f"{_ANSI['dim']}vault unavailable: export the token instead"
+              f"{_ANSI['off']}")
     return 0
 
 
@@ -847,6 +897,7 @@ def cmd_board(args: argparse.Namespace) -> int:
             "empty": [r["feed"] for r in rows if r["kind"] == "empty"],
             "static": [r["feed"] for r in rows if r["kind"] == "static"],
             "missing": [r["feed"] for r in rows if r["kind"] == "missing"],
+            "refused": [r["feed"] for r in rows if r["kind"] == "refused"],
             "down": [r["feed"] for r in rows if r["kind"] == "down"],
             "feeds": rows,
         }, indent=1, default=str))
@@ -934,6 +985,9 @@ def cmd_change(args: argparse.Namespace) -> int:
             return 1
         if rc is None:
             print(f"{_ANSI['bad']}{t['u_api_down']}{_ANSI['off']}")
+            return 1
+        if rc != 200:
+            print(f"{_ANSI['bad']}HTTP {rc}: {payload}{_ANSI['off']}")
             return 1
         req = payload.get("request", {})
         print(f"{_ANSI['ok']}change {req.get('id', '?')} submitted "

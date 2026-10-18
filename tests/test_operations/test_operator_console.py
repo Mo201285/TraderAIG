@@ -56,6 +56,82 @@ def test_probes_fail_soft():
     assert ok is False
 
 
+def test_console_reads_send_a_credential(monkeypatch):
+    """Reads are gated too, so the console's GETs must carry a token.
+
+    `requires_session` covers GET as well as POST now, which turns every bare
+    `urlopen` in this console into a 401: `/users`, `/portfolio/state`, even the
+    `/health` that `doctor` checks. The symptom would be a perfectly healthy
+    backend reported as down, and an operator restarting a service that never
+    broke. `feed_probe` matters for the same reason — `board` would otherwise
+    call every gated widget "missing".
+
+    Asserted on the outgoing request rather than on a live server: what must be
+    true is that the credential is attached, not that some server happened to
+    accept it.
+    """
+    import json as _json
+    import urllib.request
+    import tools.tradraig as tc
+
+    captured = {}
+
+    class _Resp:
+        status = 200
+
+        def read(self):
+            return _json.dumps({"ok": True}).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _capture(req, timeout=None):
+        captured["req"] = req
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _capture)
+    monkeypatch.setenv("TRADERAIG_SESSION_TOKEN", "sess-abc")
+
+    ok, payload = tc.http_json("http://127.0.0.1:8000/users")
+    assert ok is True and payload == {"ok": True}
+    assert captured["req"].get_header("Authorization") == "Bearer sess-abc"
+
+    tc.feed_probe("http://127.0.0.1:8000/strategies")
+    assert captured["req"].get_header("Authorization") == "Bearer sess-abc"
+
+    # Without any configured credential nothing is invented — sending an empty
+    # Authorization header would look like a broken attempt to authenticate.
+    monkeypatch.delenv("TRADERAIG_SESSION_TOKEN")
+    monkeypatch.setattr(tc, "_session_token", lambda: "")
+    monkeypatch.setenv("AUTH_SERVICE_TOKEN", "")
+    tc.http_json("http://127.0.0.1:8000/users")
+    assert captured["req"].get_header("Authorization") is None
+
+
+def test_a_refusal_is_reported_as_a_refusal(monkeypatch):
+    """A 401 must not be told to the operator as an outage.
+
+    `doctor` prints whatever this returns; "HTTP 401: Unauthorized" is a
+    different repair (sign in) from "connection refused" (start the backend),
+    and conflating them is how an operator ends up restarting a healthy service.
+    """
+    import urllib.error
+    import urllib.request
+    import tools.tradraig as tc
+
+    def _refuse(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 401, "Unauthorized", hdrs=None, fp=None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _refuse)
+    ok, detail = tc.http_json("http://127.0.0.1:8000/users")
+    assert ok is False
+    assert "401" in detail
+
+
 def test_cmd_doctor_json(monkeypatch, capsys):
     import argparse
     import json

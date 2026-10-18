@@ -13,6 +13,11 @@ logs/
 mt5-dev/
 mt5-portable/
 
+# Portable tool runtimes (per-user installs under the project, never source):
+# _llm/ = Ollama binaries + pulled models, _runtime/ = Node.js toolchain
+_llm/
+_runtime/
+
 # Runtime canonical state (SQLite/JSONL/registries), rebuilt locally on run —
 # operational data, not source. Matches operations/dr.py's backup units.
 .data/

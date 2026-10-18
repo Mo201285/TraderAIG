@@ -46,6 +46,12 @@ $env:API_PORT = "$API_PORT"
 
 $env:TRADERAIG_PERSIST = "0"
 $env:TRADERAIG_STATE_REDIS = "0"
+# Pin enforcement off for the isolated server. The host's .env may turn
+# TRADERAIG_AUTH on, which makes a write step (change submit) need a human
+# session the console does not carry — the smoke is a wiring test, not an auth
+# test (that is tests/test_operations/test_auth.py), so it runs ungated. A
+# process env var wins over .env (dotenv does not override it).
+$env:TRADERAIG_AUTH = "0"
 
 $logOut = Join-Path $env:TEMP "tradraig-smoke-server.out.log"
 $logErr = Join-Path $env:TEMP "tradraig-smoke-server.err.log"
@@ -116,5 +122,6 @@ finally {
     }
     Remove-Item Env:TRADERAIG_PERSIST -ErrorAction SilentlyContinue
     Remove-Item Env:TRADERAIG_STATE_REDIS -ErrorAction SilentlyContinue
+    Remove-Item Env:TRADERAIG_AUTH -ErrorAction SilentlyContinue
     Remove-Item Env:API_PORT -ErrorAction SilentlyContinue
 }

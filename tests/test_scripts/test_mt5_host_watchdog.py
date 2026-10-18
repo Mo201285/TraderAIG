@@ -115,7 +115,28 @@ def test_ensure_terminal_does_not_double_start(monkeypatch, tmp_path):
 def test_terminal_path_expands_directory(monkeypatch, tmp_path):
     monkeypatch.setenv("MT5_TERMINAL_PATH", str(tmp_path))
     assert wd.resolve_terminal_path() == tmp_path / wd.DEFAULT_EXE
+
+
+def test_terminal_path_autodetects_in_repo_portable(monkeypatch, tmp_path):
     monkeypatch.delenv("MT5_TERMINAL_PATH", raising=False)
+    (tmp_path / "mt5-dev").mkdir()
+    (tmp_path / "mt5-dev" / wd.DEFAULT_EXE).write_text("", encoding="utf-8")
+    monkeypatch.setattr(wd, "_root", tmp_path)
+    assert wd.resolve_terminal_path() == tmp_path / "mt5-dev" / wd.DEFAULT_EXE
+
+
+def test_terminal_path_prefers_dev_over_portable(monkeypatch, tmp_path):
+    monkeypatch.delenv("MT5_TERMINAL_PATH", raising=False)
+    for folder in ("mt5-dev", "mt5-portable"):
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / wd.DEFAULT_EXE).write_text("", encoding="utf-8")
+    monkeypatch.setattr(wd, "_root", tmp_path)
+    assert wd.resolve_terminal_path() == tmp_path / "mt5-dev" / wd.DEFAULT_EXE
+
+
+def test_terminal_path_none_when_unset_and_no_portable(monkeypatch, tmp_path):
+    monkeypatch.delenv("MT5_TERMINAL_PATH", raising=False)
+    monkeypatch.setattr(wd, "_root", tmp_path)
     assert wd.resolve_terminal_path() is None
 
 

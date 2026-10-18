@@ -55,6 +55,13 @@ VAULT_SLOTS: Dict[str, str] = {
     # callers POST to the API and would otherwise be locked out of the rails
     # they are supposed to be supervising.
     "auth.service_token": "AUTH_SERVICE_TOKEN",
+    # A human console session, written by `tradraig login` and read back by the
+    # console when TRADERAIG_SESSION_TOKEN is not exported. Distinct from the
+    # machine token above: this one carries the operator's entitlements, so it
+    # is read only to send `Authorization: Bearer`, never to reach a machine
+    # rail. Env still wins, so an operator can override a stored session
+    # without editing the vault.
+    "auth.session_token": "TRADERAIG_SESSION_TOKEN",
 }
 
 

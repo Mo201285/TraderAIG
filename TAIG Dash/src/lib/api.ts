@@ -7,6 +7,7 @@ import type {
   ChangeStatus,
   ChallengeStatusView,
   ChartContextResponse,
+  ChartEventsResponse,
   ChartStrategy,
   ChartTimeframes,
   CopyFollower,
@@ -143,13 +144,92 @@ export function setBaseUrl(url: string) {
   baseUrl = url.replace(/\/$/, "");
 }
 
+/**
+ * The session the server actually issued, kept so every request can carry it.
+ *
+ * This exists because reads are gated too: with `TRADERAIG_AUTH=1` a GET with
+ * no credential is a 401, so a client that cannot hold a token cannot use the
+ * dashboard at all. The token is a bearer credential equivalent to a password
+ * for its 12h lifetime, which is why it is dropped the moment the server's own
+ * `expires_at` passes rather than trusted indefinitely, and dropped again on
+ * logout and on any 401 (an expired or revoked token must not silently keep
+ * failing as "no data").
+ *
+ * `localStorage` rather than `sessionStorage`: the deployment is a 24/7
+ * dashboard that operators reload constantly, and being logged out by a refresh
+ * teaches people to work around the login rather than through it. The
+ * alternative — an HttpOnly cookie — would need CSRF protection this API does
+ * not have, so a JS-held bearer token is the narrower risk of the two available.
+ */
+const SESSION_KEY = "traderaig.session.v1";
+
+export interface StoredSession {
+  token: string;
+  expires_at: number;
+  user_id: string;
+  email: string;
+  plan: string;
+}
+
+function readStoredSession(): StoredSession | null {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredSession;
+    if (!parsed?.token) return null;
+    if (parsed.expires_at && parsed.expires_at * 1000 < Date.now()) {
+      localStorage.removeItem(SESSION_KEY);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+let session: StoredSession | null = readStoredSession();
+
+export function setSession(next: StoredSession | null) {
+  session = next;
+  try {
+    if (next) localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+    else localStorage.removeItem(SESSION_KEY);
+  } catch {
+    // Storage can be unavailable (private mode). The in-memory session still
+    // works for this tab; only persistence across reloads is lost.
+  }
+}
+
+export function getSession(): StoredSession | null {
+  return session;
+}
+
+function dropSession() {
+  setSession(null);
+}
+
+function bearerHeaders(): Record<string, string> {
+  return session?.token ? { Authorization: `Bearer ${session.token}` } : {};
+}
+
 async function authorizedFetch(path: string, token?: string): Promise<Response> {
   const headers: Record<string, string> = {
     Accept: "application/json",
     "Content-Type": "application/json",
+    ...bearerHeaders(),
   };
+  // An explicit token (the login call) wins over the stored session.
   if (token) headers.Authorization = `Bearer ${token}`;
-  return fetch(`${baseUrl}${path}`, { headers, signal: AbortSignal.timeout(2500) });
+  const res = await fetch(`${baseUrl}${path}`, {
+    headers,
+    signal: AbortSignal.timeout(20000),
+  });
+  // 401 means the credential we are holding is no longer good — expired,
+  // revoked, or the account deleted. Keeping it would turn every screen into
+  // an empty state with no explanation, so drop it and let the next login
+  // happen.
+  if (res.status === 401) dropSession();
+  return res;
 }
 
 export async function postJson<T>(path: string, body: unknown): Promise<Envelope<T>> {
@@ -168,10 +248,22 @@ export async function postJson<T>(path: string, body: unknown): Promise<Envelope
   try {
     const res = await fetch(`${baseUrl}${path}`, {
       method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        ...bearerHeaders(),
+      },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(20000),
     });
+    if (res.status === 401) {
+      // Not just "not ok": 401 means our credential was refused, and returning
+      // it as a generic failure would leave a governed promote or a quarantine
+      // reported as "backend not reachable", which is a different lie than the
+      // one this branch exists to avoid.
+      dropSession();
+      throw new Error(`HTTP 401 — session refused; sign in again`);
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return { ok: true, data: (await res.json()) as T, source: "live" };
   } catch (e) {
@@ -186,8 +278,15 @@ export const health = {
   async check(): Promise<Envelope<{ status: string }>> {
     if (!this.live) return { ok: true, data: { status: "mock" }, source: "mock" };
     try {
-      const res = await authorizedFetch("/health");
-      return { ok: true, data: (await res.json()) as { status: string }, source: "live" };
+      // `/system/health` and not `/health`: the latter is gated now (it reports
+      // the account balance), and the former is the documented open path a
+      // caller may use to see WHY it was denied.
+      const res = await authorizedFetch("/system/health");
+      return {
+        ok: true,
+        data: { status: res.ok ? "ok" : "degraded" },
+        source: "live",
+      };
     } catch (e) {
       return { ok: false, data: { status: "offline" }, source: "mock", error: String(e) };
     }
@@ -206,7 +305,9 @@ export function probeBackend(timeoutMs = 2500): Promise<boolean> {
   if (health.live) return Promise.resolve(true);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(`${baseUrl}/health`, {
+  // `/system/health`, not `/health`: this probe runs before anyone has signed
+  // in, and `/health` is gated because it reports the account balance.
+  return fetch(`${baseUrl}/system/health`, {
     headers: { Accept: "application/json" },
     signal: controller.signal,
   })
@@ -682,6 +783,26 @@ export const api = {
             engine_last_errors: [],
           },
         },
+        error: String(e),
+        source: "mock",
+      };
+    }
+  },
+  async getChartEvents(
+    symbol: string,
+    timeframe: string,
+    bars = 300,
+  ): Promise<Envelope<ChartEventsResponse>> {
+    try {
+      const res = await authorizedFetch(
+        `/chart/events?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&bars=${bars}`,
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as ChartEventsResponse, source: "live" };
+    } catch (e) {
+      return {
+        ok: false,
+        data: { ok: false, symbol, timeframe, bars: 0, count: 0, events: [] },
         error: String(e),
         source: "mock",
       };

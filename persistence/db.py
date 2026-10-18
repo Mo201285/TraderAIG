@@ -167,6 +167,7 @@ def _register_models() -> None:
     """
     from . import models  # noqa: F401  (register models)
     from . import models_accounts  # noqa: F401  (register models)
+    from . import models_events  # noqa: F401  (register models)
     from . import models_trades  # noqa: F401  (register models)
 
 

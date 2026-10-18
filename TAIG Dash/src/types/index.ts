@@ -551,6 +551,21 @@ export interface MarketContext {
   score_breakdown: Record<string, number>;
 }
 
+// Where the chart's bars came from. This is the shared MarketPlane read (28.6),
+// so the UI can state source and freshness honestly instead of assuming "live".
+export interface ChartProvenance {
+  symbol: string;
+  timeframe: string;
+  source: string | null;
+  version: number;
+  bars: number;
+  read_at: number;
+  quote_source: string | null;
+  quote_age_seconds: number | null;
+  freshness: "fresh" | "stale" | "missing";
+  single_source: boolean | null;
+}
+
 export interface ChartContextResponse {
   ok: boolean;
   symbol: string;
@@ -558,6 +573,7 @@ export interface ChartContextResponse {
   bars: number;
   candles: ChartCandle[];
   context: MarketContext | null;
+  provenance?: ChartProvenance;
   mt5_status: { connected: boolean; attach_mode: string | null; last_error: string | null };
   cex_status?: {
     venue: string;
@@ -571,6 +587,31 @@ export interface ChartContextResponse {
     engine_venue_locked: boolean;
     engine_last_errors: string[];
   };
+  error?: string;
+}
+
+// A single structural event from the market timeline (read-only narrative):
+// sweep -> displacement -> FVG -> retrace. Computed server-side from the same
+// plane window; the UI only renders it and grants it no authority.
+export interface ChartTimelineEvent {
+  id: string;
+  type: "sweep" | "displacement" | "fvg" | "retrace";
+  side: "buy" | "sell" | "neutral";
+  time: number;
+  price: number;
+  index: number;
+  text_en: string;
+  text_ar: string;
+}
+
+export interface ChartEventsResponse {
+  ok: boolean;
+  symbol: string;
+  timeframe: string;
+  bars: number;
+  count: number;
+  events: ChartTimelineEvent[];
+  provenance?: ChartProvenance;
   error?: string;
 }
 

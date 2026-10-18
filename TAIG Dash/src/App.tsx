@@ -3,7 +3,7 @@ import LoginPage from "./components/LoginPage";
 import AppShell from "./components/AppShell";
 import LandingPage from "./components/pages/LandingPage";
 import OnboardingPage from "./components/pages/OnboardingPage";
-import { probeBackend } from "./lib/api";
+import { getSession, probeBackend, setSession } from "./lib/api";
 import type { Language, User, UserMode } from "./types";
 
 type Screen = "landing" | "login" | "onboarding" | "shell";
@@ -85,10 +85,28 @@ export default function App() {
           user={user!}
           lang={lang}
           onLangToggle={toggleLang}
-          onLogout={() => {
-            setUser(null);
-            setScreen("landing");
-          }}
+        onLogout={() => {
+          // Revoke server-side first, then drop the local copy. Both: leaving
+          // the token valid on the server would mean "logged out" only in the
+          // browser, and dropping only the server's copy would leave a bearer
+          // credential sitting in storage. Best-effort on the network call —
+          // a failed revoke is still bounded by the session's expiry, and the
+          // local copy goes regardless.
+          const held = getSession();
+          if (held?.token) {
+            void fetch(`${(import.meta.env.VITE_API_URL as string) || "http://127.0.0.1:8000"}/auth/logout`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${held.token}`,
+              },
+              signal: AbortSignal.timeout(10000),
+            }).catch(() => undefined);
+          }
+          setSession(null);
+          setUser(null);
+          setScreen("landing");
+        }}
         />
       );
   }

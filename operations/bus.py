@@ -141,6 +141,8 @@ class EvidenceIntakeBus:
                 timeframes=normalized.get("timeframes"),
                 regimes=normalized.get("regimes"),
                 hypothesis=str(normalized.get("hypothesis") or "").strip(),
+                partner_id=str(normalized.get("partner_id")
+                               or sweep.get("partner_id") or "").strip(),
                 note=str(normalized.get("note") or "").strip())
         except ValueError as exc:
             return fail("invalid_intake", str(exc))

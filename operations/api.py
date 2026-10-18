@@ -67,6 +67,15 @@ async def _lifespan(_app: FastAPI):
         seed_default_providers()
     except Exception:  # noqa: BLE001
         log.exception("external provider seed failed to start")
+    try:
+        from core.events import bus
+        from persistence import events as event_log
+
+        if event_log.enabled_by_env():
+            event_log.attach(bus)
+            log.info("durable event log attached to the bus")
+    except Exception:  # noqa: BLE001
+        log.exception("durable event log wiring failed to start")
     yield
 
 
@@ -141,13 +150,27 @@ def _own(user_id: str, *, action: str = "access") -> str:
     caller; the requirement is recorded as an open ORPHAN. What this buys is
     that a single-operator deployment stops pretending the boundary is enforced
     when it was previously an unchecked path parameter.
+
+    The tenant this guard compares against comes from `owner_scope()` (through
+    `_acting_actor()`), so it is one seam away from every other authority check
+    here, and a refusal is audited as `tenancy.denied` as well as
+    `ownership.denied`.
     """
     actor = _acting_actor()
     if actor is None:
         return user_id
     if user_id == actor:
         return user_id
+    # Two actions on one refusal, and neither is redundant. `tenancy.denied`
+    # states the boundary fact — a caller resolved to one tenant reached for
+    # another — which is the language the multi-tenant slices speak and the trail
+    # per-tenant state will have to explain. `ownership.denied` is the existing
+    # contract the IDOR suite and the operator's runbook read, and dropping it to
+    # avoid a duplicate row would break a caller for the sake of tidiness.
     try:
+        identity.record_audit(
+            "api", "tenancy.denied", "User", user_id,
+            {"action": action, "actor": actor, "requested_tenant": user_id})
         identity.record_audit(
             "api", "ownership.denied", "User", user_id,
             {"action": action, "actor": actor})
@@ -174,24 +197,30 @@ app.add_middleware(
 
 @app.middleware("http")
 async def _enforce_session(request: Request, call_next):
-    """Require a session for state-changing requests when enforcement is on.
+    """Require a session for every non-open request when enforcement is on.
 
     Off by default (`TRADERAIG_AUTH=0`) and reported as off in
     `/system/health.auth`, because a login screen on a deployment that does not
     enforce anything is the fabricated door this project already removed once.
-    When it is on, the policy is `auth.requires_session`: every non-GET request
-    needs a session EXCEPT the named open paths. A machine caller (the 24/7
-    supervisor, the live smoke) may present `X-Service-Token` instead, but ONLY
-    on the machine rails — `auth.service_token_allowed` pins those paths, so a
-    leaked machine credential cannot reach a human route. The console is a human
-    tool and authenticates with a session (`tradraig login`), not the machine
-    token.
+    When it is on, the policy is `auth.requires_session`: every request needs a
+    session EXCEPT the named open paths — **reads included**.
 
-    Reads stay open by design, and `/system/health` says so in the same
-    response that reports enforcement being on. Gating reads would not make this
-    multi-user: there is one shared canonical state, so an authenticated reader
-    still reads the operator's positions, ledger and audit trail. Half a
-    guarantee described as a whole one is how this roadmap got into trouble.
+    Reads used to be exempt, which meant `GET /users` returned the address book
+    and `GET /account` returned the balance to a caller holding no credential at
+    all, while the POST beside them demanded a password. A machine caller (the
+    24/7 supervisor, the live smoke) may present `X-Service-Token` instead: for
+    reads always, because a watchdog cannot watch what it may not read, and for
+    mutations only on the machine rails — `auth.service_token_allowed` pins
+    those paths, so a leaked machine credential cannot reach a human route. The
+    console is a human tool and authenticates with a session (`tradraig login`),
+    not the machine token.
+
+    Read-gating is authentication of the reader, not isolation of the data, and
+    `/system/health` says both things in the same response: `reads_gated: true`
+    AND `model: single-tenant`. There is one shared canonical state, so an
+    authenticated reader still reads the operator's positions, ledger and audit
+    trail. Half a guarantee described as a whole one is how this roadmap got
+    into trouble.
     """
     if auth.enforcement_enabled() and auth.requires_session(
             request.method, request.url.path):
@@ -223,22 +252,47 @@ def _caller_bound(request: Request):
         reset_current_caller(token)
 
 
-def _acting_actor() -> Optional[str]:
-    """Who is acting for this request.
+def owner_scope() -> Optional[str]:
+    """The one place a tenant is resolved (step 4, multi-tenant slice I1).
 
-    The authenticated session wins. Before this existed every guard here compared
-    against `identity.principal_user_id()` -- the identity the SERVER names --
-    which meant a valid session proved only that the caller knew a password,
-    while every authority check still ran against the operator. Anyone holding
-    any credential could then act as the operator, including on the operator's
-    own record through the very `_own` guard added to stop exactly that.
+    The order is the contract, and each step is there for a different reason:
 
-    Falling back to the server principal when no session was presented keeps the
-    24/7 deployment identical: with enforcement off nothing changes, and the
-    machine service token deliberately still acts as the operator, because the
-    watchdog maintaining the operator's own rails is not a privilege escalation.
+    1. `current_caller()` — a session proves WHICH tenant is asking. It wins
+       because `IDENTITY_PRIMARY_EMAIL` only says which tenant the server
+       expected; if the server's expectation outranked a presented session, a
+       valid credential would act as the operator, which is the hole this
+       resolver (and the `_acting_actor` it replaces) exists to close.
+    2. `identity.principal_user_id()` — the default tenant. With enforcement off
+       on a single-operator box nobody presents a session, so this is what keeps
+       the 24/7 deployment byte-for-byte identical: the server-named principal.
+    3. `None` — bootstrap. No principal and no session means there is no owner to
+       compare against and nothing yet to protect, so every guard passes. That is
+       a deliberate property, not a gap: a refusal that names a tenant nobody
+       configured would be worse than no refusal.
+
+    Every guard reaches this function — `_own`, `_guard` and the 70 actor reads
+    all resolve through `_acting_actor()`, which is a thin delegation to this
+    seam and is kept only because it is the name those call sites and two test
+    suites already use. There must be exactly one place with this order; two
+    places that agree today can diverge tomorrow without either being wrong.
     """
     return current_caller() or identity.principal_user_id()
+
+
+def _acting_actor() -> Optional[str]:
+    """Who is acting for this request — resolved by `owner_scope()`.
+
+    Kept as the historical name so the 70 call sites (audit actor fields,
+    `_guard_factory`, `_own`, `_guard`) and the two test suites that patch it
+    keep working unchanged. It holds no resolution logic of its own on purpose:
+    duplicating the order here would give the repo two authorities for the same
+    question.
+
+    Its docstring used to carry the resolution rationale; that now lives on
+    `owner_scope()`, which is the function to read (or to patch when a test needs
+    to move the tenant).
+    """
+    return owner_scope()
 
 
 def _verify_presented_session(supplied: Optional[str]):
@@ -317,7 +371,12 @@ def _identify_caller(request: Request) -> None:
 
 
 def _reject_without_session(request: Request):
-    """Refuse a state-changing request that has no valid session.
+    """Refuse a request that presents no credential the policy accepts.
+
+    Reached for reads as well as writes once enforcement is on, so the branches
+    below must stay correct for a GET: a service token is always enough to read,
+    and a read-only developer token is enough to read. Both were previously
+    written for mutations only.
 
     Returns None when the caller IS authenticated (the middleware then proceeds),
     or a JSONResponse to send instead. Split out from the middleware so the
@@ -330,14 +389,20 @@ def _reject_without_session(request: Request):
                                                request.url.path)):
             request.state.auth_kind = "service"
         elif supplied and looks_like_api_token(supplied):
-            # A developer token authenticates a mutating request only if it is
+            # A developer token authenticates a MUTATING request only if it is
             # NOT read-only: a `read`-scope token is a ceiling that forbids
             # writes outright, and a write scope is still gated by the owner's
             # entitlement in `_guard` below.
+            #
+            # On a read the ceiling is the whole point of the token rather than
+            # a reason to refuse it — gating reads while rejecting every
+            # read-only credential would make that scope useless, so `can_write`
+            # is checked only for methods that write.
             principal = api_tokens.verify(supplied)
             if identity.get_user(principal.user_id) is None:
                 raise AuthError("this token's owner no longer exists")
-            if not principal.can_write:
+            writes = request.method.upper() not in ("GET", "HEAD", "OPTIONS")
+            if writes and not principal.can_write:
                 raise AuthError("this developer token is read-only",
                                 status_code=403)
             request.state.session = _session_for_token(principal)
@@ -637,22 +702,34 @@ def _tenancy_report() -> Dict:
     document.
 
     `authenticated` used to be a hardcoded `False`, which was honest at the time
-    and would have become a lie the moment a session layer landed. It now
-    reports the live truth: whether enforcement is switched on, and whether the
-    caller presenting this request proved who they are. Being able to see "on,
-    and this caller is not authenticated" in one place is the whole point.
+    and would have become a lie the moment a session layer landed. It then read
+    `enforcement`, which put a different lie in its place: this endpoint is an
+    OPEN path, so it is exactly the response an anonymous caller receives — and
+    telling that caller "authenticated: true" because the gate is switched on is
+    the fabricated door this project removed once already. Whether the gate is on
+    and whether THIS caller proved who they are are two different questions.
+
+    It now reports the live truth: `enforcement_enabled` says whether the gate is
+    on, `authenticated` says whether the caller presenting this request actually
+    presented a credential, and `acting_principal` says who the server would fall
+    back to. Being able to see "on, and this caller is not authenticated" in one
+    place is the whole point.
     """
     principal = identity.principal_user_id()
     enforcement = auth.enforcement_enabled()
     return {
         "model": "single-tenant",
         "multi_tenant": False,
-        "authenticated": enforcement,
-        "auth_enforcement": ("TRADERAIG_AUTH=1 — every state-changing request "
+        "authenticated": bool(current_caller()),
+        "auth_enforcement": ("TRADERAIG_AUTH=1 — every request (reads included) "
                              "requires a session" if enforcement else
                              "TRADERAIG_AUTH=0 — NOT enforced; any caller that "
                              "can reach this port acts as the acting principal"),
-        "reads_gated": False,
+        # Reported honestly in both directions, and deliberately NOT a claim of
+        # data isolation: reads require a credential, but there is only one
+        # canonical state, so a reader still sees the operator's own data.
+        "reads_gated": enforcement,
+        "data_isolated_per_user": False,
         "acting_principal": principal,
         "principal_source": ("IDENTITY_PRIMARY_EMAIL" if os.environ.get(
             "IDENTITY_PRIMARY_EMAIL", "").strip() else "first-created user"),
@@ -2383,15 +2460,6 @@ def _research_queue_service():
     return ResearchQueueService()
 
 
-def _guard_factory(actor: Optional[str]):
-    if actor is None:
-        return JSONResponse(status_code=409, content={
-            "ok": False, "reason": "no_principal",
-            "detail": ("no acting principal exists to use the research "
-                       "factory; create a user first")})
-    return None
-
-
 @app.post("/research/sources")
 def research_register_source(payload: Optional[Dict] = None) -> Dict:
     """Register one RMI source in the formal source ledger (row 749).
@@ -3119,9 +3187,13 @@ def logout(request: Request) -> Dict:
         raise HTTPException(status_code=401, detail="no session to end")
     auth.revoke(session)
     identity.record_audit("api", "auth.logout", "User", session.user_id, {})
-    return {"revoked": True,
-            "note": "the revocation list is in memory, so a restart un-revokes "
-                    "outstanding tokens; they remain bounded by their expiry"}
+    durable = auth.revocation_is_durable()
+    return {"revoked": True, "durable": durable,
+            "note": ("the revocation is mirrored to disk and restored at boot"
+                     if durable else
+                     "the revocation list could not be mirrored to disk, so a "
+                     "restart un-revokes this token; it remains bounded by its "
+                     "expiry")}
 
 
 # ---------------------------------------------------------------------------
@@ -3222,9 +3294,32 @@ def developer_revoke_token(token_id: str) -> Dict:
 
 @app.post("/users", status_code=status.HTTP_201_CREATED)
 def create_user(payload: Dict) -> Dict:
+    """Create a user.
+
+    The PRIMARY gate is the session middleware, not this route: `POST /users`
+    is not in `auth.OPEN_PATHS`, so with enforcement on
+    `auth.requires_session("POST", "/users")` is True and an unauthenticated
+    caller is rejected before this handler runs. This check is a deliberate
+    second line for the same hole, so that the door cannot be reopened by an
+    edit elsewhere -- specifically, so that adding `/users` to `OPEN_PATHS` to
+    fix a bootstrap deadlock would NOT silently hand every caller the ability to
+    mint principals. The bootstrap case still works: the first identity is free
+    (`list_users()` empty), and every identity after it needs a caller.
+
+    Conditioned on enforcement rather than always-on so the suite (which pins
+    `TRADERAIG_AUTH=0`) keeps describing the code and not the operator's `.env`.
+    """
     email = payload.get("email")
     if not email:
         raise HTTPException(status_code=400, detail="email required")
+    if auth.enforcement_enabled() and identity.list_users():
+        actor = current_caller()
+        if actor is None:
+            raise HTTPException(
+                status_code=401,
+                detail="a user already exists: authenticate to create another")
+        identity.record_audit(actor, "user.create", "User", "pending",
+                              {"email_supplied": True})
     user = identity.create_user(
         email=email,
         display_name=payload.get("display_name", ""),
@@ -6377,6 +6472,29 @@ def ops_events(after: int = 0, topic: str = "") -> Dict:
             "events": events}
 
 
+@app.get("/events/log")
+def events_log(limit: int = 100, event_type: str = "",
+               correlation_id: str = "") -> Dict:
+    """Read the durable unified event log (the persistence projection).
+
+    Read-only view of `event_log`. The durable writer is opt-in
+    (`TRADERAIG_EVENT_LOG`), so an empty log here means it is simply not
+    enabled -- not that nothing happened. `correlation_id` narrows to one
+    causal chain; otherwise `event_type` filters, newest-last.
+    """
+    from persistence import events as event_log
+    from persistence.repositories import EventLogRepository
+
+    limit = max(1, min(int(limit), 1000))
+    repo = EventLogRepository()
+    if correlation_id:
+        items = repo.by_correlation(correlation_id, limit=limit)
+    else:
+        items = repo.list(limit=limit, event_type=event_type or None)
+    return {"ok": True, "enabled": event_log.enabled_by_env(),
+            "count": len(items), "events": items}
+
+
 @app.get("/ops/copy/follower")
 def copy_follower() -> Dict:
     """Copy-engine consumer: reads the shared feed and mirrors master
@@ -6434,31 +6552,42 @@ def _ensure_mt5_feed() -> None:
         market_plane.register_feed("mt5", fetcher)
 
 
+# The chart is a polling consumer, and the engine only pulls its own single
+# timeframe. When the operator watches a symbol/timeframe nothing else pulls,
+# the chart's own poll must be what keeps that window moving. The refresh is
+# bounded by a worker thread + hard timeout and throttled by the plane's
+# min_pull_interval, so it costs at most one terminal round-trip per throttle
+# window -- never one per tick, and never a blocked API thread.
+_CHART_REFRESH_MAX_AGE = 4.0
+
+
 def _plane_candles_bounded(symbol: str, timeframe: str, bars: int,
                             timeout: float = 10.0) -> Tuple[List, Dict]:
-    """Chart candles from the canonical plane, never blocking the API thread.
+    """Chart candles from the canonical plane, refreshing the shown series.
 
     The plane is the one read path (28.6), so the chart shows exactly the bars
-    the decision pipeline saw, tagged with their real source. A first read may
-    need one terminal round-trip, so it runs on a worker with a hard timeout and
-    falls back to whatever the plane already holds.
+    the decision pipeline saw, tagged with their real source. The chart also
+    *drives* a guarded refresh so a symbol/timeframe the engine does not itself
+    pull still tracks live. The pull runs on a worker with a hard timeout and
+    is throttled by the plane's own min_pull_interval, so a slow or dead
+    terminal falls back to the cached window instead of blocking the API thread.
     """
     from core.market_plane import market_plane
 
     _mt5_ensure_connected_bounded(timeout)
     _ensure_mt5_feed()
-    read = market_plane.read(symbol, timeframe, bars, allow_pull=False)
-    if not read.candles:
-        result: Dict[str, Any] = {}
+    result: Dict[str, Any] = {}
 
-        def _run() -> None:
-            result["read"] = market_plane.read(symbol, timeframe, bars)
+    def _run() -> None:
+        result["read"] = market_plane.read(
+            symbol, timeframe, bars,
+            max_age_seconds=_CHART_REFRESH_MAX_AGE)
 
-        t = _threading.Thread(target=_run, daemon=True)
-        t.start()
-        t.join(timeout)
-        read = result.get("read") or market_plane.read(
-            symbol, timeframe, bars, allow_pull=False)
+    t = _threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    read = result.get("read") or market_plane.read(
+        symbol, timeframe, bars, allow_pull=False)
     return read.candles, read.provenance
 
 
@@ -6508,6 +6637,43 @@ def chart_context(symbol: str = "XAUUSD", timeframe: str = "M5",
         "mt5_status": {k: mt5_adapter.status().get(k)
                        for k in ("connected", "attach_mode", "last_error")},
         "cex_status": _cex_status_compact(),
+    }
+
+
+@app.get("/chart/events")
+def chart_events(symbol: str = "XAUUSD", timeframe: str = "M5",
+                 bars: int = 300) -> Dict:
+    """Structural event timeline for the Chart page (read-only narrative).
+
+    Computed on demand from the exact bars the plane serves, so the timeline is
+    reproducible and holds no authority: it explains the movement the chart
+    already shows, in order (sweep -> displacement -> FVG -> retrace). The same
+    provenance block as `/chart/context` travels with it so the UI can state,
+    honestly, which source and how old the window was.
+    """
+    from core.market_plane import canonical_symbol
+    from intelligence.market_timeline import build_timeline
+
+    symbol = canonical_symbol(symbol)
+    if symbol not in CHART_SYMBOLS:
+        raise HTTPException(status_code=400, detail="unsupported symbol")
+    timeframe = timeframe if timeframe in CHART_TIMEFRAMES else "M5"
+    bars = max(50, min(int(bars), 5000))
+
+    candles, provenance = _plane_candles_bounded(symbol, timeframe, bars)
+    if not candles:
+        return {"ok": False, "error": "no_candles", "symbol": symbol,
+                "timeframe": timeframe, "provenance": provenance,
+                "count": 0, "events": []}
+    events = build_timeline(list(candles), symbol, timeframe)
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "bars": len(candles),
+        "count": len(events),
+        "events": events,
+        "provenance": provenance,
     }
 
 

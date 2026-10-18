@@ -447,42 +447,62 @@ class AuthService:
     def requires_session(method: str, path: str) -> bool:
         """The enforcement policy, in one readable place.
 
-        Deliberately narrow and stated rather than assumed: **every state-
-        changing request needs a session; reads do not.** Claiming more would be
-        a lie on a single-tenant deployment with one shared canonical state —
-        authenticating a reader still hands them the operator's positions,
-        ledger and audit trail, which is why the health report says reads are
-        ungated instead of letting a login screen imply otherwise.
+        Stated rather than assumed: when enforcement is on, **every request
+        needs a credential — reads included** — except the named open paths.
+
+        Reads used to be exempt. That left `GET /users` handing the whole
+        address book, and `GET /account` handing the balance, to anyone who
+        could reach the port while every mutation sat behind a password. A write
+        path that is enforced and a read path that is not, on one deployment, is
+        the "door that looks like a door" this project removed elsewhere: the
+        lock is real, but the window beside it is open.
+
+        What this does NOT claim, because it is not true: gating a reader does
+        not make this multi-user. There is one shared canonical state, so an
+        authenticated reader still reads the operator's positions, ledger and
+        audit trail. `/system/health` reports `model: single-tenant` alongside
+        `reads_gated: true` for exactly that reason. This is authentication of
+        the READER, not isolation of the DATA — half a guarantee described as a
+        whole one is how this roadmap got into trouble.
         """
         clean = path.split("?")[0].rstrip("/") or "/"
         if clean in {p.rstrip("/") for p in OPEN_PATHS}:
             return False
         if clean.startswith("/docs") or clean.startswith("/redoc"):
             return False
-        return method.upper() not in ("GET", "HEAD", "OPTIONS")
+        return True
 
     @staticmethod
     def service_token_allowed(method: str, path: str) -> bool:
-        """Is the service token sufficient for this mutating request?
+        """Is the service token sufficient for this request?
 
-        Only the machine rails. Every other mutating route needs a real session,
-        so a leaked machine credential cannot mint entitlements, create users or
-        move money (see the row-730 escalation, reached here by a credential
-        instead of a path parameter). Reads are never gated, so a GET is only
-        meaningful to this function when it is state-changing, which it is not —
-        hence the explicit non-GET guard.
+        READS: always. Reads are gated now, and the unattended rails decide
+        whether the platform is alive by polling GET endpoints —
+        `scripts/ensure_backend.py` reads `/system/health`, the MT5 autostart
+        reads `/mt5/engine`. A machine credential that cannot read status cannot
+        watch, so withholding it from reads would take the 24/7 supervisor
+        offline the moment enforcement came on. The token is a vault-held
+        machine secret, and this is strictly narrower than the status quo it
+        replaces (reads were open to *anyone* with no credential at all).
+
+        MUTATIONS: only the machine rails. Every other mutating route needs a
+        real session, so a leaked machine credential cannot mint entitlements,
+        create users or move money (the row-730 escalation, reached here by a
+        credential instead of a path parameter).
         """
+        if method.upper() in ("GET", "HEAD", "OPTIONS"):
+            return True
         clean = path.split("?")[0].rstrip("/") or "/"
-        return (method.upper() not in ("GET", "HEAD", "OPTIONS")
-                and clean in SERVICE_TOKEN_PATHS)
+        return clean in SERVICE_TOKEN_PATHS
 
     def auth_policy(self) -> Dict:
         return {
             "enforcement_enabled": self.enforcement_enabled(),
-            "rule": "every state-changing request (non-GET/HEAD/OPTIONS) requires "
-                    "a session token; reads are NOT gated",
+            "rule": "every request requires a session token except the named "
+                    "open paths — reads included; the machine token may read "
+                    "anything but may mutate only its rails",
             "open_paths": sorted(OPEN_PATHS),
-            "reads_gated": False,
+            "reads_gated": self.enforcement_enabled(),
             "service_token_configured": self.service_token_configured(),
             "service_token_scoped": True,
             "service_token_paths": sorted(SERVICE_TOKEN_PATHS),

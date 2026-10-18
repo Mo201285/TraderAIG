@@ -165,8 +165,18 @@ def test_unauthenticated_mutation_is_refused_when_enforcement_on(client,
 
 
 def test_token_without_a_live_owner_is_not_a_caller(client, monkeypatch):
+    """A credential pointing at an account that no longer exists is not a caller.
+
+    With reads gated this is now refused at the gate (401, an authentication
+    failure) rather than reaching the route and surfacing there as a 409
+    "cannot resolve a principal". Refusing it as a bad credential is the more
+    accurate answer: the token did authenticate as something, and that something
+    is gone. The property this test protects -- the ghost token never acts as
+    anyone -- is unchanged and slightly stronger.
+    """
     ghost = api_mod.api_tokens.mint("ghost-user", label="ghost")["token"]
     monkeypatch.setenv("TRADERAIG_AUTH", "1")
     r = client.get("/developer/tokens",
                    headers={"Authorization": f"Bearer {ghost}"})
-    assert r.status_code == 409  # reads are open; no principal is resolved
+    assert r.status_code == 401
+    assert "no longer exists" in r.json()["detail"]

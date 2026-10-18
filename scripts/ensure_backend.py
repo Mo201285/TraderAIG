@@ -87,9 +87,15 @@ def service_headers() -> Dict[str, str]:
 
 
 def http_get(url: str, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
-    """GET returning parsed JSON, or None for any transport/protocol failure."""
+    """GET returning parsed JSON, or None for any transport/protocol failure.
+
+    Carries the same machine credential the POST path sends: reads are gated
+    alongside writes now, so a bare `urlopen` on a gated route is a 401 and this
+    helper would report a healthy backend as absent.
+    """
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        request = urllib.request.Request(url, headers=service_headers())
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             if response.status != 200:
                 return None
             return json.loads(response.read().decode("utf-8", "replace"))

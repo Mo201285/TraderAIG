@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   ChartCandle,
+  ChartContextResponse,
   ChartLiquidity,
+  ChartProvenance,
   ChartStrategy,
   ChartTimeframes,
+  ChartTimelineEvent,
   ChartZone,
   Language,
   MarketContext,
@@ -25,6 +28,7 @@ import {
   LineStyle,
   createChart,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
   type UTCTimestamp,
 } from "lightweight-charts";
@@ -41,6 +45,10 @@ const T = {
     source: "Source",
     live: "live",
     mock: "mock",
+    fresh: "fresh",
+    stale: "stale",
+    nodata: "no data",
+    barsUnit: "bars",
     loading: "Loading candles…",
     noCandlesTitle: "No candles from terminal",
     noCandlesHint: "The MT5 terminal is not connected yet. Start it and press refresh.",
@@ -69,6 +77,15 @@ const T = {
     ranges: "range",
     off: "offline",
     on: "connected",
+    flow: "Market flow",
+    flowSub: "How price moved, in order — sweep → displacement → gap → retrace.",
+    noEvents: "No structural events in this window.",
+    eventsUnit: "events",
+    moreEvents: "older hidden",
+    evSweep: "sweep",
+    evDisplacement: "displacement",
+    evFvg: "imbalance",
+    evRetrace: "retrace",
   },
   ar: {
     title: "الشارت / قراءة السوق",
@@ -79,6 +96,10 @@ const T = {
     source: "المصدر",
     live: "مباشر",
     mock: "تجريبي",
+    fresh: "حديث",
+    stale: "متأخر",
+    nodata: "لا بيانات",
+    barsUnit: "شمعة",
     loading: "جارٍ تحميل الشموع…",
     noCandlesTitle: "لا توجد شموع من الطرفية",
     noCandlesHint: "طرفية MT5 غير متصلة بعد. شغّلها ثم اضغط تحديث.",
@@ -107,6 +128,15 @@ const T = {
     ranges: "نطاق",
     off: "غير متصل",
     on: "متصل",
+    flow: "تدفق السوق",
+    flowSub: "كيف تحرّك السعر بالترتيب — كشط ← دفع ← فجوة ← ارتداد.",
+    noEvents: "لا أحداث بنيوية في هذه النافذة.",
+    eventsUnit: "حدث",
+    moreEvents: "أقدم مخفي",
+    evSweep: "كشط سيولة",
+    evDisplacement: "دفع سعري",
+    evFvg: "فجوة قيمة",
+    evRetrace: "ارتداد",
   },
 } as const;
 
@@ -128,6 +158,22 @@ const BUY_LIQ = "#60a5fa";
 const SELL_LIQ = "#a78bfa";
 const POI = "#f59e0b";
 
+// Structural event palette: sweep keeps the amber warning tone, displacement is
+// the impulse (violet), an imbalance is the fair-value blue, and a retrace back
+// into the imbalance is the calm reaction grey.
+const EVENT_COLOR: Record<ChartTimelineEvent["type"], string> = {
+  sweep: "#f59e0b",
+  displacement: "#a78bfa",
+  fvg: "#60a5fa",
+  retrace: "#94a3b8",
+};
+
+// Live refresh cadence. The backend serves a bounded plane read, so a light
+// poll keeps candles and the honest freshness chip current without a second
+// decision path or a WebSocket to maintain. Polling only runs while the tab is
+// visible; a backgrounded tab does not hammer the terminal.
+const CHART_POLL_MS = 5000;
+
 // ---------------------------------------------------------------- chart
 
 function chartTime(c: ChartCandle, timeframe: string): UTCTimestamp | string {
@@ -146,6 +192,7 @@ function ChartCanvas({
   poi,
   timeframe,
   rtl,
+  resetKey,
 }: {
   candles: ChartCandle[];
   sup: ChartZone[];
@@ -155,13 +202,19 @@ function ChartCanvas({
   poi: { top: number; bottom: number; type: string; side: string } | null;
   timeframe: string;
   rtl: boolean;
+  resetKey: string;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const linesRef = useRef<IPriceLine[]>([]);
+  const fittedRef = useRef<string>("");
 
+  // The chart itself is built once per (timeframe, rtl). A live refresh must not
+  // tear it down: recreating the chart on every poll would reset the operator's
+  // zoom and scroll every few seconds, which is unusable on a live surface.
   useEffect(() => {
-    if (!hostRef.current || !candles.length) return;
+    if (!hostRef.current) return;
 
     const chart = createChart(hostRef.current, {
       autoSize: true,
@@ -192,6 +245,25 @@ function ChartCanvas({
       borderVisible: false,
     });
 
+    chartRef.current = chart;
+    seriesRef.current = series;
+    linesRef.current = [];
+    fittedRef.current = "";
+
+    return () => {
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+      linesRef.current = [];
+      fittedRef.current = "";
+    };
+  }, [timeframe, rtl]);
+
+  // Bars refresh in place. Only a genuinely new symbol/timeframe refits the view,
+  // so a live poll keeps whatever the operator was looking at.
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series || !candles.length) return;
     series.setData(
       candles.map((c) => ({
         time: chartTime(c, timeframe),
@@ -201,54 +273,35 @@ function ChartCanvas({
         close: c.close,
       })),
     );
-
-    const addLines = (zones: ChartZone[], color: string, title: string, style: LineStyle) => {
-      for (const z of zones) {
-        series.createPriceLine({
-          price: z.price,
-          color,
-          lineWidth: 1,
-          lineStyle: style,
-          title: `${title} ${z.touches}×` ,
-          axisLabelVisible: true,
-        });
-      }
-    };
-
-    addLines(sup, SUPPORT, rtl ? "دعم" : "S", LineStyle.Solid);
-    addLines(res, RESISTANCE, rtl ? "مقاومة" : "R", LineStyle.Solid);
-    for (const l of buyLiq)
-      series.createPriceLine({
-        price: l.price, color: BUY_LIQ, lineWidth: 1,
-        lineStyle: LineStyle.Dotted, title: rtl ? "سيولة شرائية" : "buy liq",
-      });
-    for (const l of sellLiq)
-      series.createPriceLine({
-        price: l.price, color: SELL_LIQ, lineWidth: 1,
-        lineStyle: LineStyle.Dotted, title: rtl ? "سيولة بيعية" : "sell liq",
-      });
-    if (poi) {
-      series.createPriceLine({
-        price: poi.top, color: POI, lineWidth: 1,
-        lineStyle: LineStyle.Dashed, title: rtl ? `POI ${poi.type}` : poi.type,
-      });
-      series.createPriceLine({
-        price: poi.bottom, color: POI, lineWidth: 1,
-        lineStyle: LineStyle.Dashed, title: rtl ? `POI ${poi.type}` : poi.type,
-      });
+    if (fittedRef.current !== resetKey) {
+      chartRef.current?.timeScale().fitContent();
+      fittedRef.current = resetKey;
     }
+  }, [candles, timeframe, resetKey]);
 
-    chart.timeScale().fitContent();
-    chartRef.current = chart;
-    seriesRef.current = series;
+  // Zones/liquidity/POI as price lines on the same series: removed then re-added
+  // so a refresh can move a level without leaving the old one behind.
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+    for (const line of linesRef.current) series.removePriceLine(line);
+    linesRef.current = [];
 
-    return () => {
-      chart.remove();
-      chartRef.current = null;
-      seriesRef.current = null;
+    const add = (price: number, color: string, style: LineStyle, title: string) => {
+      linesRef.current.push(series.createPriceLine({
+        price, color, lineWidth: 1, lineStyle: style, title, axisLabelVisible: true,
+      }));
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candles, sup, res, buyLiq, sellLiq, poi, timeframe, rtl]);
+
+    for (const z of sup) add(z.price, SUPPORT, LineStyle.Solid, `${rtl ? "دعم" : "S"} ${z.touches}×`);
+    for (const z of res) add(z.price, RESISTANCE, LineStyle.Solid, `${rtl ? "مقاومة" : "R"} ${z.touches}×`);
+    for (const l of buyLiq) add(l.price, BUY_LIQ, LineStyle.Dotted, rtl ? "سيولة شرائية" : "buy liq");
+    for (const l of sellLiq) add(l.price, SELL_LIQ, LineStyle.Dotted, rtl ? "سيولة بيعية" : "sell liq");
+    if (poi) {
+      add(poi.top, POI, LineStyle.Dashed, rtl ? `POI ${poi.type}` : poi.type);
+      add(poi.bottom, POI, LineStyle.Dashed, rtl ? `POI ${poi.type}` : poi.type);
+    }
+  }, [sup, res, buyLiq, sellLiq, poi, rtl, timeframe]);
 
   return (
     <div
@@ -279,63 +332,115 @@ export default function ChartPage({ lang }: { lang: Language }) {
     engine_last_errors: string[];
   } | null>(null);
   const [strategies, setStrategies] = useState<ChartStrategy[]>([]);
+  const [events, setEvents] = useState<ChartTimelineEvent[]>([]);
   const [source, setSource] = useState<"live" | "mock" | "loading">("loading");
+  const [prov, setProv] = useState<ChartProvenance | null>(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
 
-  useEffect(() => {
-    api.getChartTimeframes().then((r) => {
-      setConfig(r.data);
-      if (r.data.symbols.length && !r.data.symbols.includes(symbol)) setSymbol(r.data.symbols[0]);
+  const applyCex = (cex: ChartContextResponse["cex_status"]) => {
+    if (!cex) return;
+    setCexStatus({
+      venue: cex.venue,
+      mode: cex.mode,
+      engine_running: Boolean(cex.engine_running ?? false),
+      engine_cycles: Number(cex.engine_cycles ?? 0),
+      engine_venue_locked: Boolean(cex.engine_venue_locked ?? false),
+      engine_last_errors: Array.isArray(cex.engine_last_errors) ? cex.engine_last_errors : [],
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  };
 
   useEffect(() => {
     let cancelled = false;
-    setSource("loading");
-    setError("");
-    Promise.all([api.getChartContext(symbol, timeframe, 300), api.getChartStrategies(symbol)]).then(
-      ([cr, sr]) => {
-        if (cancelled) return;
-        if (cr.ok && cr.data.ok) {
-          setCandles(cr.data.candles);
-          setCtx(cr.data.context);
-          setMt5Connected(cr.data.mt5_status.connected);
-          if (cr.data.cex_status) {
-            setCexStatus({
-  venue: cr.data.cex_status.venue,
-  mode: cr.data.cex_status.mode,
-  engine_running: Boolean(cr.data.cex_status.engine_running ?? false),
-  engine_cycles: Number(cr.data.cex_status.engine_cycles ?? 0),
-  engine_venue_locked: Boolean(cr.data.cex_status.engine_venue_locked ?? false),
-  engine_last_errors: Array.isArray(cr.data.cex_status.engine_last_errors) ? cr.data.cex_status.engine_last_errors : [],
-});
-          }
-          setSource("live");
-        } else {
-          setCandles([]);
-          setCtx(null);
-          setMt5Connected(cr.data.mt5_status.connected);
-          if (cr.data.cex_status) {
-            setCexStatus({
-  venue: cr.data.cex_status.venue,
-  mode: cr.data.cex_status.mode,
-  engine_running: Boolean(cr.data.cex_status.engine_running ?? false),
-  engine_cycles: Number(cr.data.cex_status.engine_cycles ?? 0),
-  engine_venue_locked: Boolean(cr.data.cex_status.engine_venue_locked ?? false),
-  engine_last_errors: Array.isArray(cr.data.cex_status.engine_last_errors) ? cr.data.cex_status.engine_last_errors : [],
-});
-          }
-          setError(cr.error || cr.data.error || "no_candles");
-          setSource(cr.data.ok ? "live" : "mock");
-        }
-        setStrategies(sr.data ?? []);
-      },
-    );
+    api.getChartTimeframes().then((r) => {
+      if (cancelled) return;
+      setConfig(r.data);
+      if (r.data.symbols.length && !r.data.symbols.includes(symbol)) setSymbol(r.data.symbols[0]);
+    });
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Strategies change with the symbol, not with the tick, so they are fetched
+  // once per symbol rather than on every poll.
+  useEffect(() => {
+    let cancelled = false;
+    api.getChartStrategies(symbol).then((sr) => {
+      if (!cancelled) setStrategies(sr.data ?? []);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol]);
+
+  // Candles + context live on a light poll so the page is a live read rather
+  // than a snapshot the operator has to refresh by hand. The first load (or a
+  // symbol/timeframe/refresh change) shows the loading state; a poll refreshes
+  // silently and never clears good candles over a transient error.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const loadContext = async (initial: boolean) => {
+      if (initial) {
+        setSource("loading");
+        setProv(null);
+        setError("");
+      }
+      const cr = await api.getChartContext(symbol, timeframe, 300);
+      if (cancelled) return;
+      setMt5Connected(cr.data.mt5_status.connected);
+      applyCex(cr.data.cex_status);
+      const fresh = cr.ok && cr.data.ok;
+      if (fresh) {
+        setCandles(cr.data.candles);
+        setCtx(cr.data.context);
+        setProv(cr.data.provenance ?? null);
+        setError("");
+        setSource("live");
+      } else if (initial) {
+        setCandles([]);
+        setCtx(null);
+        setProv(cr.data.provenance ?? null);
+        setError(cr.error || cr.data.error || "no_candles");
+        setSource(cr.ok ? "live" : "mock");
+      } else {
+        // Silent refresh: keep the last good candles, but keep the provenance
+        // and error truthful so a stopped feed reads as stale, not live.
+        setProv(cr.data.provenance ?? null);
+        setError(cr.error || cr.data.error || "no_candles");
+      }
+      // The timeline is read from the same window as the candles, so it is
+      // refreshed on the same cadence and never outlives the bars it describes.
+      const er = await api.getChartEvents(symbol, timeframe, 300);
+      if (cancelled) return;
+      if (er.ok && er.data.ok) {
+        setEvents(er.data.events ?? []);
+      } else if (initial) {
+        setEvents([]);
+      }
+    };
+
+    loadContext(true).then(() => {
+      if (cancelled) return;
+      timer = window.setInterval(() => {
+        if (!document.hidden) void loadContext(false);
+      }, CHART_POLL_MS);
+    });
+
+    const onVisible = () => {
+      if (!document.hidden) void loadContext(false);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, timeframe, attempt]);
 
   const regime = ctx?.regime ?? "";
@@ -351,6 +456,24 @@ export default function ChartPage({ lang }: { lang: Language }) {
     return (STAGE_ORDER[a.stage] ?? 9) - (STAGE_ORDER[b.stage] ?? 9);
   });
   const recommended = ranked.find((s) => fit(s) > 0) ?? null;
+
+  // Honest status: the backend already reports where the bars came from and how
+  // fresh they are (MarketPlane provenance). "live" must follow that truth, not
+  // a 200 response -- a live read of a frozen feed is stale, not live.
+  const freshness = prov?.freshness ?? (candles.length ? "fresh" : "missing");
+  const provSource = prov?.source ?? null;
+  const lastBarTime = candles.length ? candles[candles.length - 1].time : 0;
+  const barAgeSec = lastBarTime ? Math.max(0, Math.floor(Date.now() / 1000 - lastBarTime)) : null;
+  const freshnessLabel =
+    freshness === "fresh" ? t.fresh : freshness === "stale" ? t.stale : t.nodata;
+  const freshnessColor =
+    freshness === "fresh" ? "#22c55e" : freshness === "stale" ? "#f59e0b" : "#64748b";
+  const statusLabel =
+    source === "loading" ? t.loading
+    : source === "mock" ? t.mock
+    : `${provSource ?? "plane"} · ${freshnessLabel}${barAgeSec != null ? ` · ${fmtAgo(barAgeSec)}` : ""}`;
+  const statusColor =
+    source === "loading" ? "#64748b" : source === "mock" ? "#f59e0b" : freshnessColor;
 
   const scoreColor =
     (ctx?.context_score ?? 0) >= 70 ? "#22c55e"
@@ -376,10 +499,7 @@ export default function ChartPage({ lang }: { lang: Language }) {
         lang={lang}
         actions={
           <>
-            <StateChip
-              label={source === "loading" ? t.loading : source === "live" ? t.live : t.mock}
-              color={source === "loading" ? "#64748b" : source === "live" ? "#22c55e" : "#f59e0b"}
-            />
+            <StateChip label={statusLabel} color={statusColor} />
             <StateChip
               label={mt5Connected === null ? "MT5 …" : mt5Connected ? `MT5 · ${t.on}` : `MT5 · ${t.off}`}
               color={mt5Connected ? "#22c55e" : "#f87171"}
@@ -428,6 +548,7 @@ export default function ChartPage({ lang }: { lang: Language }) {
           <EmptyState title={t.noCandlesTitle} hint={error || t.noCandlesHint} />
         </Card>
       ) : (
+        <>
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)", gap: "1rem" }}>
           {/* chart */}
           <Card style={{ padding: "0.5rem 0.5rem 0.25rem" }}>
@@ -437,6 +558,12 @@ export default function ChartPage({ lang }: { lang: Language }) {
                 <StateChip label={`ATR ${ctx.atr.toFixed(4)}`} color="#3b82f6" />
                 <StateChip label={`${t.premium} ${pdPct >= 0 ? "+" : ""}${pdPct}%`} color={pdTone} />
                 <StateChip label={`${t.compression} ${Math.round(ctx.compression * 100)}%`} color={ctx.compression >= 0.6 ? "#a78bfa" : "#64748b"} />
+                {prov && (
+                  <StateChip
+                    label={`${prov.source ?? "plane"} · v${prov.version} · ${prov.bars} ${t.barsUnit}`}
+                    color={freshnessColor}
+                  />
+                )}
               </div>
             )}
             <ChartCanvas
@@ -448,6 +575,7 @@ export default function ChartPage({ lang }: { lang: Language }) {
               poi={ctx?.htf_poi ? { top: ctx.htf_poi.top, bottom: ctx.htf_poi.bottom, type: ctx.htf_poi.type, side: ctx.htf_poi.side } : null}
               timeframe={timeframe}
               rtl={rtl}
+              resetKey={`${symbol}|${timeframe}`}
             />
             {ctx && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "0.35rem 0.6rem", borderTop: "1px solid var(--border)", textAlign: "center", justifyContent: rtl ? "right" : "left" }}>
@@ -553,6 +681,8 @@ export default function ChartPage({ lang }: { lang: Language }) {
             )}
           </div>
         </div>
+        <MarketFlow events={events} lang={lang} timeframe={timeframe} />
+        </>
       )}
 
       {/* strategy selection */}
@@ -621,6 +751,101 @@ export default function ChartPage({ lang }: { lang: Language }) {
 function binnedRegime(s: ChartStrategy): string {
   const keys = Object.keys(s.by_regime);
   return keys[keys.length - 1] ?? "—";
+}
+
+// Read-only chronological narration of the candle window. The events are
+// computed server-side from the same plane window the chart drew; this view
+// only renders them — it is not a second place where decisions are made.
+function MarketFlow({
+  events,
+  lang,
+  timeframe,
+}: {
+  events: ChartTimelineEvent[];
+  lang: Language;
+  timeframe: string;
+}) {
+  const rtl = isRtl(lang);
+  const t = T[lang];
+  const EV_LABEL: Record<ChartTimelineEvent["type"], string> = {
+    sweep: t.evSweep,
+    displacement: t.evDisplacement,
+    fvg: t.evFvg,
+    retrace: t.evRetrace,
+  };
+  const VISIBLE = 14;
+  const shown = [...events].reverse().slice(0, VISIBLE); // newest first
+  const hidden = events.length - shown.length;
+
+  return (
+    <Card style={{ marginTop: "1rem", padding: "0.7rem 1rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
+        <SectionLabel lang={lang}>{t.flow}</SectionLabel>
+        <span style={{ fontSize: "0.68rem", color: "var(--muted-foreground)", fontFamily: "var(--font-mono)" }}>
+          {events.length} {t.eventsUnit}
+        </span>
+      </div>
+      <div style={{ fontSize: "0.74rem", color: "var(--muted-foreground)", fontFamily: ff(lang), marginBottom: 8 }}>
+        {t.flowSub}
+      </div>
+      {!shown.length ? (
+        <div style={{ fontSize: "0.76rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
+          {t.noEvents}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          {shown.map((e) => {
+            const color = EVENT_COLOR[e.type];
+            const arrow = e.side === "buy" ? "▲" : e.side === "sell" ? "▼" : "•";
+            const sideColor = e.side === "buy" ? "#22c55e" : e.side === "sell" ? "#f87171" : "#64748b";
+            return (
+              <div
+                key={e.id}
+                style={{
+                  display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+                  padding: "5px 8px", background: "var(--muted)", borderRadius: 6,
+                }}
+              >
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.68rem", color: "var(--muted-foreground)", minWidth: 54 }}>
+                  {fmtEventTime(e.time, timeframe)}
+                </span>
+                <span style={{ fontSize: "0.66rem", fontFamily: ff(lang), color, border: `1px solid ${color}55`, background: `${color}18`, borderRadius: 4, padding: "1px 6px", whiteSpace: "nowrap" }}>
+                  {EV_LABEL[e.type]}
+                </span>
+                <span style={{ color: sideColor, fontFamily: "var(--font-mono)", fontSize: "0.72rem" }}>{arrow}</span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.72rem", color: "var(--foreground)", minWidth: 66 }}>
+                  {e.price.toFixed(3)}
+                </span>
+                <span style={{ flex: 1, minWidth: 160, fontSize: "0.72rem", fontFamily: ff(lang), color: "var(--foreground)" }}>
+                  {rtl ? e.text_ar : e.text_en}
+                </span>
+              </div>
+            );
+          })}
+          {hidden > 0 && (
+            <span style={{ fontSize: "0.66rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
+              +{hidden} {t.moreEvents}
+            </span>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function fmtEventTime(ts: number, timeframe: string): string {
+  const d = new Date(ts * 1000);
+  if (timeframe.startsWith("D")) return d.toISOString().slice(0, 10);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function fmtAgo(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h`;
+  return `${Math.floor(sec / 86400)}d`;
 }
 
 function ZoneLegend({ color, label }: { color: string; label: string }) {

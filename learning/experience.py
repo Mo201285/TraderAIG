@@ -142,6 +142,17 @@ class ExperienceLedger:
             self._records = ExperienceRepository(make_live_session()).list(limit)
             return len(self._records)
         except Exception:  # noqa: BLE001
+            # Not the same as "nothing to load": this means the DURABLE ledger
+            # could not be read, and the process then runs with an empty
+            # learning history while every consumer of it (school board, lab
+            # live feed, attribution) reports on that history as if it were
+            # complete. Still never raise during boot -- an unreadable ledger
+            # must not stop the backend -- but say so instead of returning 0
+            # in silence, which is how "durable" stays true on paper while the
+            # records are simply not there.
+            log.warning(
+                "experience ledger hydration failed; running with an empty "
+                "in-memory ledger for this process", exc_info=True)
             return 0
 
     def stats(self) -> Dict[str, int]:
@@ -164,7 +175,16 @@ class ExperienceLedger:
             finally:
                 session.close()
         except Exception:  # noqa: BLE001
-            log.debug(f"Experience persistence skipped for {record.record_id[:8]}")
+            # Never raise: a record that cannot be written must not take down the
+            # decision that produced it -- the in-memory ledger still holds it
+            # for this process. But it IS a real loss, and at debug it happened
+            # invisibly, which is how a durability claim could stay true on paper
+            # while rows were being dropped. WARNING makes the drop findable
+            # without turning a storage hiccup into an outage.
+            log.warning(
+                "experience persistence skipped for %s; the record survives in "
+                "memory for this process only", record.record_id[:8],
+                exc_info=True)
 
 
 ledger = ExperienceLedger()

@@ -262,8 +262,26 @@ class IdentityService:
         return self._users.get(user_id)
 
     def get_user_by_email(self, email: str) -> Optional[User]:
+        """Resolve an email address to its user.
+
+        Exact case first, so a deployment that deliberately holds two
+        case-variants keeps resolving each to its own row. Falling back to a
+        case-insensitive match is what makes login agree with authority:
+        `principal_user_id` already resolves ``IDENTITY_PRIMARY_EMAIL``
+        case-insensitively, so without this the system could name a user as
+        the acting principal while refusing that same user's password. An email
+        address is not case-tagged in practice; login and authority had to
+        answer the same question the same way.
+        """
+        wanted = str(email or "").strip()
+        if not wanted:
+            return None
         for u in self._users.values():
-            if u.email == email:
+            if u.email == wanted:
+                return u
+        lowered = wanted.lower()
+        for u in self._users.values():
+            if u.email.strip().lower() == lowered:
                 return u
         return None
 
@@ -410,9 +428,13 @@ class IdentityService:
         ownership routes.
         """
         from governance.auth import verify_password as _verify
-        user = self._users.get(str(email or "").strip().lower())
-        if user is None:
-            user = self.get_user_by_email(str(email or "").strip())
+        # One lookup, not two. The previous version probed
+        # `self._users.get(email.lower())` first -- but `_users` is keyed by
+        # user_id (see `_users[user_id] = user`), so that probe could only ever
+        # match if a user_id happened to be a lowercased email address. It
+        # looked like a case-insensitive fast path and was in fact dead code,
+        # with the real (case-sensitive) resolution underneath it.
+        user = self.get_user_by_email(str(email or "").strip())
         if user is None or not _verify(password, user.password_hash):
             return None
         return user.user_id

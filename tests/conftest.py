@@ -11,6 +11,17 @@ import pytest
 os.environ["TRADERAIG_PERSIST"] = "0"
 os.environ["TRADERAIG_STATE_REDIS"] = "0"
 
+# Auth is opt-in per host: the 24/7 deployment may set TRADERAIG_AUTH=1 in .env
+# to gate its mutating routes. The suite is written for the enforcement-off
+# posture (only the auth tests opt in with their own setenv), so a host that has
+# it on would otherwise flip the expected result of every write route -- a test
+# outcome that depends on the operator's .env rather than on the code. Pin it
+# off here, and drop any machine/human credential the host or shell carries so
+# no test can silently authenticate as production.
+os.environ["TRADERAIG_AUTH"] = "0"
+for _credential_var in ("AUTH_SERVICE_TOKEN", "TRADERAIG_SESSION_TOKEN"):
+    os.environ.pop(_credential_var, None)
+
 # Durable boards must never be written inside the repo by a test run.
 os.environ["TRADERAIG_OPPORTUNITY_BOARD"] = os.path.join(
     tempfile.mkdtemp(prefix="traderaig-test-opp-"), "opportunities.json")
@@ -132,14 +143,20 @@ def _reset_challenge_store(_challenge_schema):
     would leave a test's account inside a program for every test that followed.
     """
     def _clean():
-        from sqlalchemy import text
+        from sqlalchemy import inspect, text
 
         from persistence.db import engine
 
+        # A test may monkeypatch `persistence.db.engine` to a hand-built
+        # in-memory engine (see test_persistence_schema). That engine has no
+        # challenge tables, so deleting from them would fail teardown with
+        # "no such table" on a test that never touched the challenge store.
         with engine.begin() as conn:
+            present = set(inspect(conn).get_table_names())
             for table in ("challenge_baselines", "challenge_states",
                           "challenge_policies", "challenge_program_bindings"):
-                conn.execute(text(f"DELETE FROM {table}"))
+                if table in present:
+                    conn.execute(text(f"DELETE FROM {table}"))
 
     _clean()
     yield
@@ -186,3 +203,28 @@ def _clear_leverage_cache():
     _clean()
     yield
     _clean()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_machine_credentials(monkeypatch):
+    """The DPAPI vault on the host that runs the suite holds the live machine
+    rails token, so a test must never see a production credential.
+
+    `service_token_configured()`/`check_service_token()` and both console callers
+    fall back to vault slot `auth.service_token` when the env var is empty. On a
+    configured host that made a test asserting "no token configured" read the
+    real token and fail -- the suite's verdict depended on the operator's
+    secrets. Neutralize only the service/session slots so the tests describe what
+    the TEST configured; every other vault read (e.g. `auth.token_secret`) is
+    left untouched.
+    """
+    try:
+        from core.secrets_vault import vault
+    except Exception:  # noqa: BLE001 - a suite without the vault is still fine
+        yield
+        return
+    real_read = vault.read
+    hidden = {"auth.service_token", "auth.session_token"}
+    monkeypatch.setattr(
+        vault, "read", lambda slot: None if slot in hidden else real_read(slot))
+    yield

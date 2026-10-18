@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from governance.identity import (
@@ -21,6 +21,7 @@ from governance.identity import (
 )
 from learning.experience import ErrorType, ExperienceRecord, MarketSnapshot
 from persistence.db import bind_test_session, make_live_session
+from persistence.models_events import EVENT_SCHEMA_VERSION, EventLogRecord
 from persistence.models import (
     AuditRecordDB,
     ChallengeBaselineDB,
@@ -666,6 +667,102 @@ class AuditRepository:
             success=row.success,
             account_id=row.account_id or "",
         )
+
+
+class EventLogRepository:
+    """Append-only persistence for the unified event log.
+
+    `make_live_session()` by default, for the same reason the challenge and
+    product repositories use it: the point of the log is to outlive the process
+    that wrote it, and an in-memory store would report a full history that is
+    gone at the next restart. An injected session is used as-is (the test path).
+    """
+
+    def __init__(self, session: Optional[Session] = None) -> None:
+        self._session = session or make_live_session()
+
+    def append(self, event: Dict[str, Any]) -> str:
+        event_id = str(event.get("event_id") or "").strip()
+        if not event_id:
+            raise ValueError("an event log row needs an event_id")
+        row = EventLogRecord(
+            event_id=event_id,
+            schema_version=str(
+                event.get("schema_version") or EVENT_SCHEMA_VERSION),
+            event_type=str(event.get("event_type") or ""),
+            occurred_at=float(event.get("occurred_at") or 0.0),
+            recorded_at=float(event.get("recorded_at") or 0.0),
+            account_id=(str(event["account_id"])
+                        if event.get("account_id") else None),
+            actor=str(event.get("actor") or ""),
+            subject_type=str(event.get("subject_type") or ""),
+            subject_id=str(event.get("subject_id") or ""),
+            correlation_id=str(event.get("correlation_id") or ""),
+            causation_id=(str(event["causation_id"])
+                          if event.get("causation_id") else None),
+            source=str(event.get("source") or ""),
+            provider=str(event.get("provider") or ""),
+            content_hash=str(event.get("content_hash") or ""),
+            retention_class=str(event.get("retention_class") or "operational"),
+            payload_json=dumps(event.get("payload") or {}),
+        )
+        # `merge`, not `add`: event_id is the identity and a re-emitted event is
+        # the same event, so the second write is a no-op rather than a duplicate
+        # or a primary-key crash.
+        self._session.merge(row)
+        self._session.commit()
+        return event_id
+
+    def get(self, event_id: str) -> Optional[Dict[str, Any]]:
+        row = self._session.get(EventLogRecord, str(event_id))
+        return self._row_to_event(row) if row is not None else None
+
+    def list(self, limit: int = 200, *, event_type: Optional[str] = None,
+             account_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        stmt = select(EventLogRecord)
+        if event_type:
+            stmt = stmt.where(EventLogRecord.event_type == str(event_type))
+        if account_id:
+            stmt = stmt.where(EventLogRecord.account_id == str(account_id))
+        stmt = stmt.order_by(EventLogRecord.occurred_at.desc()).limit(int(limit))
+        rows = self._session.execute(stmt).scalars().all()
+        return [self._row_to_event(r) for r in reversed(rows)]
+
+    def by_correlation(self, correlation_id: str,
+                       limit: int = 500) -> List[Dict[str, Any]]:
+        rows = self._session.execute(
+            select(EventLogRecord).where(
+                EventLogRecord.correlation_id == str(correlation_id)
+            ).order_by(EventLogRecord.occurred_at.asc()).limit(int(limit))
+        ).scalars().all()
+        return [self._row_to_event(r) for r in rows]
+
+    def count(self, *, event_type: Optional[str] = None) -> int:
+        stmt = select(func.count()).select_from(EventLogRecord)
+        if event_type:
+            stmt = stmt.where(EventLogRecord.event_type == str(event_type))
+        return int(self._session.execute(stmt).scalar_one())
+
+    @staticmethod
+    def _row_to_event(row: EventLogRecord) -> Dict[str, Any]:
+        return {
+            "event_id": row.event_id,
+            "schema_version": row.schema_version or EVENT_SCHEMA_VERSION,
+            "event_type": row.event_type or "",
+            "occurred_at": row.occurred_at,
+            "recorded_at": row.recorded_at,
+            "account_id": row.account_id,
+            "actor": row.actor or "",
+            "subject_type": row.subject_type or "",
+            "subject_id": row.subject_id or "",
+            "correlation_id": row.correlation_id or "",
+            "causation_id": row.causation_id,
+            "source": row.source or "",
+            "provider": row.provider or "",
+            "content_hash": row.content_hash or "",
+            "retention_class": row.retention_class or "operational",
+            "payload": loads(row.payload_json),
+        }
 
 
 def _enum_cast(value: str, enum_dotted: str) -> object:

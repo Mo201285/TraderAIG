@@ -294,3 +294,59 @@ def test_market_data_without_symbol_lists_known_symbols(monkeypatch):
     body = api.market_data()
     assert body["ok"] is True
     assert "XAUUSD" in body["symbols"]
+
+
+def _timeline_candles(rows: int = 60, base: float = 2000.0) -> list[Candle]:
+    out = [
+        Candle(symbol="XAUUSD", timeframe="M5", time=float(10_000_000 + i),
+               open=base + (i % 2) * 0.02, high=base + (i % 2) * 0.02 + 0.05,
+               low=base + (i % 2) * 0.02 - 0.05, close=base + (i % 2) * 0.02 + 0.01,
+               volume=1.0, tick_volume=1.0)
+        for i in range(rows)
+    ]
+    # A sweep above the range high that fails to hold -> a structural event.
+    out.append(Candle(symbol="XAUUSD", timeframe="M5", time=float(10_000_000 + rows),
+                      open=base, high=base + 3.5, low=base - 0.03, close=base,
+                      volume=1.0, tick_volume=1.0))
+    return out
+
+
+def test_chart_events_returns_timeline_and_provenance(monkeypatch):
+    fake = SimpleNamespace(
+        connected=True,
+        fetch_candles=lambda s, tf, count: _timeline_candles(),
+        status=lambda: {"connected": True, "attach_mode": "script",
+                        "last_error": None},
+    )
+    monkeypatch.setattr(api, "mt5_adapter", fake)
+    body = api.chart_events(symbol="xauusd", timeframe="M5", bars=100)
+    assert body["ok"] is True
+    assert body["symbol"] == "XAUUSD"
+    assert body["count"] == len(body["events"])
+    assert body["count"] >= 1
+    assert body["provenance"]["source"] == "mt5"
+    for e in body["events"]:
+        assert {"id", "type", "side", "time", "price", "text_en", "text_ar"} <= set(e)
+        assert e["type"] in {"sweep", "displacement", "fvg", "retrace"}
+
+
+def test_chart_events_rejects_unsupported_symbol(monkeypatch):
+    monkeypatch.setattr(api, "mt5_adapter", _fake_adapter())
+    with pytest.raises(HTTPException) as exc:
+        api.chart_events(symbol="ETHUSD", timeframe="M5", bars=100)
+    assert exc.value.status_code == 400
+
+
+def test_chart_events_no_candles_reports_error(monkeypatch):
+    fake = SimpleNamespace(
+        connected=True,
+        fetch_candles=lambda s, tf, count: [],
+        status=lambda: {"connected": True, "attach_mode": "script",
+                        "last_error": "copy_rates failed"},
+    )
+    monkeypatch.setattr(api, "mt5_adapter", fake)
+    body = api.chart_events(symbol="XAUUSD", timeframe="M5", bars=300)
+    assert body["ok"] is False
+    assert body["error"] == "no_candles"
+    assert body["events"] == []
+    assert body["count"] == 0

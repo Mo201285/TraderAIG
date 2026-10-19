@@ -1003,12 +1003,16 @@ def _tenancy_report() -> Dict:
                  "enforcement policy turns itself on once a second user exists "
                  "(I4): a tenant-scoped route then requires a session even if "
                  "TRADERAIG_AUTH was never set, while global reference reads "
-                 "(/providers, /market) stay open. What is NOT yet done is the "
-                 "source-fact honesty guards over the whole thing (I5) is "
-                 "still open, so `data_isolated_per_user` stays False: the "
-                 "shared `risk_vetoes` table and the engine surfaces are still "
-                 "process-wide. With a single user this remains a "
-                 "single-operator box — do not expose :8000 beyond localhost."),
+                 "(/providers, /market) stay open. The source-fact honesty "
+                 "guards over the whole thing (I5) are in place: a route that "
+                 "reads a caller-supplied owner without the seam, or a report "
+                 "that overclaims isolation, fails the suite. What is still "
+                 "open is named rather than hidden: `data_isolated_per_user` "
+                 "stays False because the shared `risk_vetoes` table and the "
+                 "engine surfaces are process-wide, and `still_open_by_design` "
+                 "names the one endpoint that must stay reachable without a "
+                 "session. With a single user this remains a single-operator "
+                 "box — do not expose :8000 beyond localhost."),
     }
 
 

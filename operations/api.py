@@ -7943,3 +7943,19 @@ def execution_venue_score() -> Dict:
     """
     from execution.venue_score import VenueScorecard
     return VenueScorecard().scorecard()
+
+
+@app.get("/execution/truth-by-venue")
+def execution_truth_by_venue() -> Dict:
+    """Read-only per-venue execution truth (Phase C Execution Intelligence).
+
+    Measures 27.9/28.12 directly: for every terminal order that actually
+    filled, the intended price (`OrderState.price`) is compared against the
+    actual fill (`filled_price`), reported as adverse slippage in price units
+    and R multiples, broken down by venue. A venue with no measured fills is
+    reported `measured: False` with `slippage: null` -- never a zero that
+    reads as perfect. The MT5 rail and the configured CEX venue are always
+    surfaced. Places no order and grants no authority.
+    """
+    from execution.execution_truth import ExecutionTruthReport
+    return ExecutionTruthReport().report()

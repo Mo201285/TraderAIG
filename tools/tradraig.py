@@ -1752,6 +1752,78 @@ def cmd_opportunity(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_execution(args: argparse.Namespace) -> int:
+    """Execution Intelligence (Phase C) — truth / recon / venue-score (via API).
+
+    Read-only surfaces: per-venue execution truth (intent vs actual fill),
+    venue reconciliation, and the S5 venue scorecard. Nothing here trades or
+    grants authority.
+    """
+    t = I18N[args.lang]
+    base = f"http://127.0.0.1:{API_PORT}"
+    act = args.action
+
+    def _down() -> int:
+        print(f"{_ANSI['bad']}{t['u_api_down']}{_ANSI['off']}")
+        return 1
+
+    if act == "truth":
+        ok, data = http_json(f"{base}/execution/truth-by-venue")
+        if not ok:
+            return _down()
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=1))
+            return 0
+        if not data.get("measured_slippage"):
+            print(f"{_ANSI['dim']}{data.get('note') or 'no measured slippage'}"
+                  f"{_ANSI['off']}")
+        for v in data.get("venues") or []:
+            if not v.get("measured"):
+                print(f"{v['venue']:<10} {_ANSI['dim']}unmeasured "
+                      f"({v['terminal']} terminal){_ANSI['off']}")
+                continue
+            print(f"{v['venue']:<10} fill_ratio={v['fill_ratio']} "
+                  f"avg_slip={v['avg_slippage_price']} "
+                  f"avg_r={v['avg_slippage_r']} "
+                  f"fees={v['total_fees']}")
+        if data.get("platform"):
+            print(f"platform: {data['platform']}")
+        return 0
+
+    if act == "recon":
+        ok, data = http_json(f"{base}/execution/reconciliation")
+        if not ok:
+            return _down()
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=1))
+            return 0
+        print(f"attempted={data.get('attempted')} last_ok={data.get('last_ok')} "
+              f"mismatches={data.get('mismatch_count')}")
+        if data.get("note"):
+            print(f"  {_ANSI['dim']}{data['note']}{_ANSI['off']}")
+        return 0
+
+    if act == "venue-score":
+        ok, data = http_json(f"{base}/execution/venue-score")
+        if not ok:
+            return _down()
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=1))
+            return 0
+        for v in data.get("venues") or []:
+            if not v.get("scored"):
+                print(f"{v['venue']:<10} {_ANSI['dim']}unproven "
+                      f"({v['samples']} terminal){_ANSI['off']}")
+                continue
+            print(f"{v['venue']:<10} score={v['score']} tier={v['tier']} "
+                  f"samples={v['samples']}")
+        print(f"recommended: {data.get('recommended')}")
+        return 0
+
+    print(f"{_ANSI['bad']}unknown action: {act}{_ANSI['off']}")
+    return 1
+
+
 def cmd_events(args: argparse.Namespace) -> int:
     """Tail the live operations event feed (dashboard/copy-engine consumer)."""
     t = I18N[args.lang]
@@ -2090,6 +2162,12 @@ def _parser() -> argparse.ArgumentParser:
     op.add_argument("--reason", default="", help="rejection reason (reject)")
     op.add_argument("--json", action="store_true")
     op.set_defaults(fn=cmd_opportunity)
+
+    ex = sub.add_parser("execution", help="Execution Intelligence (Phase C): per-venue truth — recon — venue scorecard (via API)")
+    ex.add_argument("action", choices=("truth", "recon", "venue-score"),
+                    help="truth | recon | venue-score")
+    ex.add_argument("--json", action="store_true")
+    ex.set_defaults(fn=cmd_execution)
 
     bk = sub.add_parser("backup", help="snapshot durable canonical state to a ZIP (M6.4)")
     bk.add_argument("--out", default=None, help="destination dir (default <root>/backups)")

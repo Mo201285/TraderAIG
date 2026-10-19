@@ -850,12 +850,14 @@ def test_reads_require_a_credential_when_enforcement_is_on(client, monkeypatch):
     the balance to a caller with no credential, while the POST beside them
     demanded a password. Gating the reader is the fix.
 
-    Honest scope, stated in the same breath: this authenticates the reader and
-    does NOT isolate their data. There is one shared canonical state, so an
-    authenticated reader still reads the operator's positions and ledger --
-    `model` stays `single-tenant` and `data_isolated_per_user` is False right
-    next to `reads_gated: true`. Half a guarantee described as a whole one is
-    how this roadmap got into trouble.
+    Honest scope, stated in the same breath: this authenticates the reader, and
+    on its own it does NOT isolate their data. Slice I2 has since made canonical
+    state owner-keyed, so an authenticated peer no longer reads the operator's
+    account or positions -- but the ledger and every view derived from it
+    (portfolio, learning, history) are still ONE store until slice I3, and the
+    engine surfaces still describe the box. So `model` stays `single-tenant` and
+    `data_isolated_per_user` is False right next to `reads_gated: true`. Half a
+    guarantee described as a whole one is how this roadmap got into trouble.
     """
     monkeypatch.setenv("TRADERAIG_AUTH", "1")
 

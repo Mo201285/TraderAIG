@@ -8,7 +8,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .contracts import (
     OrderStatus,
@@ -190,8 +190,13 @@ class CanonicalState:
     parallel while writers (execution/state sync) get exclusive access.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, owner_id: Optional[str] = None) -> None:
         self._lock = threading.RLock()
+        # Which tenant this instance belongs to. `None` marks the process-wide
+        # instance created at the bottom of this module -- the one the engines
+        # write and the default tenant reads. A non-None owner is a tenant
+        # state materialised by `state_for()` (multi-tenant slice I2).
+        self.owner_id = owner_id
         self.account = AccountState(login=0)
         self.market: Dict[str, MarketState] = {}
         self.orders: Dict[str, OrderState] = {}
@@ -382,6 +387,12 @@ class CanonicalState:
 
         Returns how many records were loaded (0 when nothing/disabled/duplicate).
         """
+        if self.owner_id is not None:
+            # Slice I2: persistence is still ONE shared `risk_vetoes` table --
+            # partitioning it is slice I3 -- so hydrating a tenant's state from
+            # it would hand that tenant the operator's veto history. Refuse
+            # until the table carries an owner column to filter on.
+            return 0
         if self.risk.vetoes:
             return 0
         try:
@@ -404,3 +415,70 @@ class CanonicalState:
 
 # Module-level singleton.
 state = CanonicalState()
+
+
+# ---------------------------------------------------------------------------
+# Owner-keyed provider (multi-tenant slice I2).
+# ---------------------------------------------------------------------------
+#
+# `state` answers "what is the truth of this box", which is the right question
+# for the engines (they have no caller) and the wrong one for a request (the
+# caller is a tenant). `state_for(owner_id)` is the seam that turns the tenant
+# `owner_scope()` resolved into the state that request must read, and it lives
+# here next to the singleton it replaces -- a provider in another module would
+# make two places that have to agree about which object is canonical.
+#
+# Two rules, both deliberate:
+#
+# 1. The default tenant (and bootstrap, `owner_id is None`) resolves to the
+#    singleton by object identity. A one-operator box therefore keeps reading
+#    and writing exactly what it did before this slice existed; a copy would
+#    satisfy a value comparison today and drift the moment an engine wrote.
+# 2. Every other owner gets its own instance, created once per owner. Lazy
+#    creation means a deployment with one user allocates nothing new at all.
+#
+# `core.state` must not import `governance` (the identity layer imports this
+# one), so the default tenant is recognised through a provider the API layer
+# registers at startup instead of a direct call.
+
+_owner_states: Dict[str, CanonicalState] = {}
+_owner_states_lock = threading.Lock()
+_default_owner_provider: Optional[Callable[[], Optional[str]]] = None
+
+
+def set_default_owner_provider(provider: Optional[Callable[[], Optional[str]]]) -> None:
+    """Register how the default tenant is recognised (see the note above)."""
+    global _default_owner_provider
+    _default_owner_provider = provider
+
+
+def state_for(owner_id: Optional[str]) -> CanonicalState:
+    """The state of the tenant `owner_id` (multi-tenant slice I2).
+
+    Returns the process singleton for the default tenant and for bootstrap, and
+    one stable per-owner instance for everyone else. Callers must never cache
+    the result across a request boundary: the owner is resolved per request by
+    `operations.api.owner_scope()`, and handing a later request the state of an
+    earlier tenant is the exact confusion this function exists to prevent.
+    """
+    if owner_id is None:
+        return state
+    if _default_owner_provider is not None:
+        default_owner = _default_owner_provider()
+        if default_owner is not None and owner_id == default_owner:
+            return state
+    with _owner_states_lock:
+        bucket = _owner_states.get(owner_id)
+        if bucket is None:
+            bucket = CanonicalState(owner_id=owner_id)
+            _owner_states[owner_id] = bucket
+        return bucket
+
+
+def reset_owner_states() -> None:
+    """Drop every non-default tenant state (tests and restart semantics).
+
+    The default tenant is the singleton itself and is never touched here.
+    """
+    with _owner_states_lock:
+        _owner_states.clear()

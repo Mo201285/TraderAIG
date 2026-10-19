@@ -19,7 +19,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from core.logging import get_logger
-from core.state import state
+# `state` is re-exported for callers that bind the process singleton directly
+# (two test suites do `from operations.api import app, state`); no route in this
+# file uses it any more — they all go through `_caller_state()` (slice I2).
+from core.state import (  # noqa: F401
+    CanonicalState, set_default_owner_provider, state, state_for)
 from decision.candidate import candidate_board
 from decision.opportunity import OpportunityStatus
 from execution.mt5_adapter import mt5_adapter
@@ -217,10 +221,12 @@ async def _enforce_session(request: Request, call_next):
 
     Read-gating is authentication of the reader, not isolation of the data, and
     `/system/health` says both things in the same response: `reads_gated: true`
-    AND `model: single-tenant`. There is one shared canonical state, so an
-    authenticated reader still reads the operator's positions, ledger and audit
-    trail. Half a guarantee described as a whole one is how this roadmap got
-    into trouble.
+    AND `model: single-tenant`. Slice I2 made canonical state owner-keyed, so an
+    authenticated reader is no longer handed the operator's account and
+    positions — but the ledger, the audit trail and the engine surfaces are
+    still one shared store, which is why `data_isolated_per_user` stays False
+    right beside `reads_gated: true`. Half a guarantee described as a whole one
+    is how this roadmap got into trouble.
     """
     if auth.enforcement_enabled() and auth.requires_session(
             request.method, request.url.path):
@@ -293,6 +299,25 @@ def _acting_actor() -> Optional[str]:
     to move the tenant).
     """
     return owner_scope()
+
+
+def _caller_state() -> CanonicalState:
+    """The canonical state of the tenant this request resolves to (slice I2).
+
+    Every route in this file that answers from `CanonicalState` answers through
+    here: `owner_scope()` says WHO is asking, `state_for()` turns that into WHICH
+    state replies, so there is one place where a request finds its data instead
+    of a dozen sites each reaching for the module singleton.
+
+    The engines deliberately do NOT come through here — they hold no request and
+    belong to the box, which is why the default tenant resolves to that same
+    singleton and a one-operator deployment reads exactly what it did before this
+    slice existed.
+    """
+    return state_for(owner_scope())
+
+
+set_default_owner_provider(lambda: identity.principal_user_id())
 
 
 def _verify_presented_session(supplied: Optional[str]):
@@ -437,7 +462,7 @@ def health() -> Dict:
     return {
         "status": "ok",
         "version": "1.0.0",
-        "account": state.account.as_dict(),
+        "account": _caller_state().account.as_dict(),
     }
 
 
@@ -725,16 +750,23 @@ def _tenancy_report() -> Dict:
                              "requires a session" if enforcement else
                              "TRADERAIG_AUTH=0 — NOT enforced; any caller that "
                              "can reach this port acts as the acting principal"),
-        # Reported honestly in both directions, and deliberately NOT a claim of
-        # data isolation: reads require a credential, but there is only one
-        # canonical state, so a reader still sees the operator's own data.
+        # Reported honestly in both directions: reads require a credential, and
+        # canonical state is owner-keyed by slice I2 -- but the ledger (and the
+        # portfolio/history views derived from it) is still ONE store until
+        # slice I3 partitions persistence, so this stays false rather than
+        # describing half a guarantee as a whole one.
         "reads_gated": enforcement,
         "data_isolated_per_user": False,
         "acting_principal": principal,
         "principal_source": ("IDENTITY_PRIMARY_EMAIL" if os.environ.get(
             "IDENTITY_PRIMARY_EMAIL", "").strip() else "first-created user"),
-        "canonical_state": "one process-wide CanonicalState (account, positions, "
-                           "orders, risk) shared by every engine",
+        "canonical_state": (
+            "owner-keyed via core.state.state_for(owner_id): the default tenant "
+            "(and bootstrap) resolves to the process singleton every engine "
+            "writes to, any other tenant gets its own instance, and every route "
+            "that answers from canonical state answers from the caller it "
+            "resolved. Ledger-derived reads (/portfolio/state, learning, "
+            "history) stay shared until slice I3 partitions persistence"),
         "ownership_enforced_on": [
             "GET /users/{user_id}",
             "POST /users/{user_id}/subscription/activate",
@@ -932,10 +964,12 @@ def _tenancy_report() -> Dict:
                  "that authority at another user's record, it does not "
                  "establish who the caller is. GET /accounts is the same kind of "
                  "check: it proves the row is the acting principal's, and says "
-                 "caller_authenticated:false beside it. Real multi-tenancy "
-                 "(per-user "
-                 "canonical state, ledgers, engines, and an authenticated "
-                 "caller) is an open ORPHAN, not a feature of this build."),
+                 "caller_authenticated:false beside it. Multi-tenancy is being "
+                 "built in slices: canonical state is owner-keyed (I2), while "
+                 "the per-tenant ledger (I3), the enforcement policy that only "
+                 "means anything with more than one user (I4) and the honesty "
+                 "guards over both (I5) are still open — until they land, this "
+                 "box is safe only as a single-operator deployment."),
     }
 
 
@@ -1017,17 +1051,17 @@ def roadmap_status() -> Dict:
 
 @app.get("/account")
 def get_account() -> Dict:
-    return state.account.as_dict()
+    return _caller_state().account.as_dict()
 
 
 @app.get("/account/positions")
 def get_positions() -> List[Dict]:
-    return [p.as_dict() for p in state.open_positions()]
+    return [p.as_dict() for p in _caller_state().open_positions()]
 
 
 @app.get("/account/orders")
 def get_orders() -> List[Dict]:
-    return [o.as_dict() for o in state.orders.values()]
+    return [o.as_dict() for o in _caller_state().orders.values()]
 
 
 # ---------------------------------------------------------------------------
@@ -1035,8 +1069,8 @@ def get_orders() -> List[Dict]:
 # ---------------------------------------------------------------------------
 #
 # These are the first routes in the file to consult account ownership. Every
-# other `/account*` route above reads the one process-wide canonical state, which
-# belongs to the single operator; these read the registry, whose rows have
+# other `/account*` route above reads the canonical state of whoever
+# `owner_scope()` resolved (slice I2); these read the registry, whose rows have
 # `owner_user_id`, so returning one without checking would be handing a record to
 # whoever asked.
 #
@@ -3698,7 +3732,7 @@ def recommendations() -> List[Dict]:
             "cta": "Open Strategy Lab",
             "page": "strategy-lab",
         })
-    vetoes = state.risk.vetoes if state.risk else []
+    vetoes = (lambda s: s.risk.vetoes if s.risk else [])(_caller_state())
     if vetoes:
         out.append({
             "id": "R-risk",
@@ -3805,14 +3839,14 @@ def paper_requests() -> List[Dict]:
     mode = opportunity_gate_mode()
     rows: List[Dict] = []
     for o in opportunity_board.list():
-        state = _paper_state(o.status.value, o.execute_pending, mode,
-                             executed=bool(o.executed_at))
+        paper_state = _paper_state(o.status.value, o.execute_pending, mode,
+                                   executed=bool(o.executed_at))
         row = {
             "id": o.opportunity_id,
             "strategyId": o.strategy_id or f"THE-{o.thesis_id or 'none'}",
             "symbol": o.symbol,
             "direction": o.direction,
-            "state": state,
+            "state": paper_state,
             "size": o.size,
             "entry": o.entry,
             "sl": o.stop_loss,
@@ -3938,7 +3972,7 @@ def start_exercise(seconds: float = 20.0) -> Dict:
 
 @app.get("/risk/state")
 def risk_state() -> Dict:
-    return state.risk.as_dict()
+    return _caller_state().risk.as_dict()
 
 
 @app.get("/risk/policy/limits")
@@ -3947,9 +3981,10 @@ def risk_policy_limits(limit: int = 300) -> Dict:
     plus a live failure tally per gate across the recent veto window."""
     from risk.governor import RiskGovernor
 
-    state.hydrate_risk_vetoes(limit)
-    eff = RiskGovernor(state)._enforceable_limits(None)
-    rows = list(state.risk.vetoes)[-max(1, limit):]
+    s = _caller_state()
+    s.hydrate_risk_vetoes(limit)
+    eff = RiskGovernor(s)._enforceable_limits(None)
+    rows = list(s.risk.vetoes)[-max(1, limit):]
     failures: Dict[str, int] = {}
     for v in rows:
         for c in v.get("checks") or []:
@@ -3983,8 +4018,9 @@ def risk_policy_limits(limit: int = 300) -> Dict:
 @app.get("/risk/vetoes")
 def risk_vetoes(limit: int = 200) -> List[Dict]:
     """Most-recent N risk-governor records (newest last); bounds dashboard/board payloads."""
-    state.hydrate_risk_vetoes()  # lazy: refill from persistence after a restart
-    rows = list(state.risk.vetoes)
+    s = _caller_state()
+    s.hydrate_risk_vetoes()  # lazy: refill from persistence after a restart
+    rows = list(s.risk.vetoes)
     return rows[-max(1, limit):]
 
 
@@ -4257,7 +4293,7 @@ def cex_venues() -> Dict:
 
 @app.get("/cex/positions")
 def cex_positions() -> List[Dict]:
-    return [p.as_dict() for p in state.open_positions()]
+    return [p.as_dict() for p in _caller_state().open_positions()]
 
 
 @app.post("/cex/paper/execute")
@@ -4870,8 +4906,9 @@ def mt5_sync(payload: Dict) -> Dict:
     _guard(Entitlement.CAN_TRADE)
     symbols = payload.get("symbols")
     result = mt5_adapter.run_sync_cycle(symbols)
-    return {"account": state.account.as_dict(),
-            "positions": [p.as_dict() for p in state.open_positions()],
+    s = _caller_state()
+    return {"account": s.account.as_dict(),
+            "positions": [p.as_dict() for p in s.open_positions()],
             "sync": result}
 
 
@@ -4887,7 +4924,7 @@ def mt5_watcher(payload: Dict) -> Dict:
 
 @app.get("/mt5/positions")
 def mt5_positions() -> List[Dict]:
-    return [p.as_dict() for p in state.open_positions()]
+    return [p.as_dict() for p in _caller_state().open_positions()]
 
 
 @app.get("/mt5/history")
@@ -7608,10 +7645,11 @@ def execution_truth() -> Dict:
     """Read-only Execution Truth plane (spec section 7 line 118)."""
     from core.contracts import OrderStatus  # noqa: PLC0415
 
+    s = _caller_state()
     orders = [o.as_dict() for o in sorted(
-        state.orders.values(), key=lambda o: o.created_at, reverse=True)]
-    positions = [p.as_dict() for p in state.open_positions()]
-    account = state.account.as_dict()
+        s.orders.values(), key=lambda o: o.created_at, reverse=True)]
+    positions = [p.as_dict() for p in s.open_positions()]
+    account = s.account.as_dict()
 
     counts: Dict[str, int] = {}
     filled, rejected, partial = 0, 0, 0

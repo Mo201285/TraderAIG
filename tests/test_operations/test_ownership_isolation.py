@@ -97,7 +97,15 @@ def test_tenancy_is_reported_as_single_tenant_not_multi_tenant(two_identities):
     assert tenancy["acting_principal"] == principal
     # The honest headline: ownership is enforced, authentication is not.
     assert tenancy["authenticated"] is False
-    assert "per-user canonical state" in tenancy["note"]
+    # The note must keep naming what is still NOT built. This assertion used to
+    # pin the phrase "per-user canonical state" as the admitted gap; slice I2
+    # closed exactly that gap, so the guard moved to the gaps that remain — a
+    # tenancy report that stops admitting holes the moment one of them closes
+    # is how an overclaim gets in. Per-tenant ledger (I3), enforcement policy
+    # (I4) and their honesty guards (I5) are still open and must be said so.
+    note = tenancy["note"]
+    assert "per-tenant ledger (I3)" in note
+    assert "still open" in note
 
 
 @pytest.mark.parametrize("method,path,kwargs", [

@@ -68,6 +68,20 @@ def _user_id(client, plan="free") -> str:
     return user_id
 
 
+def _session_for(user_id: str) -> dict:
+    """A session for `user_id`, satisfying I4's multi-tenant enforcement.
+
+    Issued out of band rather than through `/auth/password` (which refuses to
+    bootstrap a credential-less principal once enforcement is on), so a test
+    about ownership/refusal does not have to also test the login flow.
+    """
+    from governance.auth import auth as auth_svc
+    from governance.identity import identity
+
+    identity.set_password(user_id, "pay-session-password-123")
+    return {"Authorization": f"Bearer {auth_svc.issue(user_id)[0]}"}
+
+
 # -- API surface ---------------------------------------------------------
 
 
@@ -129,21 +143,27 @@ def test_charge_for_an_unknown_user_is_refused_when_a_principal_acts(client):
 
 
 def test_charge_for_another_user_is_refused_even_when_the_user_exists(client):
-    """A real, different user must be refused the same way a bogus id is."""
+    """A real, different user must be refused the same way a bogus id is.
+
+    Two users exist here, so I4 makes the box multi-tenant and turns enforcement
+    on: the acting principal authenticates, and the 403s that follow are the
+    ownership refusals -- not auth ones.
+    """
     mine = _user_id(client)
+    headers = _session_for(mine)
     other = client.post("/users", json={"email": f"{time.time_ns()}@y.co"})
     assert other.status_code == 201
     other_id = other.json()["user_id"]
 
     bogus = client.post("/payments/charge", json={
-        "user_id": "nope", "amount_usd": 5})
+        "user_id": "nope", "amount_usd": 5}, headers=headers)
     someone_elses = client.post("/payments/charge", json={
-        "user_id": other_id, "amount_usd": 5})
+        "user_id": other_id, "amount_usd": 5}, headers=headers)
     assert bogus.status_code == 403
     assert someone_elses.status_code == 403
     assert bogus.json() == someone_elses.json()
     assert client.post("/payments/charge", json={
-        "user_id": mine, "amount_usd": 5}).status_code == 200
+        "user_id": mine, "amount_usd": 5}, headers=headers).status_code == 200
 
 
 def test_charge_bad_amount_400(client):
@@ -171,12 +191,13 @@ def test_wallet_of_another_user_is_refused_without_enumeration(client):
     exists.
     """
     mine = _user_id(client)
+    headers = _session_for(mine)
     other = client.post("/users", json={"email": f"{time.time_ns()}@y.co"})
     assert other.status_code == 201
     other_id = other.json()["user_id"]
 
-    bogus = client.get("/payments/wallet/nope")
-    someone_elses = client.get(f"/payments/wallet/{other_id}")
+    bogus = client.get("/payments/wallet/nope", headers=headers)
+    someone_elses = client.get(f"/payments/wallet/{other_id}", headers=headers)
 
     assert bogus.status_code == 403
     assert someone_elses.status_code == 403
@@ -184,7 +205,7 @@ def test_wallet_of_another_user_is_refused_without_enumeration(client):
         "the refusal must be identical for a bogus id and a real other user, "
         "otherwise the route enumerates which users exist")
     # The operator can still read their own wallet.
-    assert client.get(f"/payments/wallet/{mine}").status_code == 200
+    assert client.get(f"/payments/wallet/{mine}", headers=headers).status_code == 200
 
 
 def test_refund_lifecycle_via_api(client):

@@ -1,12 +1,14 @@
 Multi-Tenant Isolation & Security — Design Surface (step 4)
 ===========================================================
 
-Status: PLANNING. This document adds **no code**. It ratifies the target for
-step (4) of the user's mandated order — "tenant/account isolation + security" —
-against what already exists, so implementation proceeds in reviewable slices
-rather than an auth re-write. It is the same shape as row 772 (the S-phase
-planning surface): a surface that names the seam each slice docks onto, with the
-honesty rules already enforced in this repo.
+Status: SHIPPED (I1–I5 all landed and pushed; rows 792–797). This document was
+the planning surface for step (4) of the user's mandated order — "tenant/account
+isolation + security" — and it added **no code** when it was ratified. Every
+slice below has since shipped in a reviewable commit, each with tests, a
+DECISION_LOG row and an honesty guard, rather than an auth re-write. It kept the
+shape of row 772 (the S-phase planning surface): a surface that names the seam
+each slice docks onto, with the honesty rules already enforced in this repo.
+See section 3a for what landed per slice.
 
 --------------------------------------------------------------------------------
 1. Where we are (verified, 2026-10-12)
@@ -80,33 +82,61 @@ Invariants (each is a test, not a comment):
 3. Slices (each ships with tests + an honesty guard + a DECISION_LOG row)
 --------------------------------------------------------------------------------
 
-- **I1 — Owner resolution + audit (read model).** Introduce one authoritative
+- **I1 — Owner resolution + audit (read model).** [SHIPPED — row 792]
+  Introduce one authoritative
   `owner_scope()` used by every guard: resolves the tenant from
   `current_caller()` (session) with an explicit, documented bootstrap/default
   tenant, and audits every cross-tenant refusal as `tenancy.denied`. No behaviour
   change for the single-operator box; it makes the seam explicit. Tests: a
   non-owner is refused on each scoped route; bootstrap passes; every refusal is
   audited.
-- **I2 — Per-tenant canonical state.** Replace the process-wide `CanonicalState`
+- **I2 — Per-tenant canonical state.** [SHIPPED — row 793]
+  Replace the process-wide `CanonicalState`
   with an owner-keyed provider (`state_for(owner_id)`), defaulting to the
   current singleton for the default tenant so nothing changes on a one-operator
   box. Tests: two tenants get disjoint states; the operator's state is byte-for-
   byte what it was.
-- **I3 — Per-tenant ledger + persistence partition.** Partition ledger and
+- **I3 — Per-tenant ledger + persistence partition.** [SHIPPED — row 794]
+  Partition ledger and
   account/order/position reads by `owner_user_id`; a tenant sees only its rows.
   Reuse `AccountConsistencyChecker.orphaned_bindings()` as the integrity probe.
   Tests: cross-tenant reads return empty/403; a two-tenant fixture proves
   non-overlap.
-- **I4 — Enforcement policy for multi-tenant.** When `len(users) > 1`, tenant-
+- **I4 — Enforcement policy for multi-tenant.** [SHIPPED — row 795]
+  When `len(users) > 1`, tenant-
   scoped routes require a session regardless of `TRADERAIG_AUTH`; reads of
   tenant-scoped data become gated (and `/system/health.tenancy` flips
   `reads_gated: true`, `multi_tenant: true`, `authenticated: true`). Global
   reference reads (providers, docs, market data) stay open and are labelled as
   reference.
-- **I5 — Verification + honesty guards.** A source-fact guard that fails if any
+- **I5 — Verification + honesty guards.** [SHIPPED — row 796]
+  A source-fact guard that fails if any
   tenant-scoped route reads a caller-supplied owner without `owner_scope()`; a
   guard that fails if `/system/health.tenancy` overclaims isolation; sabotage
   checks (mutations that must turn the suite red).
+
+---
+
+## 3a. What shipped (2026-10-20)
+
+All five slices landed, each with tests, a DECISION_LOG row and a reviewable
+commit:
+
+| Slice | Commit | DECISION_LOG | What landed |
+|---|---|---|---|
+| I1 | `da87126` | 792 | `owner_scope()` — the one authoritative tenant resolver — plus `tenancy.denied` on every cross-tenant refusal. |
+| I2 | `61387b4` | 793 | Owner-keyed `CanonicalState` via `core.state.state_for(owner_id)`; the default tenant keeps the process singleton. |
+| I3 | `6e68436` | 794 | Experience ledger + account registry partitioned by `owner_user_id`; the unowned pre-partition past belongs to the default tenant. |
+| I4 | `0d38127` | 795 | Enforcement follows the store: `len(users) > 1` requires a session regardless of `TRADERAIG_AUTH`; reference reads (`/providers`, `/market`) stay open only in multi-tenant mode. |
+| I5 | `53a0bb2` | 796 | Source-fact honesty guards: no route reaches past the seam, the report never overclaims, and sabotage checks prove the guards bite. |
+
+**What is still honestly open** (named, not hidden — `/system/health.tenancy`
+reports it): `data_isolated_per_user` stays **False**, because the shared
+`risk_vetoes` table and the engine surfaces are still process-wide. The
+isolation guarantee is therefore "reads and writes of a tenant's rows are
+owner-scoped and gated once a second tenant exists", not "every byte is
+partitioned". With a single user the box remains a single-operator deployment —
+do not expose `:8000` beyond localhost.
 
 --------------------------------------------------------------------------------
 4. Non-goals

@@ -188,7 +188,7 @@ def test_performance_hydrates_ledger_from_persistence(lab_env, monkeypatch):
                 record_id="db-1", decision_id="d", timestamp=1.0,
                 actual_result={"filled": True, "pnl": 7.0, "origin": "system"})]
 
-        def list(self, limit=500):
+        def list(self, limit=500, owner_user_id=None):
             return self.rows
 
     monkeypatch.setattr(pdb, "persistence_enabled", lambda: True)

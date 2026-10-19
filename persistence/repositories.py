@@ -224,6 +224,11 @@ class ExperienceRepository:
         if owner_user_id:
             q = q.where(ExperienceRecordDB.owner_user_id == str(owner_user_id))
         rows = self._session.execute(q.limit(limit)).scalars().all()
+        q = select(ExperienceRecordDB).order_by(
+            ExperienceRecordDB.timestamp.desc())
+        if owner_user_id:
+            q = q.where(ExperienceRecordDB.owner_user_id == str(owner_user_id))
+        rows = self._session.execute(q.limit(limit)).scalars().all()
         return [self._row_to_record(r) for r in rows]
 
     @staticmethod

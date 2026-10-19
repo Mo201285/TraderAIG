@@ -211,7 +211,8 @@ def test_experiences_limit_bounds(client, monkeypatch):
         def as_dict(self):
             return {"record_id": "x"}
 
-    monkeypatch.setattr(api_mod.ledger, "all", lambda: [FakeRec() for _ in range(9)])
+    monkeypatch.setattr(api_mod.ledger, "list",
+                        lambda *, owner_user_id=None: [FakeRec() for _ in range(9)])
     assert len(client.get("/learning/experiences?limit=4").json()) == 4
     assert len(client.get("/learning/experiences").json()) == 9
 
@@ -225,7 +226,7 @@ def test_learning_stats_lazily_refills_like_experiences(client, monkeypatch):
 
     monkeypatch.setattr(api_mod.ledger, "_records", [])  # simulate a fresh boot
 
-    def fake_load(limit: int = 500) -> int:
+    def fake_load(limit: int = 500, owner_user_id=None) -> int:
         api_mod.ledger._records.append(
             SimpleNamespace(error_classification=SimpleNamespace(value="lesson")))
         return 1

@@ -155,7 +155,7 @@ def test_experience_ledger_load_from_db_populates_once(monkeypatch):
     ]
 
     class FakeRepo:
-        def list(self, limit=500):
+        def list(self, limit=500, owner_user_id=None):
             return fake_rows
 
     import persistence.db

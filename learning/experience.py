@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from core.contracts import (
     RegimeSnapshot,
@@ -109,17 +109,80 @@ class ExperienceRecord:
         }
 
 
+_current_owner_provider: Optional[Callable[[], Optional[str]]] = None
+_default_owner_provider: Optional[Callable[[], Optional[str]]] = None
+
+
+def set_current_owner_provider(
+        provider: Optional[Callable[[], Optional[str]]]) -> None:
+    """Wire the tenant of the request that is writing (slice I3).
+
+    Called once by the API layer with `owner_scope`, so a record produced while
+    serving a tenant is stamped with that tenant's id no matter which module
+    built it. Off-request (the 24/7 pipeline) it resolves to the default
+    tenant, which is who owns the box's spontaneous trades.
+    """
+    global _current_owner_provider
+    _current_owner_provider = provider
+
+
+def set_default_owner_provider(
+        provider: Optional[Callable[[], Optional[str]]]) -> None:
+    """Wire who owns rows that carry no owner.
+
+    Every record written before multi-tenancy has an empty `owner_user_id`. It
+    is not a tenant-less record: it is the default tenant's history, and hiding
+    it the moment partitioning lands would look like data loss. Only the
+    default tenant may claim those rows.
+    """
+    global _default_owner_provider
+    _default_owner_provider = provider
+
+
+def _resolve(provider: Optional[Callable[[], Optional[str]]]) -> Optional[str]:
+    if provider is None:
+        return None
+    try:
+        return provider()
+    except Exception:  # noqa: BLE001
+        # A provider that raises must not break a write or a read: fall back to
+        # "no owner known", which is the pre-partition behaviour.
+        return None
+
+
+def _current_owner() -> Optional[str]:
+    return _resolve(_current_owner_provider)
+
+
+def _default_owner() -> Optional[str]:
+    return _resolve(_default_owner_provider)
+
+
 class ExperienceLedger:
     """Append-only store of ExperienceRecords."""
 
     def __init__(self) -> None:
         self._records: List[ExperienceRecord] = []
+        self._by_owner: Dict[str, List[ExperienceRecord]] = {}
 
     def record(self, record: ExperienceRecord) -> None:
+        if not (getattr(record, "owner_user_id", "") or ""):
+            record.owner_user_id = _current_owner() or _default_owner() or ""
         self._records.append(record)
+        owner = str(record.owner_user_id or "")
+        if owner and owner in self._by_owner:
+            self._by_owner[owner].append(record)
         self._persist(record)
         log.debug(f"Experience recorded: {record.record_id[:8]} "
                   f"({record.error_classification.value if record.error_classification else 'pending'})")
+
+    def _matches(self, record: ExperienceRecord, owner: str) -> bool:
+        held = str(getattr(record, "owner_user_id", "") or "")
+        if held:
+            return held == owner
+        # No owner means the row predates partitioning: the default tenant's
+        # history, and nobody else's.
+        return owner == _default_owner()
 
     def by_candidate(self, candidate_id: str) -> List[ExperienceRecord]:
         return [r for r in self._records if r.candidate_id == candidate_id]
@@ -131,14 +194,29 @@ class ExperienceLedger:
         if not owner_user_id:
             return list(self._records)
         owner = str(owner_user_id)
-        return [r for r in self._records if getattr(r, "owner_user_id", "") == owner]
+        source = self._by_owner.get(owner)
+        if source is None:
+            source = self._records
+        return [r for r in source if self._matches(r, owner)]
 
-    def load_from_db(self, limit: int = 500, *, owner_user_id: Optional[str] = None) -> int:
+    def load_from_db(self, limit: int = 500, *,
+                     owner_user_id: Optional[str] = None) -> int:
         """Hydrate the in-memory ledger from persistence once (no-op if loaded).
 
-        Returns how many records were loaded (0 when nothing/disabled/already loaded).
+        Returns how many records were loaded (0 when nothing/disabled/already
+        loaded).
+
+        With no `owner_user_id` the whole ledger (the default tenant's history)
+        is hydrated, exactly as before. With one, only that tenant's rows are
+        read and they are kept in their own bucket: a tenant read must never
+        replace the shared in-memory ledger with a single tenant's slice, which
+        would make every other reader see that one tenant's history.
         """
-        if self._records:
+        owner = str(owner_user_id) if owner_user_id else None
+        if owner is None:
+            if self._records:
+                return 0
+        elif owner in self._by_owner:
             return 0
         try:
             from persistence.db import make_live_session, persistence_enabled
@@ -146,9 +224,20 @@ class ExperienceLedger:
 
             if not persistence_enabled():
                 return 0
-            self._records = ExperienceRepository(make_live_session()).list(
-                limit, owner_user_id=owner_user_id)
-            return len(self._records)
+            repo = ExperienceRepository(make_live_session())
+            if owner is None:
+                rows = repo.list(limit)
+                self._records = rows
+            elif owner == _default_owner():
+                # The default tenant also owns every unowned row, and the repo
+                # cannot express "mine or unowned" without that rule leaking
+                # upward. Read the table as before and select here instead.
+                rows = [r for r in repo.list(limit) if self._matches(r, owner)]
+                self._by_owner[owner] = rows
+            else:
+                rows = repo.list(limit, owner_user_id=owner)
+                self._by_owner[owner] = rows
+            return len(rows)
         except Exception:  # noqa: BLE001
             # Not the same as "nothing to load": this means the DURABLE ledger
             # could not be read, and the process then runs with an empty
@@ -163,9 +252,9 @@ class ExperienceLedger:
                 "in-memory ledger for this process", exc_info=True)
             return 0
 
-    def stats(self) -> Dict[str, int]:
+    def stats(self, *, owner_user_id: Optional[str] = None) -> Dict[str, int]:
         counts = {}
-        for r in self._records:
+        for r in self.list(owner_user_id=owner_user_id):
             key = r.error_classification.value if r.error_classification else "unclassified"
             counts[key] = counts.get(key, 0) + 1
         return counts

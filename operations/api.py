@@ -37,6 +37,7 @@ from governance.identity import (
     SubscriptionStatus,
     identity,
 )
+from learning import experience as learning_experience
 from learning.experience import ledger
 from learning.performance import attributor
 from operations.alerts import alerts
@@ -285,6 +286,20 @@ def owner_scope() -> Optional[str]:
     return current_caller() or identity.principal_user_id()
 
 
+def _tenant_filter() -> Optional[str]:
+    """The owner filter for tenant-scoped reads (slice I3).
+
+    `owner_scope()` names the tenant; a tenant-scoped read returns that
+    tenant's rows and nothing else. The server-named principal is a tenant like
+    any other here: rows that predate partitioning carry no owner and are the
+    default tenant's history (`set_default_owner_provider`), so they are not
+    lost - but a second tenant can never see them, nor the principal's rows.
+    One place decides this; a second one that agrees today can diverge tomorrow
+    without either being wrong.
+    """
+    return owner_scope()
+
+
 def _acting_actor() -> Optional[str]:
     """Who is acting for this request — resolved by `owner_scope()`.
 
@@ -315,6 +330,14 @@ def _caller_state() -> CanonicalState:
     slice existed.
     """
     return state_for(owner_scope())
+
+
+# Slice I3: the ledger learns who owns a write and who owns the unowned past,
+# from the same two seams the canonical state uses. Wiring lives here because
+# only the API layer knows a request (and therefore a tenant) is in flight.
+learning_experience.set_current_owner_provider(owner_scope)
+learning_experience.set_default_owner_provider(
+    lambda: identity.principal_user_id())
 
 
 set_default_owner_provider(lambda: identity.principal_user_id())
@@ -765,8 +788,11 @@ def _tenancy_report() -> Dict:
             "(and bootstrap) resolves to the process singleton every engine "
             "writes to, any other tenant gets its own instance, and every route "
             "that answers from canonical state answers from the caller it "
-            "resolved. Ledger-derived reads (/portfolio/state, learning, "
-            "history) stay shared until slice I3 partitions persistence"),
+            "resolved. Slice I3 also partitioned the experience ledger and the "
+            "account registry by owner_user_id, so those reads return only the "
+            "caller's rows; the shared `risk_vetoes` table and the engine "
+            "surfaces are still process-wide, which is why "
+            "data_isolated_per_user stays False"),
         "ownership_enforced_on": [
             "GET /users/{user_id}",
             "POST /users/{user_id}/subscription/activate",
@@ -1107,7 +1133,7 @@ def list_accounts() -> Dict:
     from accounts import isolation
     from persistence.repositories_accounts import AccountRegistryRepository
 
-    principal = identity.principal_user_id()
+    principal = _tenant_filter() or identity.principal_user_id()
     registry = AccountRegistryRepository()
     owned = isolation.visible_accounts(principal, registry.list_all())
     return {"ok": True, "accounts": owned,
@@ -1137,7 +1163,10 @@ def get_account_record(account_id: str) -> Dict:
     """
     from accounts import isolation
 
-    principal = identity.principal_user_id()
+    # Slice I3: the owner is `owner_scope()` for this request, not the
+    # server-selected principal -- a session for a second tenant must not read
+    # the principal's account. Session-less it is still the principal.
+    principal = owner_scope() or identity.principal_user_id()
     access = isolation.own_record_access(principal, account_id)
     if access["reason"] == "unknown_account":
         return JSONResponse(status_code=404,
@@ -1180,7 +1209,11 @@ def get_account_bindings(account_id: str) -> Dict:
     from accounts import isolation
     from accounts.strategy_bindings import AccountStrategyBindings
 
-    principal = identity.principal_user_id()
+    # Slice I3: registry rows carry `owner_user_id`, so the owner is whoever
+    # `owner_scope()` resolved for THIS request (a session wins over the
+    # server-selected principal). With no session resolving to a second tenant
+    # this is the principal, exactly as before.
+    principal = owner_scope() or identity.principal_user_id()
     access = isolation.own_record_access(principal, account_id)
     if access["reason"] == "unknown_account":
         return JSONResponse(status_code=404,
@@ -4146,19 +4179,18 @@ def portfolio_allocation_engine(method: str = "risk_parity") -> Dict:
 @app.get("/learning/experiences")
 def experiences(limit: int = 200) -> List[Dict]:
     """Most-recent N ExperienceRecords (newest last); bounds dashboard payloads."""
-    from operations.api import owner_scope  # no, wait - just use
-    # easier: get scope
-    scope = owner_scope()
-    ledger.load_from_db(owner_user_id=scope)  # lazy
-    rows = ledger.list(owner_user_id=scope)
+    owner = _tenant_filter()
+    ledger.load_from_db(owner_user_id=owner)  # lazy: refill after a restart
+    rows = ledger.list(owner_user_id=owner)
     return [r.as_dict() for r in rows[-max(1, limit):]]
 
 
 @app.get("/learning/stats")
 def learning_stats() -> Dict:
-    scope = owner_scope()
-    ledger.load_from_db(owner_user_id=scope)  # lazy
-    return ledger.stats()  # stats over current loaded records (scoped in memory if needed)
+    owner = _tenant_filter()
+    # lazy: refill from persistence after a restart (same as /learning/experiences)
+    ledger.load_from_db(owner_user_id=owner)
+    return ledger.stats(owner_user_id=owner)
 
 
 # ---------------------------------------------------------------------------

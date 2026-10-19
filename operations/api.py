@@ -81,6 +81,16 @@ async def _lifespan(_app: FastAPI):
             log.info("durable event log attached to the bus")
     except Exception:  # noqa: BLE001
         log.exception("durable event log wiring failed to start")
+    try:
+        from operations.autonomous import (autonomous_enabled_by_env,
+                                           autonomous_ops)
+
+        if autonomous_enabled_by_env():
+            autonomous_ops.start(float(os.getenv("AUTONOMOUS_OPS_INTERVAL",
+                                                 "900")))
+            log.info(f"autonomous ops loop started: {autonomous_ops.status()}")
+    except Exception:  # noqa: BLE001
+        log.exception("autonomous ops loop failed to start")
     yield
 
 
@@ -6432,6 +6442,65 @@ def review_apply(payload: Dict) -> Dict:
         "reason": reason or "review_loop",
     })
     return {"ok": True, **result}
+
+
+# ---------------------------------------------------------------------------
+# Autonomous Operations -- the scheduled view of the M9.5 review loop (Phase D)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/ops/autonomous/status")
+def autonomous_status() -> Dict:
+    """Read-only status of the autonomous review loop.
+
+    Not entitlement-gated: the operator must be able to SEE whether the loop
+    is running and what it last did without holding CAN_MANAGE_RISK, and the
+    payload contains no order, credential or position data. The loop itself is
+    opt-in via TRADERAIG_AUTONOMOUS_OPS and always routes through the same
+    ReviewLoop guard the manual endpoints use.
+    """
+    from operations.autonomous import autonomous_ops
+    status = autonomous_ops.status()
+    status["contract"] = ("applies only what the M9.5 ReviewLoop permits; "
+                          "quarantine/promotion still defer while an engine "
+                          "executes the asset, and it never trades")
+    return {"ok": True, **status}
+
+
+@app.post("/ops/autonomous/start")
+def autonomous_start(payload: Optional[Dict] = None) -> Dict:
+    """Start the scheduled autonomous review loop (opt-in, guarded)."""
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    from operations.autonomous import autonomous_ops
+    interval = float((payload or {}).get("interval", 900))
+    started = autonomous_ops.start(interval)
+    if not started:
+        raise HTTPException(
+            status_code=409,
+            detail=("TRADERAIG_AUTONOMOUS_OPS is not enabled; set it to 1 to "
+                    "let the loop run unattended"))
+    return {"ok": True, "started": True, "status": autonomous_ops.status()}
+
+
+@app.post("/ops/autonomous/stop")
+def autonomous_stop() -> Dict:
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    from operations.autonomous import autonomous_ops
+    autonomous_ops.stop()
+    return {"ok": True, "stopped": True, "status": autonomous_ops.status()}
+
+
+@app.post("/ops/autonomous/cycle")
+def autonomous_cycle() -> Dict:
+    """Run exactly one autonomous review pass now (deterministic, not scheduled).
+
+    Useful to make the loop's behaviour observable on demand: it performs the
+    same observe -> propose -> apply the scheduler would, and returns what it
+    applied, deferred and refused.
+    """
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    from operations.autonomous import autonomous_ops
+    return {"ok": True, "result": autonomous_ops.run_once()}
 
 
 # ---------------------------------------------------------------------------

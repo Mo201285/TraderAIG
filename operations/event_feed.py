@@ -12,7 +12,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 TOPICS = ("registry", "change", "risk", "health", "ops")
 
@@ -24,6 +24,7 @@ class EventFeed:
         self._seq = 0
         self._events: deque = deque(maxlen=maxlen)
         self._lock = threading.Lock()
+        self._subscribers: List[Callable[[Dict[str, Any]], None]] = []
 
     # -- publish ---------------------------------------------------------
     def publish(self, kind: str, topic: str, actor: str = "system",
@@ -42,8 +43,27 @@ class EventFeed:
                 "payload": dict(payload or {}),
             }
             self._events.append(event)
+            subscribers = list(self._subscribers)
         self._mirror_redis(event)
+        for handler in subscribers:
+            try:
+                handler(dict(event))
+            except Exception:  # noqa: BLE001  (a subscriber never breaks publish)
+                pass
         return event
+
+    # -- subscription (durable archive, other projections) ---------------
+    def subscribe(self, handler: Callable[[Dict[str, Any]], None]) -> None:
+        """Register a handler called with every published event.
+
+        Subscribers are notification-only: a raising handler is swallowed so
+        the feed can never be taken down by the thing that consumes it. This
+        is how the optional durable Event Store attaches without any publisher
+        needing to change (Phase B).
+        """
+        with self._lock:
+            if handler not in self._subscribers:
+                self._subscribers.append(handler)
 
     def _mirror_redis(self, event: Dict[str, Any]) -> None:
         """Optional cross-process notification; never blocks or raises."""

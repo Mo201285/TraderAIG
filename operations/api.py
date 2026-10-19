@@ -82,6 +82,13 @@ async def _lifespan(_app: FastAPI):
     except Exception:  # noqa: BLE001
         log.exception("durable event log wiring failed to start")
     try:
+        from operations.event_archive import event_archive
+
+        if event_archive.attach():
+            log.info("event archive attached to the ops/events feed")
+    except Exception:  # noqa: BLE001
+        log.exception("event archive wiring failed to start")
+    try:
         from operations.autonomous import (autonomous_enabled_by_env,
                                            autonomous_ops)
 
@@ -6445,9 +6452,36 @@ def review_apply(payload: Dict) -> Dict:
 
 
 # ---------------------------------------------------------------------------
-# Autonomous Operations -- the scheduled view of the M9.5 review loop (Phase D)
+# Phase B Feature Store -- reproducible feature manifests (28.15)
 # ---------------------------------------------------------------------------
 
+
+@app.get("/features/store")
+def features_store(strategy_id: str = "") -> Dict:
+    """Read the reproducible feature manifest(s) recorded by lab runs.
+
+    Read-only and not entitlement-gated: the manifest holds a feature
+    specification, a market provenance fingerprint and a content hash -- no
+    positions, credentials or prices to act on. A missing strategy is reported
+    as absent, never fabricated.
+    """
+    from research.strategy_lab.feature_store import FeatureStore
+
+    store = FeatureStore(str(LAB_DATA_DIR / "feature_store.json"))
+    if strategy_id:
+        manifest = store.get(strategy_id)
+        return {"ok": True, "found": manifest is not None,
+                "manifest": manifest}
+    rows = store.rows()
+    return {"ok": True, "count": len(rows), "manifests": rows,
+            "note": ("a manifest records the feature specification, market "
+                     "provenance and row content hash -- the rows themselves "
+                     "are re-extractable, not stored")}
+
+
+# ---------------------------------------------------------------------------
+# Autonomous Operations -- the scheduled view of the M9.5 review loop (Phase D)
+# ---------------------------------------------------------------------------
 
 @app.get("/ops/autonomous/status")
 def autonomous_status() -> Dict:
@@ -6652,6 +6686,22 @@ def events_log(limit: int = 100, event_type: str = "",
         items = repo.list(limit=limit, event_type=event_type or None)
     return {"ok": True, "enabled": event_log.enabled_by_env(),
             "count": len(items), "events": items}
+
+
+@app.get("/events/replay")
+def events_replay(limit: int = 200, event_type: str = "") -> Dict:
+    """Phase B Event Store: replay the archived ops/events feed.
+
+    The live feed (`/ops/events`) is a bounded in-process ring; this reads the
+    durable archive of the same events back in causal order. Only events
+    published while `TRADERAIG_EVENT_ARCHIVE` was on are present, so an empty
+    replay means "not archived", never "nothing happened". Read-only, and it
+    grants no authority.
+    """
+    from operations.event_archive import event_archive
+
+    out = event_archive.replay(limit=limit, event_type=event_type)
+    return {"ok": True, **out}
 
 
 @app.get("/ops/copy/follower")

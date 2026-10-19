@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from research.evidence_plane import IS_AUTHORISATION, TRADE_AUTHORITY
+from core.logging import get_logger
 
 from .contracts import (
     MATRIX_FAMILIES,
@@ -66,6 +67,8 @@ from .genome import default_grid, generate_variants
 from .models import build_variant
 from .registry import StrategyRegistry
 from .user_intake import FAMILY_KEYWORDS
+
+log = get_logger("research.strategy_lab.research_bridge")
 
 # ---------------------------------------------------------------------------
 # Supported vocabulary (mirrors the lab's defaults; nothing new is invented)
@@ -660,6 +663,23 @@ def run_research_validation(proposal: ResearchStrategyProposal, *,
             "no tradeable feature rows - the series is too short for the "
             "setup timeframe; raise count or choose mt5")
 
+    # Phase B Feature Store: preserve the reproducible manifest (spec +
+    # provenance + content hash), not the rows -- see feature_store.py.
+    feature_manifest = None
+    try:
+        from .feature_store import FeatureStore
+
+        feature_manifest = FeatureStore(
+            str(data_dir / "feature_store.json")).record(
+                strategy_id, rows=rows, provenance=provenance,
+                family=definition.family.value,
+                asset=definition.asset.upper(),
+                timeframes={"htf": definition.htf_tf,
+                            "setup": definition.setup_tf,
+                            "trigger": definition.trigger_tf})
+    except Exception:  # noqa: BLE001
+        log.debug("feature store record skipped")
+
     variant = build_variant(definition)
     result = StrategyRunner(cost_r=float(cost_r)).run(
         candles, rows, variant, run_id=variant.variant_hash)
@@ -702,6 +722,7 @@ def run_research_validation(proposal: ResearchStrategyProposal, *,
         "observations_file": obs_path.name,
         "cost_r": float(cost_r),
         "market_provenance": provenance,
+        "feature_store": feature_manifest,
         "warnings": list(result_warnings),
         "is_authorisation": IS_AUTHORISATION,
         "trade_authority": TRADE_AUTHORITY,

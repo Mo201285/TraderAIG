@@ -63,6 +63,7 @@ class ExperienceRecordDB(Base):
     slippage: Mapped[float] = mapped_column(Float, default=0.0)
     fees: Mapped[float] = mapped_column(Float, default=0.0)
     lessons_json: Mapped[str] = mapped_column(Text, default="[]")
+    owner_user_id: Mapped[str] = mapped_column(String(64), default="", index=True)
 
 
 class VetoRecordDB(Base):
@@ -297,6 +298,3 @@ def loads(text: str):
         return json.loads(text)
     except (TypeError, ValueError):
         return {}
-
-
-

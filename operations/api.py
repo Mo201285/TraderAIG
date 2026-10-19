@@ -4146,15 +4146,19 @@ def portfolio_allocation_engine(method: str = "risk_parity") -> Dict:
 @app.get("/learning/experiences")
 def experiences(limit: int = 200) -> List[Dict]:
     """Most-recent N ExperienceRecords (newest last); bounds dashboard payloads."""
-    ledger.load_from_db()  # lazy: refill from persistence after a restart
-    rows = list(ledger.all())
+    from operations.api import owner_scope  # no, wait - just use
+    # easier: get scope
+    scope = owner_scope()
+    ledger.load_from_db(owner_user_id=scope)  # lazy
+    rows = ledger.list(owner_user_id=scope)
     return [r.as_dict() for r in rows[-max(1, limit):]]
 
 
 @app.get("/learning/stats")
 def learning_stats() -> Dict:
-    ledger.load_from_db()  # lazy: refill from persistence after a restart (same as /learning/experiences)
-    return ledger.stats()
+    scope = owner_scope()
+    ledger.load_from_db(owner_user_id=scope)  # lazy
+    return ledger.stats()  # stats over current loaded records (scoped in memory if needed)
 
 
 # ---------------------------------------------------------------------------

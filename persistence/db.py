@@ -89,7 +89,7 @@ def _required_schema() -> dict[str, dict[str, str]]:
     migration and a schema migration are different jobs.
     """
     return {
-        "experiences": {"metadata_json": "TEXT DEFAULT '{}'"},
+        "experiences": {"metadata_json": "TEXT DEFAULT '{}'", "owner_user_id": "TEXT"},
         "users": {"password_hash": "TEXT", "password_set_at": "FLOAT"},
         # The trailing high-water mark. Nullable so the ALTER is additive and no
         # existing row is rewritten: a row written before trailing existed has

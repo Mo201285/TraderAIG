@@ -213,15 +213,17 @@ class ExperienceRepository:
             slippage=record.slippage,
             fees=record.fees,
             lessons_json=dumps(record.lessons),
+            owner_user_id=getattr(record, "owner_user_id", "") or "",
         )
         self._session.merge(row)
         self._session.commit()
 
-    def list(self, limit: int = 100) -> List[ExperienceRecord]:
-        rows = self._session.execute(
-            select(ExperienceRecordDB).order_by(
-                ExperienceRecordDB.timestamp.desc()).limit(limit)
-        ).scalars().all()
+    def list(self, limit: int = 100, *, owner_user_id: Optional[str] = None) -> List[ExperienceRecord]:
+        q = select(ExperienceRecordDB).order_by(
+            ExperienceRecordDB.timestamp.desc())
+        if owner_user_id:
+            q = q.where(ExperienceRecordDB.owner_user_id == str(owner_user_id))
+        rows = self._session.execute(q.limit(limit)).scalars().all()
         return [self._row_to_record(r) for r in rows]
 
     @staticmethod

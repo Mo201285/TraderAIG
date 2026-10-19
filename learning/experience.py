@@ -64,6 +64,7 @@ class ExperienceRecord:
     error_classification: Optional[ErrorType] = None
     lessons: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    owner_user_id: str = ""
 
     def classify(self) -> ErrorType:
         """Automatically classify the outcome of this decision."""
@@ -126,7 +127,13 @@ class ExperienceLedger:
     def all(self) -> List[ExperienceRecord]:
         return list(self._records)
 
-    def load_from_db(self, limit: int = 500) -> int:
+    def list(self, *, owner_user_id: Optional[str] = None) -> List[ExperienceRecord]:
+        if not owner_user_id:
+            return list(self._records)
+        owner = str(owner_user_id)
+        return [r for r in self._records if getattr(r, "owner_user_id", "") == owner]
+
+    def load_from_db(self, limit: int = 500, *, owner_user_id: Optional[str] = None) -> int:
         """Hydrate the in-memory ledger from persistence once (no-op if loaded).
 
         Returns how many records were loaded (0 when nothing/disabled/already loaded).
@@ -139,7 +146,8 @@ class ExperienceLedger:
 
             if not persistence_enabled():
                 return 0
-            self._records = ExperienceRepository(make_live_session()).list(limit)
+            self._records = ExperienceRepository(make_live_session()).list(
+                limit, owner_user_id=owner_user_id)
             return len(self._records)
         except Exception:  # noqa: BLE001
             # Not the same as "nothing to load": this means the DURABLE ledger

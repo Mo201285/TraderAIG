@@ -12,6 +12,12 @@ The fix is not to pretend this is multi-tenant. It is to make the real boundary
 explicit: one acting principal, which may act on its own record and nobody
 else's, with bootstrap (no principal yet) passing because there is nothing to
 protect.
+
+Slice I4 note: this fixture deliberately holds TWO users, which now means the
+deployment is multi-tenant and read/write enforcement turns itself on. The tests
+therefore carry the acting principal's session on every request — which is the
+stronger shape anyway: ownership must refuse a fully authenticated peer, not
+merely an anonymous caller.
 """
 import sys
 from pathlib import Path
@@ -46,7 +52,14 @@ def two_identities(monkeypatch):
     against the *target*, so a low-privilege target is already refused one
     layer earlier. What has to stop a fully-privileged peer from editing
     someone else's risk limits is ownership — and that is what is under test.
+
+    Because two users exist, slice I4 makes this multi-tenant and turns
+    enforcement on, so the returned client presents the principal's session on
+    every call. `client` carries the credential; `client_unauthenticated` is
+    the same app without it, for the one test that asserts enforcement is real.
     """
+    from governance.auth import auth as auth_svc
+
     svc = IdentityService()
     svc.rehydrate()
     principal = svc.create_user(email="owner@institution.com",
@@ -61,8 +74,13 @@ def two_identities(monkeypatch):
     monkeypatch.setattr(_global_identity, "_subscriptions", svc._subscriptions)
     monkeypatch.setattr(_global_identity, "_audit", svc._audit)
     monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", "owner@institution.com")
-    client = TestClient(app)
-    yield client, principal.user_id, other.user_id
+
+    _global_identity.set_password(principal.user_id, "owner-password-123")
+    token = auth_svc.issue(principal.user_id)[0]
+
+    authenticated = TestClient(app, headers={"Authorization": f"Bearer {token}"})
+    plain = TestClient(app)
+    yield authenticated, principal.user_id, other.user_id, plain
 
 
 def test_the_peer_is_equally_privileged_so_only_ownership_can_stop_it(
@@ -75,7 +93,7 @@ def test_the_peer_is_equally_privileged_so_only_ownership_can_stop_it(
     nothing about ownership. The peer therefore holds CAN_TRADE, and the
     refusal must be the ownership one.
     """
-    client, principal, other = two_identities
+    client, principal, other, _plain = two_identities
     assert identity_can_trade(other) is True
     # The principal's own record is reachable: the guard is real, not a blanket deny.
     assert client.get(f"/users/{principal}").status_code == 200
@@ -87,25 +105,32 @@ def test_the_peer_is_equally_privileged_so_only_ownership_can_stop_it(
         assert "entitlement" not in resp.json()["detail"]
 
 
-def test_tenancy_is_reported_as_single_tenant_not_multi_tenant(two_identities):
-    """/system/health must say what the deployment is, not imply more."""
-    client, principal, _ = two_identities
-    body = client.get("/system/health").json()
-    tenancy = body["tenancy"]
-    assert tenancy["model"] == "single-tenant"
-    assert tenancy["multi_tenant"] is False
+def test_enforcement_turns_on_when_a_second_tenant_exists(two_identities):
+    """/system/health must say what the deployment is, not imply less.
+
+    Slice I4 reverses the old single-tenant claim: two users exist here, so the
+    deployment IS multi-tenant, reads are gated, and an unauthenticated caller
+    is refused a tenant route while global reference reads stay open. The
+    session-carrying client is authenticated; the plain one is not.
+    """
+    client, principal, _other, plain = two_identities
+    tenancy = plain.get("/system/health").json()["tenancy"]
+    assert tenancy["model"] == "multi-tenant"
+    assert tenancy["multi_tenant"] is True
+    assert tenancy["reads_gated"] is True
     assert tenancy["acting_principal"] == principal
-    # The honest headline: ownership is enforced, authentication is not.
+    # No session presented to /system/health -> authenticated is false there.
     assert tenancy["authenticated"] is False
-    # The note must keep naming what is still NOT built. This assertion used to
-    # pin the phrase "per-user canonical state" as the admitted gap; slice I2
-    # closed exactly that gap, so the guard moved to the gaps that remain — a
-    # tenancy report that stops admitting holes the moment one of them closes
-    # is how an overclaim gets in. Per-tenant ledger (I3), enforcement policy
-    # (I4) and their honesty guards (I5) are still open and must be said so.
+
+    # The enforcement is real: a tenant route with no session is refused...
+    assert plain.get("/account").status_code in (401, 403)
+    # ...while a global reference read carries no tenant and stays open.
+    assert plain.get("/providers").status_code == 200
+
+    # The gaps still open are named; the enforcement policy is no longer one.
     note = tenancy["note"]
-    assert "per-tenant ledger (I3)" in note
     assert "still open" in note
+    assert "enforcement policy that only" not in note
 
 
 @pytest.mark.parametrize("method,path,kwargs", [
@@ -121,7 +146,7 @@ def test_tenancy_is_reported_as_single_tenant_not_multi_tenant(two_identities):
 def test_principal_cannot_reach_another_users_record(two_identities,
                                                      method, path, kwargs):
     """The IDOR, closed on every route that took a user_id."""
-    client, _, other = two_identities
+    client, _, other, _plain = two_identities
     call = getattr(client, method.lower())
     resp = call(path.format(other=other), **kwargs)
     assert resp.status_code == 403, resp.text
@@ -130,7 +155,7 @@ def test_principal_cannot_reach_another_users_record(two_identities,
 
 def test_principal_can_still_reach_its_own_record(two_identities):
     """The fix must not lock the operator out of their own deployment."""
-    client, principal, _ = two_identities
+    client, principal, _, _plain = two_identities
     assert client.get(f"/users/{principal}").status_code == 200
     assert client.get(f"/users/{principal}/can/can_trade").json()["allowed"] is True
     assert client.get(f"/users/{principal}/risk-policy").status_code == 200
@@ -139,7 +164,7 @@ def test_principal_can_still_reach_its_own_record(two_identities):
 
 def test_own_subscription_activation_still_works(two_identities):
     """Documented entitlement-recovery path must survive the ownership check."""
-    client, principal, _ = two_identities
+    client, principal, _, _plain = two_identities
     resp = client.post(f"/users/{principal}/subscription/activate",
                        json={"plan": "institutional"})
     assert resp.status_code == 200, resp.text
@@ -158,7 +183,7 @@ def test_other_users_subscription_is_not_changed_by_the_denied_call(
     ownership after mutating would pass a status-code test and still leave the
     damage done.
     """
-    client, principal, other = two_identities
+    client, principal, other, _plain = two_identities
     assert identity_can_trade(other) is True
     denied = client.post(f"/users/{other}/subscription/activate",
                          json={"plan": "free"})
@@ -172,7 +197,7 @@ def test_other_users_subscription_is_not_changed_by_the_denied_call(
 
 def test_ownership_denial_is_audited(two_identities):
     """A refused authority call leaves the same trail an entitlement denial does."""
-    client, _, other = two_identities
+    client, _, other, _plain = two_identities
     client.get(f"/users/{other}/risk-policy")
     actions = [e.action for e in _global_identity.audit_log(limit=200)]
     assert "ownership.denied" in actions
@@ -191,7 +216,7 @@ def test_a_caller_cannot_mint_entitlements_for_another_user(two_identities):
     institutional subscription, and could aim `plan: "free"` at the operator to
     strip `can_trade` and make the next watchdog tick 403 on `/mt5/connect`.
     """
-    client, _, other = two_identities
+    client, _, other, _plain = two_identities
     resp = client.post("/payments/charge", json={
         "user_id": other, "amount_usd": 1, "plan": "institutional"})
     assert resp.status_code == 403, resp.text
@@ -203,7 +228,7 @@ def test_a_caller_cannot_mint_entitlements_for_another_user(two_identities):
 
 def test_the_principal_can_still_bill_itself(two_identities):
     """Self-service billing is the production shape and must keep working."""
-    client, principal, _ = two_identities
+    client, principal, _, _plain = two_identities
     resp = client.post("/payments/charge", json={
         "user_id": principal, "amount_usd": 5, "plan": "institutional"})
     assert resp.status_code == 200, resp.text
@@ -219,7 +244,7 @@ def test_refund_checks_the_owner_of_the_charge_not_a_supplied_id(two_identities)
     owner is resolved from the charge id inside the service.
     """
     from governance.payments import payments_service
-    client, principal, other = two_identities
+    client, principal, other, _plain = two_identities
     # Create a charge owned by the PEER directly through the service: the API
     # route that would create it is (correctly) refusing to bill anyone else,
     # which is exactly why the refund test has to reach past the API to set up.

@@ -208,7 +208,11 @@ def test_the_tenancy_report_describes_the_provider_without_overclaiming(
         "the report must say where the engines write, or a reader will assume "
         "per-tenant trading data exists")
     assert tenancy.get("data_isolated_per_user") is False, (
-        "ledger/portfolio reads are still shared until slice I3 — claiming "
-        "isolation now would be the overclaim the spec calls out")
-    assert tenancy.get("multi_tenant") is False, (
-        "slice I4 flips multi_tenant, and only when len(users) > 1")
+        "the shared risk_vetoes table and engine surfaces are still process-"
+        "wide until I5; claiming isolation now would be the overclaim the spec "
+        "calls out")
+    assert tenancy.get("multi_tenant") is True, (
+        "slice I4 flips multi_tenant when len(users) > 1, and this fixture "
+        "creates exactly two tenants")
+    assert tenancy.get("reads_gated") is True, (
+        "once multi-tenant, the enforcement policy turns itself on")

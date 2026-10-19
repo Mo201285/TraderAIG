@@ -342,6 +342,12 @@ learning_experience.set_default_owner_provider(
 
 set_default_owner_provider(lambda: identity.principal_user_id())
 
+# Slice I4: enforcement stops being purely an env-var decision. A second tenant
+# is a fact only the identity store knows, so it is wired into the auth policy
+# here; once it is true, `auth.enforcement_enabled()` requires a session for
+# every non-reference route whether or not TRADERAIG_AUTH was set.
+auth.set_multi_tenant_provider(lambda: len(identity.list_users()) > 1)
+
 
 def _verify_presented_session(supplied: Optional[str]):
     """Verify a session token AND confirm the account still exists.
@@ -765,14 +771,23 @@ def _tenancy_report() -> Dict:
     """
     principal = identity.principal_user_id()
     enforcement = auth.enforcement_enabled()
+    # Slice I4: the model is no longer a constant. Once a second user exists,
+    # enforcement turns itself on (auth.enforcement_enabled() consults the
+    # provider wired below), so `reads_gated` flips with it and `model` must
+    # stop claiming single-tenant in the same response.
+    multi_tenant = len(identity.list_users()) > 1
     return {
-        "model": "single-tenant",
-        "multi_tenant": False,
+        "model": "multi-tenant" if multi_tenant else "single-tenant",
+        "multi_tenant": multi_tenant,
         "authenticated": bool(current_caller()),
-        "auth_enforcement": ("TRADERAIG_AUTH=1 — every request (reads included) "
-                             "requires a session" if enforcement else
-                             "TRADERAIG_AUTH=0 — NOT enforced; any caller that "
-                             "can reach this port acts as the acting principal"),
+        "auth_enforcement": (
+            ("TRADERAIG_AUTH=1 — every request (reads included) requires a "
+             "session") if os.environ.get("TRADERAIG_AUTH", "0").strip() in (
+                 "1", "true", "True", "yes") else
+            ("read gating is ON because more than one tenant exists, even "
+             "though TRADERAIG_AUTH is not set") if multi_tenant else
+            "TRADERAIG_AUTH=0 — NOT enforced; any caller that can reach this "
+            "port acts as the acting principal"),
         # Reported honestly in both directions: reads require a credential, and
         # canonical state is owner-keyed by slice I2 -- but the ledger (and the
         # portfolio/history views derived from it) is still ONE store until
@@ -982,20 +997,18 @@ def _tenancy_report() -> Dict:
             "permission: every payload carries is_authorisation: False "
             "(row 752)"
         ),
-        "note": ("This deployment is safe only as a single-operator box. Do not "
-                 "expose :8000 beyond localhost. The entitlement gate is "
-                 "evaluated against the principal the SERVER names, so with no "
-                 "authentication every caller already acts with the operator's "
-                 "authority — ownership here stops a caller from redirecting "
-                 "that authority at another user's record, it does not "
-                 "establish who the caller is. GET /accounts is the same kind of "
-                 "check: it proves the row is the acting principal's, and says "
-                 "caller_authenticated:false beside it. Multi-tenancy is being "
-                 "built in slices: canonical state is owner-keyed (I2), while "
-                 "the per-tenant ledger (I3), the enforcement policy that only "
-                 "means anything with more than one user (I4) and the honesty "
-                 "guards over both (I5) are still open — until they land, this "
-                 "box is safe only as a single-operator deployment."),
+        "note": ("Multi-tenancy is built in slices. Canonical state is "
+                 "owner-keyed (I2), the experience ledger and the account "
+                 "registry are partitioned by owner_user_id (I3), and the "
+                 "enforcement policy turns itself on once a second user exists "
+                 "(I4): a tenant-scoped route then requires a session even if "
+                 "TRADERAIG_AUTH was never set, while global reference reads "
+                 "(/providers, /market) stay open. What is NOT yet done is the "
+                 "source-fact honesty guards over the whole thing (I5) is "
+                 "still open, so `data_isolated_per_user` stays False: the "
+                 "shared `risk_vetoes` table and the engine surfaces are still "
+                 "process-wide. With a single user this remains a "
+                 "single-operator box — do not expose :8000 beyond localhost."),
     }
 
 

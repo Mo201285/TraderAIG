@@ -47,7 +47,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Callable, Dict, Optional, Set
 
 log = logging.getLogger(__name__)
 
@@ -109,6 +109,49 @@ SERVICE_TOKEN_PATHS = frozenset({
     "/cex/engine/start",
     "/cex/engine/stop",
 })
+
+# Global reference reads: data that belongs to no tenant (broker/provider
+# directories, raw market data). They stay reachable without a session once
+# multi-tenant enforcement is active, because gating them would not protect any
+# tenant's data -- there is no tenant in them -- and would only blind a watchdog
+# or a new user trying to look up a venue. Matched by prefix so `/providers/{id}`
+# and `/market/quote` are covered by their roots. Deliberately NOT `/auth`: its
+# `/auth/logout` is state-changing and must stay gated. `/system/health` and the
+# docs routes are already in OPEN_PATHS.
+REFERENCE_PATHS = (
+    "/providers",
+    "/market",
+)
+
+
+# Whether more than one tenant exists is a fact only the identity store knows,
+# and this module must not import it (identity already imports auth). The API
+# layer wires the answer in once; until it does, this is a single-tenant box.
+_multi_tenant_provider: Optional["Callable[[], bool]"] = None
+
+
+def set_multi_tenant_provider(provider: "Optional[Callable[[], bool]]") -> None:
+    """Wire "does a second tenant exist?" into the enforcement policy.
+
+    Slice I4: once a second user exists, leaving enforcement off because the
+    operator never set `TRADERAIG_AUTH` would gate nothing while a real tenant
+    can log in -- the worst of both. The policy therefore turns itself on, and
+    `enforcement_enabled()` is the one place that decides it.
+    """
+    global _multi_tenant_provider
+    _multi_tenant_provider = provider
+
+
+def _multi_tenant() -> bool:
+    if _multi_tenant_provider is None:
+        return False
+    try:
+        return bool(_multi_tenant_provider())
+    except Exception:  # noqa: BLE001
+        # A provider that cannot answer must not silently disable enforcement;
+        # failing closed here would gate a one-operator box, so fail to the
+        # state the operator can see and describe: not multi-tenant.
+        return False
 
 
 def _b64(raw: bytes) -> str:
@@ -441,7 +484,21 @@ class AuthService:
     # -- policy -------------------------------------------------------------
     @staticmethod
     def enforcement_enabled() -> bool:
-        return os.getenv("TRADERAIG_AUTH", "0").strip() in ("1", "true", "True", "yes")
+        return os.getenv("TRADERAIG_AUTH", "0").strip() in ("1", "true", "True",
+                                                            "yes") \
+            or _multi_tenant()
+
+    @staticmethod
+    def set_multi_tenant_provider(provider: "Optional[Callable[[], bool]]") -> None:
+        """Instance-level alias for the module wiring seam (slice I4)."""
+        set_multi_tenant_provider(provider)
+
+    @staticmethod
+    def is_reference(path: str) -> bool:
+        """Whether a path is a global reference read (belongs to no tenant)."""
+        clean = path.split("?")[0].rstrip("/") or "/"
+        return any(clean == root or clean.startswith(root + "/")
+                   for root in REFERENCE_PATHS)
 
     @staticmethod
     def requires_session(method: str, path: str) -> bool:
@@ -464,11 +521,20 @@ class AuthService:
         `reads_gated: true` for exactly that reason. This is authentication of
         the READER, not isolation of the DATA — half a guarantee described as a
         whole one is how this roadmap got into trouble.
+
+        Slice I4 adds one exemption, and only in the multi-tenant mode: global
+        reference reads (`/providers`, `/market`, docs) belong to no tenant, so
+        once a second tenant exists they must not demand a session and are
+        reported as `reference_paths`. On a single-tenant box the policy is
+        unchanged -- those reads stay gated -- so the exemption cannot be used
+        to open a hole nobody asked for.
         """
         clean = path.split("?")[0].rstrip("/") or "/"
         if clean in {p.rstrip("/") for p in OPEN_PATHS}:
             return False
         if clean.startswith("/docs") or clean.startswith("/redoc"):
+            return False
+        if AuthService.is_reference(clean) and _multi_tenant():
             return False
         return True
 
@@ -498,10 +564,12 @@ class AuthService:
     def auth_policy(self) -> Dict:
         return {
             "enforcement_enabled": self.enforcement_enabled(),
+            "multi_tenant": _multi_tenant(),
             "rule": "every request requires a session token except the named "
                     "open paths — reads included; the machine token may read "
                     "anything but may mutate only its rails",
             "open_paths": sorted(OPEN_PATHS),
+            "reference_paths": list(REFERENCE_PATHS),
             "reads_gated": self.enforcement_enabled(),
             "service_token_configured": self.service_token_configured(),
             "service_token_scoped": True,

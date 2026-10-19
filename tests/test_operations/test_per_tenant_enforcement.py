@@ -1,34 +1,80 @@
+"""Slice I4 — enforcement policy for multi-tenant.
+
+When a second tenant exists, tenant-scoped routes require a session regardless
+of `TRADERAIG_AUTH`, reads of tenant-scoped data become gated, and
+`/system/health.tenancy` flips `reads_gated` / `multi_tenant` / `authenticated`.
+Global reference reads (providers, market data, docs) stay open.
+"""
 from fastapi.testclient import TestClient
 import pytest
 
 import operations.api as api
-from governance.identity import IdentityService, SubscriptionPlan, identity as _global_identity
+from governance.identity import (IdentityService, SubscriptionPlan,
+                                 identity as _global_identity)
 
 
 @pytest.fixture()
 def two_tenants(monkeypatch):
     svc = IdentityService()
     svc.rehydrate()
-    p = svc.create_user(email="enf-owner@x.com", display_name="O",
-                        plan=SubscriptionPlan.INSTITUTIONAL)
-    svc.activate_subscription(p.user_id, SubscriptionPlan.INSTITUTIONAL)
-    o = svc.create_user(email="enf-peer@y.com", display_name="P",
-                        plan=SubscriptionPlan.INSTITUTIONAL)
-    svc.activate_subscription(o.user_id, SubscriptionPlan.INSTITUTIONAL)
+    principal = svc.create_user(email="enf-owner@x.com", display_name="O",
+                                plan=SubscriptionPlan.INSTITUTIONAL)
+    svc.activate_subscription(principal.user_id, SubscriptionPlan.INSTITUTIONAL)
+    other = svc.create_user(email="enf-peer@y.com", display_name="P",
+                            plan=SubscriptionPlan.INSTITUTIONAL)
+    svc.activate_subscription(other.user_id, SubscriptionPlan.INSTITUTIONAL)
     monkeypatch.setattr(_global_identity, "_users", svc._users)
     monkeypatch.setattr(_global_identity, "_subscriptions", svc._subscriptions)
     monkeypatch.setattr(_global_identity, "_audit", svc._audit)
     monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", "enf-owner@x.com")
-    yield TestClient(api.app), p.user_id, o.user_id
-
-
-def test_reads_gated_when_multi_tenant(two_tenants, monkeypatch):
-    client, p, o = two_tenants
     monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
-    # tenant-scoped read (account) should require session when multi-tenant?
-    resp = client.get("/account")
-    assert resp.status_code in (401, 403)
-    h = client.get("/system/health").json()
-    t = h.get("tenancy") or next((v for v in h.values() if isinstance(v, dict) and "reads_gated" in v), {})
-    assert t["multi_tenant"] is True
-    assert t["reads_gated"] is True
+    yield TestClient(api.app), principal.user_id, other.user_id
+
+
+def _tenancy(client):
+    body = client.get("/system/health").json()
+    if "tenancy" in body:
+        return body["tenancy"]
+    for value in body.values():
+        if isinstance(value, dict) and "reads_gated" in value:
+            return value
+    raise AssertionError(f"no tenancy block in {body!r}")
+
+
+def _bearer(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_tenant_route_requires_session_without_env(two_tenants):
+    client, principal, other = two_tenants
+    assert client.get("/account").status_code in (401, 403)
+
+    block = _tenancy(client)
+    assert block["multi_tenant"] is True
+    assert block["reads_gated"] is True
+
+    # A session satisfies it and reports who presented it.
+    from governance.auth import auth as auth_svc
+
+    token = auth_svc.issue(principal)[0]
+    assert client.get("/account", headers=_bearer(token)).status_code == 200
+    assert _tenancy(client)["authenticated"] is False  # no session on /system/health
+
+
+def test_reference_reads_stay_open_under_multi_tenant(two_tenants):
+    client, principal, other = two_tenants
+    for path in ("/providers", "/market/feeds"):
+        resp = client.get(path)
+        assert resp.status_code != 401, path
+        assert resp.status_code != 403, path
+
+
+def test_single_tenant_box_is_unchanged(monkeypatch):
+    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.delenv("IDENTITY_PRIMARY_EMAIL", raising=False)
+    monkeypatch.setattr(_global_identity, "_users", {})
+    client = TestClient(api.app)
+    assert client.get("/account").status_code == 200
+    block = _tenancy(client)
+    assert block["multi_tenant"] is False
+    assert block["reads_gated"] is False

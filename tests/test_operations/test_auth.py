@@ -294,16 +294,24 @@ def test_a_session_acts_as_ITSELF_and_not_as_the_server_principal(client, monkey
     monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
     op, _op_email, op_password = _operator(client, monkeypatch, plan="institutional")
 
-    # an ordinary second user, with their own password
+    # An ordinary second user, with their own password. The credential is set
+    # through the service, not the route: slice I4 turns enforcement on the
+    # moment a second user exists, and `/auth/password` deliberately refuses to
+    # bootstrap a credential-less principal once enforcement is on. Setting it
+    # out of band is how a real operator would pre-provision the peer before
+    # handing it the deployment.
+    from governance.identity import identity
+
     other = client.post("/users", json={"email": f"other{time.time_ns()}@x.co"}
                         ).json()["user_id"]
-    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", _email_of(client, other))
-    client.post("/auth/password", json={"password": "other-password-123"})
-    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", _op_email_of(client, op))
+    other_email = _email_of(client, other)
+    identity.set_password(other, "other-password-123")
 
+    # Now the deployment is multi-tenant; two users exist, so I4 enforces.
     monkeypatch.setenv("TRADERAIG_AUTH", "1")
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", _op_email_of(client, op))
     token = client.post("/auth/login", json={
-        "email": _email_of(client, other),
+        "email": other_email,
         "password": "other-password-123"}).json()["token"]
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -375,16 +383,19 @@ def test_one_callers_session_does_not_affect_the_next_request(client, monkeypatc
     """
     monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
     op, op_email, op_password = _operator(client, monkeypatch, plan="institutional")
+    from governance.identity import identity
+
     other = client.post("/users", json={"email": f"leak{time.time_ns()}@x.co"}
                         ).json()["user_id"]
-    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", _email_of(client, other))
-    client.post("/auth/password", json={"password": "other-password-123"})
-    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", op_email)
+    other_email = _email_of(client, other)
+    identity.set_password(other, "other-password-123")
 
+    # Two users now exist, so I4 enforces; restore the principal and log in.
     monkeypatch.setenv("TRADERAIG_AUTH", "1")
     monkeypatch.setenv("AUTH_SERVICE_TOKEN", "machine-token-value")
+    monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", op_email)
     other_token = client.post("/auth/login", json={
-        "email": _email_of(client, other),
+        "email": other_email,
         "password": "other-password-123"}).json()["token"]
 
     # request 1: a non-principal reads the operator's record -> refused
@@ -913,21 +924,28 @@ def test_every_route_is_covered_by_the_policy(client):
     GET/HEAD/OPTIONS entirely, which is how an enforced write path beside an
     open read path passed this suite for so long.
     """
-    from governance.auth import OPEN_PATHS, auth as auth_svc
+    from governance.auth import OPEN_PATHS, _multi_tenant, auth as auth_svc
     from operations.api import app
 
     open_paths = {p.rstrip("/") for p in OPEN_PATHS}
 
     def is_open(path: str) -> bool:
-        """Mirror the policy's two exemptions exactly.
+        """Mirror the policy's exemptions exactly.
 
         `/docs/oauth2-redirect` is a FastAPI docs subpath that the policy
         exempts by prefix rather than by listing, so counting only literal
         OPEN_PATHS entries would report a deliberate exemption as a hole.
+
+        Slice I4 adds a second exemption -- global reference reads
+        (`is_reference`) -- but only in the multi-tenant mode, so it is mirrored
+        conditionally: on a single-tenant box those reads stay gated and must
+        still be reported as covered by the policy.
         """
         clean = path.rstrip("/")
-        return (clean in open_paths or clean.startswith("/docs")
-                or clean.startswith("/redoc"))
+        if (clean in open_paths or clean.startswith("/docs")
+                or clean.startswith("/redoc")):
+            return True
+        return auth_svc.is_reference(path) and _multi_tenant()
 
     mutating = 0
     reading = 0

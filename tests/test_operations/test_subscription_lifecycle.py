@@ -265,23 +265,39 @@ def test_a_confirmed_principal_delete_is_allowed_and_audited(client, monkeypatch
 
 
 def test_peer_ownership_still_applies_to_every_new_route(client):
-    """The new privileged verbs must not become a way around `_own`."""
+    """The new privileged verbs must not become a way around `_own`.
+
+    Slice I4: creating the peer makes this a multi-tenant box, so enforcement
+    turns on and the acting principal must carry a session. The refusal must
+    still be the ownership one, not the auth one — which is the stronger claim.
+    """
+    from governance.identity import identity
+
     uid = _operator(client, plan="institutional")
+    headers = _principal_headers(uid)
     other = client.post("/users", json={"email": f"peer{time.time_ns()}@x.co"}).json()["user_id"]
 
     assert client.post(f"/users/{other}/subscription/revoke",
-                       json={"confirm_lockout": True}).status_code == 403
+                       json={"confirm_lockout": True},
+                       headers=headers).status_code == 403
     assert client.post(f"/users/{other}/subscription/activate",
-                       json={"plan": "free", "confirm_downgrade": True}).status_code == 403
-    assert client.delete(f"/users/{other}").status_code == 403
+                       json={"plan": "free", "confirm_downgrade": True},
+                       headers=headers).status_code == 403
+    assert client.delete(f"/users/{other}", headers=headers).status_code == 403
     # the peer is untouched
     assert client.post("/users", json={"email": f"p{time.time_ns()}@x.co"}) is not None
-    assert uid in identity_users()
+    assert uid in identity._users
 
 
-def identity_users():
+def _principal_headers(user_id: str) -> dict:
+    """A session for the acting principal, so I4's enforcement is satisfied and
+    the ownership refusal (403 "ownership denied"), not the auth one, is tested."""
+    from governance.auth import auth as auth_svc
     from governance.identity import identity
-    return identity._users
+
+    identity.set_password(user_id, "principal-password-123")
+    token = auth_svc.issue(user_id)[0]
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_a_never_entitled_user_needs_no_downgrade_confirmation(client):

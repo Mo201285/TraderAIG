@@ -138,21 +138,35 @@ def _operator(client, monkeypatch) -> None:
     products.grant(uid, "challenge_basic", charge_id="ch_test", actor="test")
 
 
-def _unentitled(client, monkeypatch) -> None:
+def _unentitled(client, monkeypatch) -> dict:
     """A real user who exists but holds no risk entitlement.
 
     Not the same as having no user at all: with no principal the guard passes on
     purpose so a fresh install can still enrol itself (row 730's bootstrap
     allowance), so testing a refusal against an empty identity store would
     assert the opposite of what it means.
+
+    Returns the acting principal's session headers. A second user is created (to
+    make the store non-trivial), which means slice I4 turns enforcement on, so
+    the caller must authenticate to reach the entitlement gate -- and the 403 it
+    then sees is the entitlement refusal, not an auth one.
     """
     from governance.identity import SubscriptionPlan
 
     email = f"plain{time.time_ns()}@x.co"
-    client.post("/users", json={"email": email})
+    uid = client.post("/users", json={"email": email}).json()["user_id"]
     monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", email)
     client.post("/users", json={"email": f"other{time.time_ns()}@x.co"})
     assert SubscriptionPlan.FREE.value == "free"
+    return _session(uid)
+
+
+def _session(user_id: str) -> dict:
+    """A session for `user_id`, satisfying I4's multi-tenant enforcement."""
+    from governance.auth import auth as auth_svc
+    from governance.identity import identity
+    identity.set_password(user_id, "challenge-session-password-123")
+    return {"Authorization": f"Bearer {auth_svc.issue(user_id)[0]}"}
 
 
 def _purchased_but_no_risk(client, monkeypatch) -> None:
@@ -390,11 +404,11 @@ def test_an_opening_balance_with_no_source_is_refused(client, monkeypatch):
 
 def test_a_declared_baseline_needs_the_risk_entitlement(client, monkeypatch):
     """It is the one route that can make an account gradable."""
-    _unentitled(client, monkeypatch)
+    headers = _unentitled(client, monkeypatch)
 
     assert client.post("/challenge/accounts/a1/baseline",
                        json={"start_equity": 100_000,
-                             "source": "terms"}).status_code == 403
+                             "source": "terms"}, headers=headers).status_code == 403
 
 
 def test_a_declared_baseline_needs_its_source_at_the_service_too():
@@ -540,10 +554,10 @@ def test_a_wrong_declaration_can_be_withdrawn_without_a_restart(client, monkeypa
 
 
 def test_withdrawing_needs_the_risk_entitlement(client, monkeypatch):
-    _unentitled(client, monkeypatch)
+    headers = _unentitled(client, monkeypatch)
 
     assert client.post("/challenge/accounts/a1/baseline/withdraw",
-                       json={"reason": "x"}).status_code == 403
+                       json={"reason": "x"}, headers=headers).status_code == 403
 
 
 def test_a_completed_baseline_against_a_real_policy_is_allowed(client, monkeypatch):
@@ -638,10 +652,11 @@ def test_a_partial_policy_registers_but_reports_what_is_missing(client, monkeypa
 
 def test_registering_a_policy_without_the_risk_entitlement_is_refused(client, monkeypatch):
     """These routes mutate governance state, so they are guarded like any other."""
-    _unentitled(client, monkeypatch)
+    headers = _unentitled(client, monkeypatch)
 
     assert client.post("/challenge/policies",
-                       json=_full_policy_payload()).status_code == 403
+                       json=_full_policy_payload(),
+                       headers=headers).status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -777,10 +792,11 @@ def test_two_accounts_do_not_share_a_baseline():
 # ---------------------------------------------------------------------------
 
 def test_transitioning_without_the_risk_entitlement_is_refused(client, monkeypatch):
-    _unentitled(client, monkeypatch)
+    headers = _unentitled(client, monkeypatch)
 
     assert client.post("/challenge/accounts/a1/state",
-                       json={"state": "active", "reason": "x"}).status_code == 403
+                       json={"state": "active", "reason": "x"},
+                       headers=headers).status_code == 403
 
 
 def test_a_halted_account_cannot_be_resumed_through_the_route(client, monkeypatch):

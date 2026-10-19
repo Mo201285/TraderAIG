@@ -53,6 +53,19 @@ def _stop_cex_engine():
         pass
 
 
+def _session_for(user_id: str) -> dict:
+    """A session for `user_id`, so I4's multi-tenant enforcement is satisfied.
+
+    Issued out of band rather than through `/auth/password` (which refuses to
+    bootstrap a credential-less principal once enforcement is on) so a test
+    about entitlement resolution does not have to also be a test about the
+    login flow.
+    """
+    from governance.auth import auth as auth_svc
+    identity.set_password(user_id, "ent-session-password-123")
+    return {"Authorization": f"Bearer {auth_svc.issue(user_id)[0]}"}
+
+
 def _spawn(client, plan: str, activate: bool):
     resp = client.post("/users", json={
         "email": f"ent-{sys.hash_info.width}-{abs(hash(plan))}@x.co",
@@ -152,7 +165,12 @@ def test_risk_policy_endpoint_scopes_to_owner(client):
 
 def test_explicit_primary_email_selects_the_acting_identity(client, monkeypatch):
     """The acting authority is named explicitly, not inferred from who was
-    created first (creation order is not stable across rehydration)."""
+    created first (creation order is not stable across rehydration).
+
+    Two users exist, so slice I4 makes this multi-tenant and enforcement turns
+    on; the caller therefore presents the named principal's session, which is
+    the shape a real deployment has.
+    """
     client.post("/users", json={"email": "first@x.co", "plan": "free"})
     founder = client.post("/users", json={
         "email": "founder@x.co", "plan": "institutional"}).json()["user_id"]
@@ -160,7 +178,8 @@ def test_explicit_primary_email_selects_the_acting_identity(client, monkeypatch)
                 json={"plan": "institutional"})
     monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", "founder@x.co")
 
-    st = client.get("/entitlements/status").json()
+    st = client.get("/entitlements/status",
+                    headers=_session_for(founder)).json()
 
     assert st["actor"] == founder
     assert st["bootstrap"] is False
@@ -168,7 +187,11 @@ def test_explicit_primary_email_selects_the_acting_identity(client, monkeypatch)
 
 def test_gate_follows_the_principal_not_the_first_user(client, monkeypatch):
     """First-created user is fully entitled, the named principal is not:
-    the gate must deny, which proves it reads the principal."""
+    the gate must deny, which proves it reads the principal.
+
+    Slice I4: multi-tenant, so the named principal authenticates before the
+    gate is judged — the 403 that follows is the entitlement one, not auth.
+    """
     privileged = client.post("/users", json={
         "email": "privileged@x.co", "plan": "institutional"}).json()["user_id"]
     client.post(f"/users/{privileged}/subscription/activate",
@@ -179,7 +202,8 @@ def test_gate_follows_the_principal_not_the_first_user(client, monkeypatch):
     monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", "principal@x.co")
 
     r = client.post("/portfolio/allocation",
-                    json={"strategy_id": "ent-principal:test", "cap": 0.10})
+                    json={"strategy_id": "ent-principal:test", "cap": 0.10},
+                    headers=_session_for(principal))
 
     assert r.status_code == 403
     assert "can_manage_risk" in r.json()["detail"]

@@ -136,10 +136,10 @@ def no_principal(monkeypatch):
     return None
 
 
-def _seed_code(client, *, code="FT-EVT-1"):
+def _seed_code(client, *, code="FT-EVT-1", headers=None):
     body = client.post("/referrals", json={
         "provider_id": "fortraders", "referral_code": code,
-        "note": "route event test"}).json()
+        "note": "route event test"}, headers=headers).json()
     assert body["ok"] is True
     return body["referral"]
 
@@ -161,10 +161,10 @@ def _record_event_via_repo(referral_db, referral, *, reg="REG-1") -> dict:
         external_registration_id=reg, referral_id=referral["referral_id"])
 
 
-def _record_event(client, *, code="FT-EVT-1", reg="REG-1"):
+def _record_event(client, *, code="FT-EVT-1", reg="REG-1", headers=None):
     body = client.post("/referral-events", json={
         "provider_id": "fortraders", "referral_code": code,
-        "external_registration_id": reg}).json()
+        "external_registration_id": reg}, headers=headers).json()
     assert body["ok"] is True
     return body["event"]
 
@@ -346,14 +346,23 @@ def test_an_unknown_event_is_404(client, referral_db, acting_as_operator):
 
 def _full_loop(client, monkeypatch):
     """Sponsor issues; referred user (a real identity) attributes an owned
-    account; sponsor verifies; the response carries the grant."""
+    account; sponsor verifies; the response carries the grant.
+
+    Two real identities exist here, so slice I4 makes the box multi-tenant and
+    turns enforcement on: every call carries the acting user's session, which is
+    the shape a real deployment has (and the stronger claim -- the refusal paths
+    are then ownership gates, not auth gates).
+    """
     from governance.identity import identity as identity_svc
 
     sponsor = identity_svc.create_user("rwr-sponsor@x.co", "Sponsor").user_id
     referred = identity_svc.create_user("rwr-referred@x.co", "Referred").user_id
+    sponsor_h = _session(sponsor)
+    referred_h = _session(referred)
     _as(monkeypatch, sponsor)
-    code = _seed_code(client, code="FT-FULL")
-    event = _record_event(client, code="FT-FULL", reg="REG-FULL")
+    code = _seed_code(client, code="FT-FULL", headers=sponsor_h)
+    event = _record_event(client, code="FT-FULL", reg="REG-FULL",
+                          headers=sponsor_h)
     from persistence.repositories_accounts import AccountRegistryRepository
 
     repo = AccountRegistryRepository()
@@ -361,9 +370,18 @@ def _full_loop(client, monkeypatch):
                          venue_server="S", owner_user_id=referred)
     _as(monkeypatch, referred)
     client.post(f"/referral-events/{event['event_id']}/attribute",
-                json={"account_id": mine["account_id"]})
+                json={"account_id": mine["account_id"]}, headers=referred_h)
     _as(monkeypatch, sponsor)
-    return client.post(f"/referrals/{code['referral_id']}/verify"), referred
+    return client.post(f"/referrals/{code['referral_id']}/verify",
+                       headers=sponsor_h), referred
+
+
+def _session(user_id: str) -> dict:
+    """A session for `user_id`, satisfying I4's multi-tenant enforcement."""
+    from governance.auth import auth as auth_svc
+    from governance.identity import identity
+    identity.set_password(user_id, "ref-session-password-123")
+    return {"Authorization": f"Bearer {auth_svc.issue(user_id)[0]}"}
 
 
 def test_verify_grants_the_promised_product(client, referral_db,
@@ -386,11 +404,12 @@ def test_verify_grants_the_promised_product(client, referral_db,
 
 def test_verify_does_not_double_grant(client, referral_db, seeded_provider,
                                       monkeypatch):
-    response, _referred = _full_loop(client, monkeypatch)
+    response, referred = _full_loop(client, monkeypatch)
     body = response.json()
     assert body["reward"]["reward_status"] == "issued"
     second = client.post(
-        f"/referrals/{body['referral']['referral_id']}/verify")
+        f"/referrals/{body['referral']['referral_id']}/verify",
+        headers=_session(body["referral"]["owner_user_id"]))
     assert second.status_code == 400
 
 

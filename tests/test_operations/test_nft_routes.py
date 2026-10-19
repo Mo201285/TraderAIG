@@ -91,6 +91,19 @@ def _register(client, monkeypatch, plan="institutional"):
     return uid, email
 
 
+def _session(user_id: str) -> dict:
+    """A session for `user_id`, satisfying I4's multi-tenant enforcement.
+
+    The NFT routes act as `_acting_actor()`, which prefers a session over the
+    server-named principal, so the session IS how these tests say "act as this
+    user" once a second user makes the box multi-tenant.
+    """
+    from governance.auth import auth as auth_svc
+    from governance.identity import identity
+    identity.set_password(user_id, "nft-session-password-123")
+    return {"Authorization": f"Bearer {auth_svc.issue(user_id)[0]}"}
+
+
 def test_nfts_list_is_read_only_empty(client):
     res = client.get("/economy/nfts")
     assert res.status_code == 200
@@ -123,22 +136,27 @@ def test_mint_not_validated_is_409(client, monkeypatch, _isolated):
 
 def test_full_flow_mint_list_buy(client, monkeypatch, _isolated):
     owner, _ = _register(client, monkeypatch)
+    owner_h = _session(owner)
     monkeypatch.setattr("operations.api._nft_service", _isolated["service"])
     monkeypatch.setattr("operations.api._asset_layer", _isolated["layer"](owner))
 
-    minted = client.post("/economy/nfts/mint", json={"strategy_id": "s-1"})
+    minted = client.post("/economy/nfts/mint", json={"strategy_id": "s-1"},
+                         headers=owner_h)
     assert minted.status_code == 200, minted.text
     assert minted.json()["minted"] is True
     token_id = minted.json()["token"]["token_id"]
 
     listed = client.post(f"/economy/nfts/{token_id}/list",
-                         json={"price_usd": 100.0})
+                         json={"price_usd": 100.0}, headers=owner_h)
     assert listed.status_code == 200 and listed.json()["listed"] is True
 
-    # a non-owner cannot list it
+    # a non-owner (a second user, so the box is now multi-tenant) cannot list
+    # it: the refusal is ownership, not auth, because the buyer authenticates.
     buyer, buyer_email = _register(client, monkeypatch, plan="free")
+    buyer_h = _session(buyer)
     assert client.post(f"/economy/nfts/{token_id}/list",
-                       json={"price_usd": 1.0}).status_code == 403
+                       json={"price_usd": 1.0},
+                       headers=buyer_h).status_code == 403
 
     # the buyer needs balance, then acts as themselves
     from governance.payments import payments_service
@@ -146,23 +164,29 @@ def test_full_flow_mint_list_buy(client, monkeypatch, _isolated):
     monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", buyer_email)
 
     bought = client.post(f"/economy/nfts/{token_id}/buy",
-                         json={"buyer": buyer})
+                         json={"buyer": buyer}, headers=buyer_h)
     assert bought.status_code == 200, bought.text
     assert bought.json()["sold"] is True
     assert bought.json()["token"]["owner"] == buyer
-    assert client.get(f"/payments/wallet/{buyer}").json()["balance_usd"] == 400.0
+    assert client.get(f"/payments/wallet/{buyer}",
+                      headers=buyer_h).json()["balance_usd"] == 400.0
 
 
 def test_buy_without_balance_is_402(client, monkeypatch, _isolated):
     owner, _ = _register(client, monkeypatch)
+    owner_h = _session(owner)
     monkeypatch.setattr("operations.api._nft_service", _isolated["service"])
     monkeypatch.setattr("operations.api._asset_layer", _isolated["layer"](owner))
 
     token_id = client.post("/economy/nfts/mint",
-                           json={"strategy_id": "s-1"}).json()["token"]["token_id"]
-    client.post(f"/economy/nfts/{token_id}/list", json={"price_usd": 100.0})
+                           json={"strategy_id": "s-1"},
+                           headers=owner_h).json()["token"]["token_id"]
+    client.post(f"/economy/nfts/{token_id}/list", json={"price_usd": 100.0},
+                headers=owner_h)
 
     buyer, buyer_email = _register(client, monkeypatch, plan="free")
+    buyer_h = _session(buyer)
     monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", buyer_email)
-    res = client.post(f"/economy/nfts/{token_id}/buy", json={"buyer": buyer})
+    res = client.post(f"/economy/nfts/{token_id}/buy", json={"buyer": buyer},
+                      headers=buyer_h)
     assert res.status_code == 402

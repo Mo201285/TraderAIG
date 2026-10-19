@@ -36,7 +36,14 @@ def two_tenants(monkeypatch):
 
     Same shape as `test_ownership_isolation.two_identities`, on purpose: I1 must
     not change what those tests prove, only give the resolver a name.
+
+    Slice I4: two users means the box is multi-tenant and enforcement turns on,
+    so the returned client carries the principal's session. The resolver tests
+    patch `current_caller` directly, so the default header does not interfere
+    with them; the audit tests exercise real routes and need it.
     """
+    from governance.auth import auth as auth_svc
+
     svc = IdentityService()
     svc.rehydrate()
     principal = svc.create_user(email="scope-owner@institution.com",
@@ -51,7 +58,12 @@ def two_tenants(monkeypatch):
     monkeypatch.setattr(_global_identity, "_subscriptions", svc._subscriptions)
     monkeypatch.setattr(_global_identity, "_audit", svc._audit)
     monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", "scope-owner@institution.com")
-    yield TestClient(api.app), principal.user_id, other.user_id
+
+    _global_identity.set_password(principal.user_id, "scope-password-123")
+    token = auth_svc.issue(principal.user_id)[0]
+    client = TestClient(api.app,
+                        headers={"Authorization": f"Bearer {token}"})
+    yield client, principal.user_id, other.user_id
 
 
 def test_owner_scope_exists_and_a_session_beats_the_server_principal(

@@ -8213,3 +8213,213 @@ def execution_truth_by_venue() -> Dict:
     """
     from execution.execution_truth import ExecutionTruthReport
     return ExecutionTruthReport().report()
+
+
+# ---------------------------------------------------------------------------
+# Commercial offers (Phase G, S3): operator-authored campaigns a client redeems
+# ---------------------------------------------------------------------------
+#
+# The partner identity (`providers/`) and the referral attribution
+# (`accounts/referral_attribution.py`) already exist; this is the missing
+# campaign layer. The split of authority is the whole design:
+#
+# * the *admin* routes -- create/update/status an offer -- are gated by the
+#   acting principal's entitlement (`_guard`) and are reachable by the service
+#   token (`SERVICE_TOKEN_PREFIXES`), because offer administration is an
+#   operator act a watchdog must be able to drive;
+# * the *client* routes -- see your eligible offers, redeem one, list your
+#   redemptions -- resolve the caller from `owner_scope()` and never from a body
+#   or path id, so a caller can only ever act for itself.
+#
+# Nothing here is a trade authority: a grant is a product entitlement or a
+# subscription plan, and every payload names the Risk Governor (rule 34.18 /
+# 741-745).
+
+
+def _offer_service():
+    from offers.eligibility import OfferService
+    return OfferService()
+
+
+@app.get("/offers")
+def list_offers(status: str = "", provider_id: str = "") -> Dict:
+    """The operator's offer catalogue (admin read).
+
+    Read-only and global reference data, so it needs no session when enforcement
+    is off and is a plain read otherwise -- like `/providers`. The client-facing
+    view that filters by eligibility is `GET /offers/available`.
+    """
+    try:
+        offers = _offer_service().list_all(status=status, provider_id=provider_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the offer catalogue could not be read", "error": str(exc)})
+    return {"ok": True, "offers": offers, "count": len(offers),
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/offers/available")
+def available_offers() -> Dict:
+    """The offers the *acting caller* is eligible for, and the ineligible ones.
+
+    The caller is the acting principal (never a path or body field), so this can
+    only ever answer for the caller. An ineligible offer is listed with the rule
+    that excluded the caller -- never another user's data.
+    """
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": "no acting principal exists to resolve eligibility for"})
+    try:
+        view = _offer_service().available_for(actor)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "offers could not be read", "error": str(exc)})
+    return {"ok": True, **view}
+
+
+@app.get("/me/redemptions")
+def my_redemptions() -> Dict:
+    """The acting caller's own redemptions. Ownership is the acting principal."""
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": "no acting principal exists to list redemptions for"})
+    try:
+        view = _offer_service().redemptions_for(actor)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "redemptions could not be read", "error": str(exc)})
+    return {"ok": True, **view}
+
+
+@app.post("/offers")
+def create_offer(payload: Dict) -> Dict:
+    """Create an offer (operator act). Gated by entitlement and the acting actor.
+
+    A missing principal is 409, a bad body is 400, an unreachable store is 503.
+    The act is written to the audit ledger as `offer.create`.
+    """
+    _guard(Entitlement.API_ACCESS)
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": "no acting principal exists to create an offer"})
+    payload = payload or {}
+    try:
+        result = _offer_service().create(
+            title=str(payload.get("title") or ""),
+            provider_id=str(payload.get("provider_id") or ""),
+            grant_kind=str(payload.get("grant_kind") or ""),
+            grant_ref=str(payload.get("grant_ref") or ""),
+            referral_code=str(payload.get("referral_code") or ""),
+            conditions=payload.get("conditions") or {},
+            starts_at=float(payload.get("starts_at") or 0.0),
+            ends_at=float(payload.get("ends_at") or 0.0),
+            max_redemptions=int(payload.get("max_redemptions") or 0),
+            actor=actor, note=str(payload.get("note") or ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_offer", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the offer could not be written", "error": str(exc)})
+    identity.record_audit(actor, "offer.create", "CommercialOffer",
+                          result["offer"]["offer_id"],
+                          {"provider_id": result["offer"]["provider_id"],
+                           "grant_kind": result["offer"]["grant_kind"]})
+    return {"ok": True, **result}
+
+
+@app.put("/offers/{offer_id}")
+def update_offer(offer_id: str, payload: Dict) -> Dict:
+    """Correct an offer (operator act). Unknown offer is 404."""
+    _guard(Entitlement.API_ACCESS)
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": "no acting principal exists to edit an offer"})
+    payload = payload or {}
+    fields = {k: payload[k] for k in (
+        "title", "referral_code", "grant_kind", "grant_ref", "conditions",
+        "starts_at", "ends_at", "max_redemptions", "note",
+        "provider_id") if k in payload}
+    try:
+        result = _offer_service().update(offer_id, **fields)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_offer", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the offer could not be edited", "error": str(exc)})
+    if result is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "offer_id": offer_id, "reason": "unknown_offer",
+            "detail": "no such offer in the offer registry"})
+    identity.record_audit(actor, "offer.update", "CommercialOffer", offer_id,
+                          {"fields": sorted(fields)})
+    return {"ok": True, **result}
+
+
+@app.post("/offers/{offer_id}/status")
+def set_offer_status(offer_id: str, payload: Dict) -> Dict:
+    """Activate/pause/retire an offer (operator act). Unknown offer is 404."""
+    _guard(Entitlement.API_ACCESS)
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": "no acting principal exists to change an offer status"})
+    payload = payload or {}
+    status = str(payload.get("status") or "")
+    try:
+        result = _offer_service().set_status(offer_id, status)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_status", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the offer status could not be changed", "error": str(exc)})
+    if result is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "offer_id": offer_id, "reason": "unknown_offer",
+            "detail": "no such offer in the offer registry"})
+    identity.record_audit(actor, "offer.status", "CommercialOffer", offer_id,
+                          {"status": status})
+    return {"ok": True, **result}
+
+
+@app.post("/offers/{offer_id}/redeem")
+def redeem_offer(offer_id: str) -> Dict:
+    """Redeem one offer for the acting caller (client act).
+
+    Ownership is the acting principal: the user is `owner_scope()`, never a body
+    field, so a caller redeems only for itself. Idempotent (`pending` redemption
+    is written before any grant) and fail-closed (a verification requirement
+    grants nothing). Never a trade authority.
+    """
+    actor = _acting_actor()
+    if actor is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "no_principal",
+            "detail": "no acting principal exists to redeem an offer"})
+    try:
+        result = _offer_service().redeem(actor, offer_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the redemption could not be processed", "error": str(exc)})
+    identity.record_audit(actor, "offer.redeem", "CommercialOffer", offer_id,
+                          {"status": result.get("status"),
+                           "reason": result.get("reason")})
+    return {"ok": True, **result}

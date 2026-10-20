@@ -114,6 +114,22 @@ SERVICE_TOKEN_PATHS = frozenset({
     "/cex/engine/stop",
 })
 
+# Mutating rails whose path carries a dynamic id, so an exact set cannot name
+# them: the service token satisfies a mutation whose path *starts with* one of
+# these roots AND is not a client route. The one client mutation under the offer
+# root is `/offers/{id}/redeem`, which is ownership-gated and must never be
+# reachable by a leaked machine credential acting as a user, so `/redeem` is
+# excluded explicitly rather than left to chance.
+SERVICE_TOKEN_PREFIXES = (
+    "/offers",
+)
+
+# Path fragments under a SERVICE_TOKEN_PREFIXES root that are explicitly NOT
+# service-token-eligible, because they are per-user client actions.
+SERVICE_TOKEN_PREFIX_EXCLUDES = (
+    "/redeem",
+)
+
 # Global reference reads: data that belongs to no tenant (broker/provider
 # directories, raw market data). They stay reachable without a session once
 # multi-tenant enforcement is active, because gating them would not protect any
@@ -584,7 +600,15 @@ class AuthService:
         if method.upper() in ("GET", "HEAD", "OPTIONS"):
             return True
         clean = path.split("?")[0].rstrip("/") or "/"
-        return clean in SERVICE_TOKEN_PATHS
+        if clean in SERVICE_TOKEN_PATHS:
+            return True
+        for root in SERVICE_TOKEN_PREFIXES:
+            if clean == root or clean.startswith(root + "/"):
+                if any(frag in clean
+                       for frag in SERVICE_TOKEN_PREFIX_EXCLUDES):
+                    return False
+                return True
+        return False
 
     def auth_policy(self) -> Dict:
         return {

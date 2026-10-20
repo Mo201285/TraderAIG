@@ -363,9 +363,53 @@ def test_unknown_connection_kind_is_refused(repo):
 
 
 def test_credential_slot_is_a_name_not_a_secret():
-    assert cex_credential_slot("OKX", "acct-a", "api_key") == \
-        "cex.okx.acct-a.api_key"
-    assert mt5_credential_slot("acct-a") == "mt5.acct-a.login"
+    acct = "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
+    assert cex_credential_slot(acct, "api_key", "okx") == \
+        f"cex.okx.{acct}.api_key"
+    assert cex_credential_slot(acct, "passphrase", "OKX") == \
+        f"cex.okx.{acct}.passphrase"
+    assert mt5_credential_slot(acct) == f"mt5.{acct}.login"
+    assert mt5_credential_slot(acct, "password") == f"mt5.{acct}.password"
+
+
+def test_declared_slot_is_the_one_the_vault_accepts():
+    """The registry's declared slot must be a slot the vault will write.
+
+    A name the vault rejects is worse than a wrong name: it reads as "not
+    configured" forever, and the account can never be given credentials.
+    """
+    from core.secrets_vault import is_known_slot
+
+    acct = "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
+    for slot in (mt5_credential_slot(acct),
+                 mt5_credential_slot(acct, "server"),
+                 cex_credential_slot(acct, "api_key", "binance"),
+                 cex_credential_slot(acct, "api_secret", "bybit")):
+        assert is_known_slot(slot) is True
+
+
+def test_credential_service_refuses_half_a_credential_set():
+    """A partial MT5 submission is refused whole, not stored in part.
+
+    A half-set MT5 account attaches to whatever terminal is authorised and can
+    trade the wrong login; one that will not connect is the safer failure.
+    """
+    from accounts.registry import CredentialService
+
+    svc = CredentialService()
+    with pytest.raises(ValueError) as exc:
+        svc.set_credentials("mt5", "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4",
+                            {"login": "1400167", "password": "pw"})
+    assert "server" in str(exc.value)
+
+
+def test_credential_service_okx_needs_passphrase_binance_does_not():
+    from accounts.registry import CredentialService
+
+    svc = CredentialService()
+    assert svc.required_fields("okx") == ["api_key", "api_secret", "passphrase"]
+    assert svc.required_fields("binance") == ["api_key", "api_secret"]
+
 
 
 def test_registry_never_stores_a_credential(repo, session):

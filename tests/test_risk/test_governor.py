@@ -196,3 +196,37 @@ def test_symbol_exposure_vetoes_aggregate_volume():
     d = g.veto_reason(c)
     assert d.kind == RiskDecisionKind.VETOED
     assert "symbol exposure" in d.reason
+
+
+def test_veto_reason_names_the_rung_that_actually_refused():
+    """A satisfied informational rung must never speak for the one that halted.
+
+    The challenge verdict lists `trading_days` (permission `allow`, detail
+    "minimum trading days satisfied") before `weekend_close_window` (permission
+    `halt`). The reason shown to the operator reported the first detail it met,
+    so an XAUUSD veto read "challenge policy halt: minimum trading days
+    satisfied" while the real blocker was the unreadable Friday close. The
+    message named a satisfied rule and hid the one that bit.
+    """
+    from risk.governor import _first_detail
+
+    result = {"decision": {"checks": [
+        {"check": "trading_days", "permission": "allow",
+         "detail": "minimum trading days satisfied"},
+        {"check": "weekend_close_window", "permission": "halt",
+         "detail": "XAUUSD: its Friday close could not be read from MT5, so "
+                   "the close window cannot be placed; closed"},
+    ]}}
+    assert "Friday close" in _first_detail(result)
+    assert "minimum trading days satisfied" not in _first_detail(result)
+
+
+def test_veto_reason_falls_back_when_no_rung_is_marked():
+    """With no refusing rung the first detail is still used, not dropped."""
+    from risk.governor import _first_detail
+
+    result = {"decision": {"checks": [
+        {"check": "note", "permission": "allow", "detail": "only detail here"},
+    ]}}
+    assert _first_detail(result) == "only detail here"
+    assert _first_detail({"decision": {"checks": []}}) == ""

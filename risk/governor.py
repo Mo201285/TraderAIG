@@ -90,10 +90,28 @@ def _proposed_risk(candidate: TradeCandidate,
 def _first_detail(result: Dict) -> str:
     """The most useful single line out of a challenge verdict, for a veto reason.
 
-    A veto reason has to fit on one line and has to say which limit refused. The
-    first failing check is the one that bit, and it carries its own detail.
+    A veto reason has to fit on one line and has to say which limit refused.
+
+    It must be the check that ACTUALLY refused, not merely the first one that
+    carries a detail string. The challenge verdict's `checks` list is emitted in
+    a fixed order, and an informational rung (`trading_days` -> "minimum trading
+    days satisfied", permission `allow`) is listed before the one that halted the
+    trade. Returning the first detail blindly made every veto read "challenge
+    policy halt: minimum trading days satisfied" while the real blocker was
+    `weekend_close_window` ("XAUUSD: its Friday close could not be read from
+    MT5") -- a message that named a satisfied rule and hid the one that bit.
+
+    So: prefer the first check whose `permission` is a refusing rung (the same
+    set the governor vetoes on), and only fall back to any detail when none is
+    marked -- never again let an `allow` line speak for a `halt`.
     """
-    for check in (result.get("decision") or {}).get("checks") or []:
+    checks = (result.get("decision") or {}).get("checks") or []
+    refusing = {p.value for p in _challenge_veto_permissions()}
+    for check in checks:
+        if str(check.get("permission") or "").lower() in refusing \
+                and check.get("detail"):
+            return str(check["detail"])
+    for check in checks:
         detail = check.get("detail")
         if detail:
             return str(detail)

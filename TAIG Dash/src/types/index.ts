@@ -1932,3 +1932,84 @@ export interface AccountRow extends TradingAccount {
   credentials?: CredentialStatus;
 }
 
+// Phase G (commercial offers). An offer is an operator-authored campaign a
+// client redeems; it grants a catalogue product or a plan upgrade, never a trade
+// permission (`is_authorisation` is False and the Risk Governor stays the only
+// trade authority). `grant_kind` is "product" or "plan"; `conditions` is the
+// operator's rule set (e.g. `requires_verification`, `allowed_plans`).
+export interface OfferRow {
+  offer_id: string;
+  title: string;
+  provider_id: string;
+  grant_kind: string;
+  grant_ref: string;
+  referral_code: string;
+  conditions: Record<string, unknown>;
+  starts_at: number;
+  ends_at: number;
+  max_redemptions: number;
+  redemption_count: number;
+  status: string;
+  created_by: string;
+  note: string;
+  created_at: string;
+  updated_at: string;
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+
+// One client's eligibility verdict for one offer. Ineligible offers are listed
+// with the rule that excluded *this* user, never another user's data.
+export interface OfferEligibilityEntry {
+  offer_id: string;
+  title: string;
+  provider_id: string;
+  grant_kind: string;
+  grant_ref: string;
+  reason: string;
+}
+
+export interface AvailableOffersView {
+  user_id: string;
+  eligible: OfferEligibilityEntry[];
+  ineligible: OfferEligibilityEntry[];
+  counts: { eligible: number; ineligible: number };
+  note: string;
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+
+export interface OfferRedemptionRow {
+  redemption_id: string;
+  offer_id: string;
+  user_id: string;
+  provider_id: string;
+  referral_code: string;
+  grant_kind: string;
+  grant_ref: string;
+  status: string;
+  reason: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RedemptionsView {
+  user_id: string;
+  redemptions: OfferRedemptionRow[];
+  count: number;
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+
+export interface RedeemResult {
+  offer_id: string;
+  user_id: string;
+  status: string;
+  reason: string;
+  granted: boolean;
+  redeemed?: boolean;
+  redemption?: OfferRedemptionRow;
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+

@@ -18,6 +18,9 @@ import type {
   Thesis,
   User,
   ValidationReport,
+  OfferRow,
+  AvailableOffersView,
+  RedemptionsView,
 } from "../types";
 
 // Isolated mock domain data. Pages never hardwire these inline; they come
@@ -401,4 +404,130 @@ export const mockCopyFollower: CopyFollower = {
     "xauusd:put_sweep_reclaim:v2": { state: "production", event: "transition", actor: "review_loop", reason: "approved_change", at: "2026-09-23 14:30" },
   },
   overrides: [{ key: "btcusd:compression_expansion:v2", state: "quarantined", event: "change_decided", actor: "admin", reason: "sustained_drift", at: "2026-09-24 09:40", previousState: "production" }],
+};
+
+// Phase G (commercial offers). The offline stand-in exercises every outcome the
+// live surface can report: an active offer the caller may redeem, a paused one
+// with a window, and one that requires verification (so redeeming it lands
+// `pending`, not `granted`). No mock value here is an entitlement or a trade
+// permission -- every row names the Risk Governor as the only trade authority.
+export const mockOffers: OfferRow[] = [
+  {
+    offer_id: "ofr-2f8a1c4e9b",
+    title: "Free Challenge Management — first 100",
+    provider_id: "fortraders",
+    grant_kind: "product",
+    grant_ref: "challenge_basic",
+    referral_code: "FT-LAUNCH-100",
+    conditions: { requires_verification: true },
+    starts_at: 0,
+    ends_at: 0,
+    max_redemptions: 100,
+    redemption_count: 37,
+    status: "active",
+    created_by: "operator",
+    note: "Launch campaign; verification required before the product grant.",
+    created_at: "2026-10-18T09:00:00Z",
+    updated_at: "2026-10-20T06:00:00Z",
+    is_authorisation: false,
+    trade_authority: "risk/governor.py",
+  },
+  {
+    offer_id: "ofr-7d3b0a11c5",
+    title: "Pro plan upgrade — October cohort",
+    provider_id: "fortraders",
+    grant_kind: "plan",
+    grant_ref: "pro",
+    referral_code: "",
+    conditions: { allowed_plans: ["free", "starter"] },
+    starts_at: 0,
+    ends_at: 0,
+    max_redemptions: 0,
+    redemption_count: 12,
+    status: "active",
+    created_by: "operator",
+    note: "Upgrade only; never a downgrade.",
+    created_at: "2026-10-15T12:00:00Z",
+    updated_at: "2026-10-15T12:00:00Z",
+    is_authorisation: false,
+    trade_authority: "risk/governor.py",
+  },
+  {
+    offer_id: "ofr-9a0c6e22d7",
+    title: "Winter bonus — paused",
+    provider_id: "fortraders",
+    grant_kind: "product",
+    grant_ref: "challenge_basic",
+    referral_code: "",
+    conditions: {},
+    starts_at: 0,
+    ends_at: 0,
+    max_redemptions: 500,
+    redemption_count: 500,
+    status: "paused",
+    created_by: "operator",
+    note: "Cap reached; paused pending a new cohort.",
+    created_at: "2026-10-01T08:00:00Z",
+    updated_at: "2026-10-10T08:00:00Z",
+    is_authorisation: false,
+    trade_authority: "risk/governor.py",
+  },
+];
+
+export const mockAvailableOffers: AvailableOffersView = {
+  user_id: "0f90e696-ab13-4506-8e49-83d2c3fd242b",
+  eligible: [
+    {
+      offer_id: "ofr-2f8a1c4e9b",
+      title: "Free Challenge Management — first 100",
+      provider_id: "fortraders",
+      grant_kind: "product",
+      grant_ref: "challenge_basic",
+      reason: "open",
+    },
+    {
+      offer_id: "ofr-7d3b0a11c5",
+      title: "Pro plan upgrade — October cohort",
+      provider_id: "fortraders",
+      grant_kind: "plan",
+      grant_ref: "pro",
+      reason: "open",
+    },
+  ],
+  ineligible: [
+    {
+      offer_id: "ofr-9a0c6e22d7",
+      title: "Winter bonus — paused",
+      provider_id: "fortraders",
+      grant_kind: "product",
+      grant_ref: "challenge_basic",
+      reason: "not_active",
+    },
+  ],
+  counts: { eligible: 2, ineligible: 1 },
+  note: "an offer listed ineligible is not shown as unavailable -- it names the rule that excluded this user, and nothing about any other user",
+  is_authorisation: false,
+  trade_authority: "risk/governor.py",
+};
+
+export const mockRedemptions: RedemptionsView = {
+  user_id: "0f90e696-ab13-4506-8e49-83d2c3fd242b",
+  redemptions: [
+    {
+      redemption_id: "rdm-4c1e88a0f2",
+      offer_id: "ofr-2f8a1c4e9b",
+      user_id: "0f90e696-ab13-4506-8e49-83d2c3fd242b",
+      provider_id: "fortraders",
+      referral_code: "FT-LAUNCH-100",
+      grant_kind: "product",
+      grant_ref: "challenge_basic",
+      status: "pending",
+      reason: "verification_required",
+      created_at: "2026-10-19T14:20:00Z",
+      updated_at: "2026-10-19T14:20:00Z",
+    },
+  ],
+  count: 1,
+  is_authorisation: false,
+  trade_authority: "risk/governor.py",
 };

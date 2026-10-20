@@ -86,10 +86,17 @@ import type {
   VerificationView,
   WalletView,
   CredentialStatus,
+  OfferRow,
+  AvailableOffersView,
+  RedemptionsView,
+  RedeemResult,
 } from "../types";
 import {
   mockAudit,
   mockAccounts,
+  mockOffers,
+  mockAvailableOffers,
+  mockRedemptions,
   mockChangeRequests,
   mockCopyFollower,
   mockExperiences,
@@ -237,6 +244,10 @@ async function authorizedFetch(path: string, token?: string): Promise<Response> 
 
 export async function postJson<T>(path: string, body: unknown): Promise<Envelope<T>> {
   return sendJson<T>("POST", path, body);
+}
+
+export async function putJson<T>(path: string, body: unknown): Promise<Envelope<T>> {
+  return sendJson<T>("PUT", path, body);
 }
 
 export async function deleteJson<T>(path: string): Promise<Envelope<T>> {
@@ -1625,6 +1636,95 @@ export const api = {
     return deleteJson<Record<string, unknown>>(
       `/accounts/${encodeURIComponent(accountId)}`,
     );
+  },
+
+  // -- Commercial offers (Phase G) -----------------------------------------
+  // The operator routes (create/update/status) are gated by the acting
+  // principal's entitlement; the client routes (available/redeem/redemptions)
+  // resolve the user from the session and take no user id, so the UI never
+  // sends one. A redemption is idempotent and fail-closed -- the response's
+  // `status` ("granted" | "pending" | "declined" | "failed") is the honest
+  // outcome, never a boolean the caller invents.
+  async getOffers(): Promise<Envelope<OfferRow[]>> {
+    if (!health.live) return { ok: true, data: mockOffers, source: "mock" };
+    try {
+      const res = await authorizedFetch("/offers");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { offers?: OfferRow[] };
+      return { ok: true, data: body.offers ?? [], source: "live" };
+    } catch (e) {
+      return { ok: false, data: [], source: "mock", error: String(e) };
+    }
+  },
+  async createOffer(input: {
+    title: string;
+    provider_id: string;
+    grant_kind: string;
+    grant_ref: string;
+    referral_code?: string;
+    conditions?: Record<string, unknown>;
+    starts_at?: number;
+    ends_at?: number;
+    max_redemptions?: number;
+    note?: string;
+  }): Promise<Envelope<{ ok: boolean; offer: OfferRow }>> {
+    return postJson<{ ok: boolean; offer: OfferRow }>("/offers", {
+      referral_code: "",
+      conditions: {},
+      starts_at: 0,
+      ends_at: 0,
+      max_redemptions: 0,
+      note: "",
+      ...input,
+    });
+  },
+  async updateOffer(
+    offerId: string,
+    fields: Record<string, unknown>,
+  ): Promise<Envelope<{ ok: boolean; offer: OfferRow }>> {
+    return putJson<{ ok: boolean; offer: OfferRow }>(
+      `/offers/${encodeURIComponent(offerId)}`,
+      fields,
+    );
+  },
+  async setOfferStatus(
+    offerId: string,
+    status: string,
+  ): Promise<Envelope<{ ok: boolean; offer: OfferRow }>> {
+    return postJson<{ ok: boolean; offer: OfferRow }>(
+      `/offers/${encodeURIComponent(offerId)}/status`,
+      { status },
+    );
+  },
+  async getAvailableOffers(): Promise<Envelope<AvailableOffersView>> {
+    if (!health.live) {
+      return { ok: true, data: mockAvailableOffers, source: "mock" };
+    }
+    try {
+      const res = await authorizedFetch("/offers/available");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as AvailableOffersView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null as unknown as AvailableOffersView, source: "mock", error: String(e) };
+    }
+  },
+  async redeemOffer(offerId: string): Promise<Envelope<RedeemResult>> {
+    return postJson<RedeemResult>(
+      `/offers/${encodeURIComponent(offerId)}/redeem`,
+      undefined,
+    );
+  },
+  async getMyRedemptions(): Promise<Envelope<RedemptionsView>> {
+    if (!health.live) {
+      return { ok: true, data: mockRedemptions, source: "mock" };
+    }
+    try {
+      const res = await authorizedFetch("/me/redemptions");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as RedemptionsView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null as unknown as RedemptionsView, source: "mock", error: String(e) };
+    }
   },
 };
 

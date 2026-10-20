@@ -1742,3 +1742,107 @@ install is never an open box by omission, and the one bootstrap seam --
 `POST /users` while `identity.list_users()` is empty -- closes the instant the
 first operator exists.  The earlier wording in this appendix that described route
 wiring as guarded "while `TRADERAIG_AUTH=0`" is superseded: the default is now ON.
+
+
+## Appendix E - Per-account onboarding and engine runtime (Phase F, 2026-10-20)
+
+This appendix documents the **Phase F** surface -- a user registers its own MT5
+or CEX account, enrolls its credentials into the vault, and an operator starts
+and stops that account's engine process -- exactly as the running code serves it.
+Every row is derived from `operations/api.py`, `accounts/registry.py`,
+`accounts/supervisor.py`, `scripts/account_worker.py` and `core/secrets_vault.py`,
+not from a plan. No row here places an order or grants trade authority; the Risk
+Governor remains the only trade authority.
+
+### The vault learns per-account slots (S-F1, row 805)
+
+The vault's slot catalog used to be a fixed deployment-wide list, so the
+per-account name the registry derived (`mt5.<label>.login`) was not a slot
+`set()` would accept. It now accepts **derived, per-account slots**, and
+`account_slots()` is the single construction site:
+
+| Family | Slot shape | Fields |
+|---|---|---|
+| MT5 | `mt5.<account_id>.<field>` | `login`, `password`, `server` |
+| CEX | `cex.<venue>.<account_id>.<field>` | `api_key`, `api_secret`, `passphrase` |
+
+`<account_id>` is the opaque uuid4 hex the registry mints, so no slot name leaks
+a login or a venue identity. A typo cannot mint a slot nothing reads: writes are
+validated against the `DYNAMIC_SLOT_FIELDS` whitelist, so `mt5.<id>.passwrod` is
+rejected, not silently stored. `list_slots()`/`status()` keep enumerating
+**catalog slots only** -- per-account slots are read through
+`account_slot_status(kind, account_id, venue)`, so `/secrets/status` never puts
+every user's account ids on a shared endpoint -- and `delete_account_slots()`
+removes an account's credentials when the account is deleted, so a removed
+account leaves no decryptable secret behind for an id nobody can reach. Derived
+slots have no env fallback (env is bootstrap-only, and a bootstrap account has no
+id yet) and are still encrypted at rest, so the at-rest posture is unchanged.
+
+### The account onboarding write surface (S-F2/F3, rows 806-807)
+
+| Endpoint | Semantics | Notes |
+|---|---|---|
+| `POST /accounts` | Register an account the **acting principal** owns; MT5 needs `(venue_login, venue_server)`, CEX `(venue, venue_login)` | No secret travels with registration. Owner is `owner_scope()`, never a body field, so a caller creates only for itself. Unknown venue/missing identity is 400; an identity already owned by another user is 409. |
+| `PUT /accounts/{id}/credentials` | Enroll an account's credentials into the vault | Full set required; a **partial submission is refused whole** (nothing is written). Secrets never reach a database row. |
+| `GET /accounts/{id}/credentials` | Which credential fields are set (names, never values) | Owner-scoped. |
+| `DELETE /accounts/{id}` | Clear the vault slots first, then delete the row | Owner-scoped; `credentials_cleared` reported. Deleting the registration without clearing the vault is the residue this refuses to leave. |
+| `GET /accounts/{id}` / `GET /accounts/{id}/bindings` | One account / its strategy bindings | 403 (not a lying 404) when the account belongs to somebody else, because on this single-operator deployment "this is not yours" is the useful answer. |
+
+The onboarding **face** (row 808) is `AccountsPage.tsx` (nav id `accounts`): it
+asks only for the fields the backend will require for the chosen venue, sends the
+venue identity only with registration, reads each row's set-flags from its own
+credential-status call, and is live-only with real loading/unreachable/empty
+states -- no fabricated accounts while the API is down.
+
+### The engine plan, the process, and the runtime routes (S-F5a/F5b/F5c, rows 809-812)
+
+An MT5 terminal session lives inside the `MetaTrader5` package *in one process*,
+so serving several accounts means one engine process per account, each on its own
+port. `AccountSupervisor` is the planner and bookkeeper; `scripts/account_worker.py`
+is the process; the routes expose both.
+
+| Endpoint | Semantics | Notes |
+|---|---|---|
+| `GET /accounts/{id}/runtime` | The durable runtime: `pid`, `port`, `instance`, `status`, `process_alive` | Not entitlement-gated (like `/mt5/engine`): an operator must see an engine is **not** running without holding a trade entitlement. A `null` pid is "no engine recorded", a different fact from "stopped". Unknown account is 404. |
+| `POST /accounts/{id}/runtime/start` | Plan, launch and record the engine | `_guard(MULTI_ACCOUNT)`. Refuses (409) when a live worker is already recorded -- a second worker on the same logins is two engines trading one account, not idempotent -- and (409) when no launcher is configured, because recording a "starting" runtime with no process is the exact lie the supervisor exists to prevent. |
+| `POST /accounts/{id}/runtime/stop` | Clear the durable runtime, report `forgot_pid` | `_guard(MULTI_ACCOUNT)`. Signalling the OS process is the launcher's job; the route forgets the record and hands the pid back so a caller *can* terminate it. |
+
+Semantics that define the posture:
+
+- **One engine, one account, one process.** `initialize()` binds an interpreter
+  to one terminal, so the supervisor refuses to start an account whose
+  credentials are incomplete -- a half-set MT5 account connects by *attach* to
+  whatever terminal is running and can then trade on the wrong login, worse than
+  one that never starts.
+- **The worker holds a session, never a second canonical state.** The worker
+  serves `GET /worker/health` and `POST /worker/sync` (one reconciliation pass)
+  with an optional bearer, and exposes **no** trade route and no account-write
+  route (`POST /worker/trade` is a 404 by test). It is built on the stdlib
+  `ThreadingHTTPServer`, not the API app, precisely because a second process that
+  duplicated `MarketPlane`/`state`/the opportunity board would make every fill
+  invisible to `/system/health` and the dashboard (rule 28.1).
+- **Port reuse over reassignment.** `allocate_port()` reuses an account's
+  recorded port when still free (a restart must not move an account and
+  invalidate the operator's firewall rule) and otherwise draws from
+  `TRADERAIG_ACCOUNT_PORT_BASE`..`+COUNT`, refusing loudly when the range is
+  exhausted rather than colliding.
+- **The machine rail is fenced by segment.** The runtime routes are
+  service-token eligible, but a `/accounts` prefix would swallow `POST /accounts`,
+  `PUT /accounts/{id}/credentials` and `DELETE /accounts/{id}` -- every
+  ownership-gated client write. So the token scope in `governance/auth.py` names
+  `/accounts/*/runtime[/start|stop]` by **segment** (`*` is exactly one path
+  segment) and nothing else under `/accounts`; the auth suite asserts both that
+  the runtime rail passes the token and that the client account writes (and
+  `POST /offers/{id}/redeem`) do not.
+
+### Commercial-offer note (Phase G, S1-S3, rows 811-812)
+
+Alongside Phase F, the offer campaign layer shares this appendix's authority
+rule: an offer grants a catalogue product or a plan upgrade and every payload
+names `trade_authority: risk/governor.py` / `is_authorisation: False`. The
+operator routes (`POST /offers`, `PUT /offers/{id}`, `POST /offers/{id}/status`)
+are gated on the acting principal; the client routes (`GET /offers/available`,
+`GET /me/redemptions`, `POST /offers/{id}/redeem`) resolve the user from the
+acting principal and take no user id at all. `/offers/{id}/redeem` is
+service-token-**ineligible** so a leaked machine credential cannot redeem as a
+user.

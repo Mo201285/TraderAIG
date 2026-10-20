@@ -219,6 +219,15 @@ class AccountConnectionRecord(Base):
     `last_error` is nullable and defaults to empty rather than to a guess. An
     account that has never connected has no error to report, and "never
     connected" is a different fact from "last attempt failed".
+
+    `pid`, `port` and `instance` describe the **engine process** currently
+    serving this connection (Phase F5). An MT5 terminal session lives in the
+    `MetaTrader5` package inside one process, so serving several accounts means
+    one engine process per account, each on its own port; the supervisor keeps
+    that mapping here rather than in memory so a restart can reconcile an orphan
+    (a pid that is gone, a port still held) instead of leaking processes. All
+    three are nullable and additive: a connection declared before any engine ran
+    has no process to name, and inventing one would fabricate a running worker.
     """
 
     __tablename__ = "account_connections"
@@ -231,6 +240,9 @@ class AccountConnectionRecord(Base):
     last_connected_at: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_heartbeat_at: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    instance: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
     updated_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
 

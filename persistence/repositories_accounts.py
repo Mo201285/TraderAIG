@@ -110,6 +110,9 @@ def _row_to_connection(row: AccountConnectionRecord) -> Dict[str, Any]:
         "last_connected_at": row.last_connected_at,
         "last_heartbeat_at": row.last_heartbeat_at,
         "last_error": row.last_error,
+        "pid": row.pid,
+        "port": row.port,
+        "instance": row.instance,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
@@ -1688,6 +1691,98 @@ class AccountConnectionRepository:
             session.delete(row)
             session.commit()
             return True
+
+    # -- engine runtime (Phase F5) ---------------------------------------
+    #
+    # The three methods below are the durable half of the AccountSupervisor.
+    # They record which OS process serves a connection and on which port, and
+    # they can be read back after a restart to reconcile a worker whose process
+    # is gone. They are deliberately separate from `set_status`: a process can be
+    # recorded as `pid=P` while its connection status is still `disconnected`
+    # (P just spawned, not yet connected), and collapsing the two would make
+    # "started" and "reachable" the same claim.
+
+    def set_runtime(self, account_id: str, connection_kind: str, *,
+                    pid: Optional[int] = None, port: Optional[int] = None,
+                    instance: Optional[str] = None,
+                    status: Optional[str] = None) -> bool:
+        """Record (or refresh) the engine process for a connection.
+
+        Only the fields passed are written, so a heartbeat that carries a new
+        `last_heartbeat_at` need not restate the pid, and clearing the pid
+        (`clear_runtime`) is a distinct operation from lowering the status.
+        """
+        now = datetime.now(timezone.utc).timestamp()
+        with self._db() as session:
+            row = session.execute(
+                select(AccountConnectionRecord).where(
+                    AccountConnectionRecord.account_id == str(account_id or ""),
+                    AccountConnectionRecord.connection_kind
+                    == str(connection_kind or ""),
+                )).scalars().first()
+            if row is None:
+                return False
+            if pid is not None:
+                row.pid = int(pid)
+            if port is not None:
+                row.port = int(port)
+            if instance is not None:
+                row.instance = str(instance)
+            if status is not None:
+                row.status = str(status)
+                if str(status).lower() in ("connected", "live", "ok"):
+                    row.last_connected_at = now
+            row.last_heartbeat_at = now
+            row.updated_at = datetime.now(timezone.utc).isoformat()
+            session.commit()
+            return True
+
+    def clear_runtime(self, account_id: str, connection_kind: str, *,
+                      status: str = "disconnected",
+                      last_error: Optional[str] = None) -> bool:
+        """Forget the engine process for a connection, honestly.
+
+        Nulls the runtime columns rather than leaving a dead pid behind: a row
+        that still names a process is a row a reconciliation pass will try to
+        adopt, and adopting a pid that has been reused by an unrelated process
+        is exactly the failure this column is meant to prevent.
+        """
+        with self._db() as session:
+            row = session.execute(
+                select(AccountConnectionRecord).where(
+                    AccountConnectionRecord.account_id == str(account_id or ""),
+                    AccountConnectionRecord.connection_kind
+                    == str(connection_kind or ""),
+                )).scalars().first()
+            if row is None:
+                return False
+            row.pid = None
+            row.port = None
+            row.instance = None
+            row.status = str(status or "disconnected")
+            if last_error is not None:
+                row.last_error = str(last_error)
+            row.updated_at = datetime.now(timezone.utc).isoformat()
+            session.commit()
+            return True
+
+    def list_running(self, *, connection_kind: str = "") -> List[Dict[str, Any]]:
+        """Every connection that names a live engine process.
+
+        Filtered on `pid IS NOT NULL`, which is the one durable fact that says a
+        worker was last recorded as running -- not on status, because an engine
+        whose terminal dropped is still a running process holding a port.
+        """
+        with self._db() as session:
+            stmt = select(AccountConnectionRecord).where(
+                AccountConnectionRecord.pid.is_not(None))
+            if connection_kind:
+                stmt = stmt.where(
+                    AccountConnectionRecord.connection_kind
+                    == str(connection_kind))
+            rows = session.execute(
+                stmt.order_by(AccountConnectionRecord.created_at)).scalars().all()
+        return [_row_to_connection(r) for r in rows]
 
 
 class AccountConsistencyChecker:

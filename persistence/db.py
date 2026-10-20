@@ -115,6 +115,12 @@ def _required_schema() -> dict[str, dict[str, str]]:
         # registered before the contract existed has no product to name, and
         # inventing one would fabricate a commercial term.
         "external_providers": {"referral_reward_product": "TEXT"},
+        # The engine process serving a connection (Phase F5): pid, port and an
+        # instance label, so the AccountSupervisor can reconcile an orphan after
+        # a restart. Additive and nullable -- a connection declared before any
+        # engine ran has no process to name, and a fresh CREATE still has them.
+        "account_connections": {"pid": "INTEGER", "port": "INTEGER",
+                                "instance": "TEXT"},
     }
 
 

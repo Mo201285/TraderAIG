@@ -101,6 +101,74 @@ def test_vault_unknown_slot_rejected(tmp_path):
         v.set("no/such/slot", "x")
 
 
+# -- per-account derived slots (Phase F, decision D6) -----------------------
+
+
+ACCT = "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
+
+
+def test_dynamic_slot_matches_only_legal_names():
+    assert sv.is_known_slot(f"mt5.{ACCT}.password") is True
+    assert sv.is_known_slot(f"cex.okx.{ACCT}.api_secret") is True
+    # A field nothing reads must not be writable, or a typo stores a secret
+    # in a slot no consumer will ever look at.
+    assert sv.is_known_slot(f"mt5.{ACCT}.passwrod") is False
+    assert sv.is_known_slot(f"cex.okx.{ACCT}.secret") is False
+    # The catalog still validates unchanged.
+    assert sv.is_known_slot("cex.okx.api_key") is True
+    assert sv.is_known_slot("nope") is False
+
+
+def test_dynamic_slot_rejects_non_hex_and_empty_account_id():
+    assert sv.is_known_slot("mt5.NOTHEX.password") is False
+    assert sv.is_known_slot("mt5..password") is False
+    assert sv.is_known_slot("cex.okx..api_key") is False
+
+
+def test_account_slots_is_single_construction_site():
+    slots = sv.account_slots("mt5", ACCT)
+    assert slots == {
+        "login": f"mt5.{ACCT}.login",
+        "password": f"mt5.{ACCT}.password",
+        "server": f"mt5.{ACCT}.server",
+    }
+    cex = sv.account_slots("cex", ACCT, "okx")
+    assert cex["api_key"] == f"cex.okx.{ACCT}.api_key"
+    with pytest.raises(ValueError):
+        sv.account_slots("cex", ACCT)  # venue required
+    with pytest.raises(ValueError):
+        sv.account_slots("forex", ACCT)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="DPAPI backend requires Windows")
+def test_dynamic_slot_roundtrip_and_isolation(tmp_path):
+    v = sv.SecretsVault(data_dir=tmp_path)
+    v.set(f"mt5.{ACCT}.password", "acct-one-pw")
+    other = "ffffffffffffffffffffffffffffffff"
+    v.set(f"mt5.{other}.password", "acct-two-pw")
+    assert v.read(f"mt5.{ACCT}.password") == "acct-one-pw"
+    assert v.read(f"mt5.{other}.password") == "acct-two-pw"
+    assert v.account_slot_status("mt5", ACCT)["password"] is True
+    assert v.secrets_leak() is False
+
+
+def test_dynamic_slots_never_enumerated_by_status(tmp_path):
+    """A per-account slot name must not appear on the shared status endpoint."""
+    v = sv.SecretsVault(data_dir=tmp_path)
+    v.set(f"mt5.{ACCT}.server", "FTTrading-Server")
+    st = v.status()
+    assert ACCT not in str(st["slots"])
+
+
+def test_delete_account_slots_removes_every_field(tmp_path):
+    v = sv.SecretsVault(data_dir=tmp_path)
+    for slot in sv.account_slots("mt5", ACCT).values():
+        v.set(slot, "x")
+    assert v.delete_account_slots("mt5", ACCT) == 3
+    assert v.account_slot_status("mt5", ACCT) == \
+        {"login": False, "password": False, "server": False}
+
+
 def test_vault_status_never_includes_values(tmp_path):
     v = sv.SecretsVault(data_dir=tmp_path)
     v.set("payments.stripe.secret_key", "sk_live_XYZ-secret")

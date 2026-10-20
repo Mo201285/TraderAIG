@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -63,6 +64,83 @@ VAULT_SLOTS: Dict[str, str] = {
     # without editing the vault.
     "auth.session_token": "TRADERAIG_SESSION_TOKEN",
 }
+
+# --- Per-account slots (Phase F, decision D6) -----------------------------
+#
+# The catalog above is a fixed, deployment-wide list: one credential set per
+# exchange, one MT5 triple from env. That is the right shape for the single
+# account a tournament box runs, and the wrong shape for a user who registers
+# their own venue accounts. Rather than keep one global key per venue (which
+# would silently share one user's keys with every other user), account
+# credentials live in *derived* slots keyed by the registry's opaque
+# `account_id`:
+#
+#   mt5.<account_id>.{login,password,server}
+#   cex.<venue>.<account_id>.{api_key,api_secret,passphrase}
+#
+# The account_id is the uuid4 hex minted by `AccountRegistryRepository`: it is
+# opaque and per-owner, so no slot name ever leaks a login or a venue identity.
+# These slots are NOT in `VAULT_SLOTS`: they have no env fallback (env is
+# bootstrap only, and a bootstrap account has no id yet), and they are never
+# enumerated by `list_slots()` -- that would put every user's slot names on a
+# status endpoint. They are accepted by `set`/`delete`/`resolve`/`exists`
+# through `is_known_slot()`.
+_ACCOUNT_ID_RE = r"[0-9a-f]{8,64}"
+
+_DYNAMIC_SLOT_PATTERNS = (
+    ("mt5", re.compile(rf"^mt5\.(?P<account_id>{_ACCOUNT_ID_RE})\.(?P<field>login|password|server)$")),
+    ("cex", re.compile(
+        rf"^cex\.(?P<venue>[a-z0-9]+)\.(?P<account_id>{_ACCOUNT_ID_RE})"
+        rf"\.(?P<field>api_key|api_secret|passphrase)$")),
+)
+
+#: Fields a caller may write per family, so a typo cannot mint a slot nothing
+#: reads (`mt5.<id>.passwrod`) and quietly store a secret nobody will use.
+DYNAMIC_SLOT_FIELDS: Dict[str, frozenset] = {
+    "mt5": frozenset({"login", "password", "server"}),
+    "cex": frozenset({"api_key", "api_secret", "passphrase"}),
+}
+
+
+def parse_dynamic_slot(slot: str) -> Optional[Dict[str, str]]:
+    """Split a per-account slot into its parts, or None if it is not one.
+
+    Returns ``{"kind": "mt5"|"cex", "account_id", "field", "venue"?}``. The
+    caller-facing validation for writes is `is_known_slot`; this is the parser
+    the registry uses to assemble and read the slots for one account.
+    """
+    for kind, pattern in _DYNAMIC_SLOT_PATTERNS:
+        m = pattern.match(str(slot or ""))
+        if m:
+            parts = m.groupdict()
+            if parts.get("field") not in DYNAMIC_SLOT_FIELDS.get(kind, frozenset()):
+                return None
+            parts["kind"] = kind
+            return parts
+    return None
+
+
+def is_known_slot(slot: str) -> bool:
+    """Whether a slot may be written/read: a catalog slot or a legal derived one."""
+    return slot in VAULT_SLOTS or parse_dynamic_slot(slot) is not None
+
+
+def account_slots(kind: str, account_id: str, venue: str = "") -> Dict[str, str]:
+    """The field->slot map for one account. The single place slot names are built.
+
+    A second construction site is a second chance to typo a slot name in a way
+    that stores a secret nothing can read; keep it to one.
+    """
+    if kind == "mt5":
+        return {f: f"mt5.{account_id}.{f}"
+                for f in sorted(DYNAMIC_SLOT_FIELDS["mt5"])}
+    if kind == "cex":
+        v = str(venue or "").strip().lower()
+        if not v:
+            raise ValueError("cex account slots need a venue")
+        return {f: f"cex.{v}.{account_id}.{f}"
+                for f in sorted(DYNAMIC_SLOT_FIELDS["cex"])}
+    raise ValueError(f"unknown credential family: {kind!r}")
 
 
 class _DPApiBackend:
@@ -203,7 +281,7 @@ class SecretsVault:
 
     def set(self, slot: str, value: str) -> bool:
         """Encrypt and store a value. Raises if the backend cannot persist."""
-        if slot not in VAULT_SLOTS:
+        if not is_known_slot(slot):
             raise KeyError(f"unknown vault slot: {slot}")
         if self._backend is None:
             raise RuntimeError(
@@ -235,8 +313,37 @@ class SecretsVault:
         return slot in self._entries
 
     def list_slots(self) -> Dict[str, bool]:
-        """Slot -> set flag. NEVER includes values (dashboard honesty)."""
+        """Slot -> set flag. NEVER includes values (dashboard honesty).
+
+        Catalog slots only. Per-account slots are deliberately excluded: this
+        dict is what `/secrets/status` returns, and enumerating per-account
+        names there would put every user's venue and account ids on a shared
+        endpoint. Use `account_slot_status()` to check one account's own slots.
+        """
         return {slot: slot in self._entries for slot in sorted(VAULT_SLOTS)}
+
+    def account_slot_status(self, kind: str, account_id: str,
+                            venue: str = "") -> Dict[str, bool]:
+        """Set-flags for one account's derived slots. Values never included.
+
+        Called by the accounts API for the caller's own account, so the slot
+        names it reveals are already ones that caller supplied.
+        """
+        return {field: slot in self._entries
+                for field, slot in account_slots(kind, account_id, venue).items()}
+
+    def delete_account_slots(self, kind: str, account_id: str,
+                             venue: str = "") -> int:
+        """Remove an account's credentials. Returns how many were set.
+
+        Called when an account is deleted, so a removed account does not leave
+        a decryptable secret behind in the vault for an id nobody can reach.
+        """
+        removed = 0
+        for slot in account_slots(kind, account_id, venue).values():
+            if self.delete(slot):
+                removed += 1
+        return removed
 
     def status(self) -> Dict:
         return {

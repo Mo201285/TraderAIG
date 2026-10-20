@@ -1430,7 +1430,7 @@ The D1–D5 multi-account foundation already existed in `persistence/models_acco
 | Fail-closed reads | Implemented | Unreadable registry → `[]` → bind refused; store failure raises (never "nothing allowed") |
 | Tests | Implemented | 33 tests in `tests/test_account_strategy_bindings.py`; regression 102 passed (persistence + schema + registry + trade); ruff clean |
 
-Known limits, stated rather than hidden: bindings are **records, not execution** — no *engine* consults them yet, and the only exposed surface is **read-only**: `GET /accounts/{account_id}/bindings` (ownership-guarded via `own_record_access()`, the D5 pattern — 403 for `no_principal`/non-owner, 404 for an unknown account; returns `AccountStrategyBindings.summary()`). `guard_account()` route wiring (D4/D6) stays unwired while `TRADERAIG_AUTH=0`; no mutation or execution path exists. P1 explicitly excludes opening multi-account execution; row 742 ratifies the post-P1 direction (External Provider Registry + ForTraders read-only adapter → P2) without ever adding a `grants_trade_permission`.
+Known limits, stated rather than hidden: bindings are **records, not execution** — no *engine* consults them yet, and the only exposed surface is **read-only**: `GET /accounts/{account_id}/bindings` (ownership-guarded via `own_record_access()`, the D5 pattern — 403 for `no_principal`/non-owner, 404 for an unknown account; returns `AccountStrategyBindings.summary()`). `guard_account()` route wiring (D4/D6) stays unwired (authentication enforcement is ON by default as of 28.19, see Appendix D); no mutation or execution path exists. P1 explicitly excludes opening multi-account execution; row 742 ratifies the post-P1 direction (External Provider Registry + ForTraders read-only adapter → P2) without ever adding a `grants_trade_permission`.
 
 
 ### Evidence Plane / Research & Market Intelligence Factory (P1, row 746)
@@ -1684,3 +1684,61 @@ A Research Package is the object a research mission (Paperclip -> Research Missi
 | Planning surface | Ratified | `PROJECT_MAP.md` gains the Post-RMI Roadmap block: each S-phase maps to a docking point already in the repo (Strategy Lab/registry for S1-S2, Workforce row 767 + mission crew for S3, Phase A portfolio for S4, MT5/CEX adapters + Execution Truth row 770 for S5, payments wallet rows 744-745/763 for S6, registry+wallet for S7, Research Knowledge Factory rows 746-748/752 for S8, Evidence Plane rows 746-750 for S9, Developer Hub row 756 for S10, provider registry row 743 for S11, bilingual surfaces for S12, Learning Center row 771 for the Autonomous Improvement Loop with ReviewLoop always the arbiter) |
 | Ordering | Bound | RMI-04 (Research->Strategy) and RMI-05 (Strategy Asset/Economy) stay open; S1 Strategy Factory is the next large project only after RMI-01 -> RMI-05 all close |
 | Tests | Unchanged | Zero code, zero new tests -- expected 2007 passing / 2008 collected pending the next canonical full run |
+
+## Appendix D - Production live MT5 endpoints and semantics (2026-10-20)
+
+This appendix documents the **live** MT5 surface exactly as the running code
+serves it, so a production operator reads the contract from the API rather than
+from a plan. Every row below is derived from `operations/api.py` and
+`operations/live_engine.py`, not from an earlier design note. Where a value is
+absent or a desk is off, the endpoint says so; no row implies authority the
+Risk Governor has not granted.
+
+### Read paths (no trade authority)
+
+| Endpoint | Semantics | Notes |
+|---|---|---|
+| `GET /mt5/status` | Terminal/connection status straight from `mt5_adapter.status()` | Read-only. No credential or order data. |
+| `GET /mt5/positions` | Open positions from the caller's canonical state (`_caller_state().open_positions()`) | Owner-scoped; the caller sees only its own positions. |
+| `GET /mt5/history` | The experience ledger rows (`ledger.all()`) | Executed fills with their attribution, not the broker's raw deal list. |
+| `GET /mt5/engine` | Arm state + promotion-cleared strategies + engine status | Read-only and **not** entitlement-gated on purpose: an operator must be able to see that live trading is *not* armed without holding `CAN_TRADE`. `armed` and `promotion_cleared` are reported separately so a single "ready" boolean cannot hide which of the two is missing. |
+
+### State paths (CAN_TRADE gated)
+
+| Endpoint | Semantics | Notes |
+|---|---|---|
+| `POST /mt5/connect` | Connect the terminal | `_guard(CAN_TRADE)`. |
+| `POST /mt5/sync` | One sync cycle (optional `symbols`) then returns the caller's account + open positions + the sync result | `_guard(CAN_TRADE)`; the account/positions returned are the caller's. |
+| `POST /mt5/watcher` | Start the watcher (optional `interval_seconds`, `symbols`) | `_guard(CAN_TRADE)`. |
+| `POST /mt5/engine/start` | Start the live decision loop, placing **real venue orders** | Gated three ways: `CAN_TRADE`, the `MT5_LIVE_TRADING` arm flag, and at least one promotion-cleared strategy. Refusal reasons are returned (403/409), never swallowed. The engine re-checks the arm flag and the cleared set itself, so this route is convenience, not the security boundary. |
+| `POST /mt5/engine/stop` | Stop the live decision loop | `_guard(CAN_TRADE)`. |
+
+### Semantics that define the safety posture
+
+- **Default-off arming.** `MT5_LIVE_TRADING` must be set explicitly; unset means
+  the engine refuses to start (403, same convention as `CEX_LIVE_ALLOWED`). The
+  arm flag is the *only* thing that turns the live rail on, and it is re-checked
+  inside `LiveEngine.start()` (fail-closed), not trusted from the route.
+- **Promotion-cleared only.** `promotion_cleared_strategies()` reads the
+  persisted registry; only strategies at the paper/production stage are eligible.
+  With none cleared, the governor would veto every candidate, so the route
+  refuses rather than start a desk that can never trade.
+- **One account, one desk (mutual exclusion).** Starting the live engine stops
+  the paper desk (and vice-versa). A paper fill reported against a live account
+  that never took it is worse than either desk being plainly off, so the rule is
+  visible at both the route and the engine seam.
+- **Strategy linkage required at order time.** The live adapter runs
+  `RiskGovernor(require_strategy_linkage=True)`; an order without a linked,
+  promotion-cleared strategy is refused by the governor, which remains the only
+  trade authority.
+
+### Authentication posture (28.19, updated 2026-10-20)
+
+Session enforcement is **ON by default**: `AuthService.enforcement_enabled()` is
+True when `TRADERAIG_AUTH` is unset (and for `1/true/yes/on`; OR'd with the
+multi-tenant provider). An operator who wants an open single-operator box opts
+out explicitly with `TRADERAIG_AUTH=0` (also `false/no/off/`empty). A fresh
+install is never an open box by omission, and the one bootstrap seam --
+`POST /users` while `identity.list_users()` is empty -- closes the instant the
+first operator exists.  The earlier wording in this appendix that described route
+wiring as guarded "while `TRADERAIG_AUTH=0`" is superseded: the default is now ON.

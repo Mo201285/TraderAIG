@@ -117,10 +117,13 @@ SERVICE_TOKEN_PATHS = frozenset({
 # or a new user trying to look up a venue. Matched by prefix so `/providers/{id}`
 # and `/market/quote` are covered by their roots. Deliberately NOT `/auth`: its
 # `/auth/logout` is state-changing and must stay gated. `/system/health` and the
-# docs routes are already in OPEN_PATHS.
+# docs routes are already in OPEN_PATHS. `/site` is the public product surface
+# (28.2.A): it is curated to carry no tenant data and must answer an anonymous
+# visitor even under enforcement.
 REFERENCE_PATHS = (
     "/providers",
     "/market",
+    "/site",
 )
 
 

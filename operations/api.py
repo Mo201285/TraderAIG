@@ -101,9 +101,13 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
+#: The one source of the product version (28.4: never re-typed per surface).
+#: The FastAPI app, `GET /health` and the public product surface all read this.
+APP_VERSION = "1.0.0"
+
 app = FastAPI(
     title="TraderAIG Institutional Operating Core",
-    version="1.0.0",
+    version=APP_VERSION,
     description="Governance, Research, Decision, Risk/Execution, Learning.",
     lifespan=_lifespan,
 )
@@ -507,7 +511,7 @@ def _reject_without_session(request: Request):
 def health() -> Dict:
     return {
         "status": "ok",
-        "version": "1.0.0",
+        "version": APP_VERSION,
         "account": _caller_state().account.as_dict(),
     }
 
@@ -1081,6 +1085,28 @@ def system_launch_readiness() -> Dict:
     result = assess(settings, enforcement=auth.enforcement_enabled(),
                     registered_accounts=registered)
     return {"present": True, **result}
+
+
+# ---------------------------------------------------------------------------
+# Public product surface (ENGINEERING MAST 28.1-28.4)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/site")
+def public_site() -> Dict:
+    """The public product surface (28.2.A) -- the data contract of the website.
+
+    Read-only and explicitly non-private: it carries product identity, how the
+    system works, the AI/research description, the supported markets, aggregate
+    strategy counts, the security posture, the declared pricing catalog, the FAQ
+    and the real system status. It never returns account data, credentials,
+    execution state or governance internals, and where a value cannot be sourced
+    it reports an explicit empty state rather than a number (28.3/28.4). Places
+    no order and grants no authority.
+    """
+    from operations.product_layer import product_surface
+
+    return product_surface.public_site()
 
 
 # ---------------------------------------------------------------------------

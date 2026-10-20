@@ -1824,6 +1824,35 @@ def cmd_execution(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_site(args: argparse.Namespace) -> int:
+    """Public product surface (Phase E) — the website's data contract (via API).
+
+    Read-only and non-private: identity, how it works, supported markets,
+    aggregate strategy counts, security, declared pricing, FAQ and live system
+    status. Nothing here trades or grants authority.
+    """
+    base = f"http://127.0.0.1:{API_PORT}"
+    ok, data = http_json(f"{base}/site")
+    if not ok:
+        print(f"{_ANSI['bad']}{I18N[args.lang]['u_api_down']}{_ANSI['off']}")
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=1))
+        return 0
+    ident = data.get("identity") or {}
+    print(f"{ident.get('name')} — {ident.get('tagline')} (v{ident.get('version')})")
+    mk = data.get("supported_markets") or {}
+    print(f"markets: {len(mk.get('symbols') or [])} symbols / "
+          f"{len(mk.get('feeds') or [])} feeds"
+          + (f" {_ANSI['dim']}(none configured){_ANSI['off']}" if mk.get("empty") else ""))
+    strat = data.get("strategies") or {}
+    print(f"strategies: {strat.get('total')} total")
+    for p in (data.get("pricing") or {}).get("plans") or []:
+        print(f"  {p['name']:<14} ${p['price_monthly_usd']}/mo")
+    status = data.get("system_status") or {}
+    print(f"status: {status.get('overall')}")
+    return 0
+
 def cmd_events(args: argparse.Namespace) -> int:
     """Tail the live operations event feed (dashboard/copy-engine consumer)."""
     t = I18N[args.lang]
@@ -2168,6 +2197,10 @@ def _parser() -> argparse.ArgumentParser:
                     help="truth | recon | venue-score")
     ex.add_argument("--json", action="store_true")
     ex.set_defaults(fn=cmd_execution)
+
+    st = sub.add_parser("site", help="Public product surface (Phase E): the website data contract (via API)")
+    st.add_argument("--json", action="store_true")
+    st.set_defaults(fn=cmd_site)
 
     bk = sub.add_parser("backup", help="snapshot durable canonical state to a ZIP (M6.4)")
     bk.add_argument("--out", default=None, help="destination dir (default <root>/backups)")

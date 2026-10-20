@@ -92,7 +92,7 @@ def acting_as_operator(monkeypatch):
     idents._users, idents._subscriptions, idents._audit = saved
 
 
-def _register_mt5(client, login="1400167", server="FTTrading-Server"):
+def _register_mt5(client, login="TEST-ACCT-1", server="FTTrading-Server"):
     return client.post("/accounts", json={
         "venue": "mt5", "venue_login": login, "venue_server": server,
         "display_name": "Live challenge"})
@@ -118,7 +118,7 @@ def test_register_mt5_records_an_owned_account_and_its_connection(
 def test_register_mt5_without_server_is_refused(client, registry,
                                                  acting_as_operator):
     r = client.post("/accounts", json={
-        "venue": "mt5", "venue_login": "1400167"})
+        "venue": "mt5", "venue_login": "TEST-ACCT-1"})
     assert r.status_code == 400
     assert "venue_server" in r.json()["detail"]
 
@@ -134,7 +134,7 @@ def test_credentials_go_to_the_vault_not_a_row(client, registry, temp_vault,
                                                acting_as_operator):
     acct = _register_mt5(client).json()["account"]
     r = client.put(f"/accounts/{acct['account_id']}/credentials", json={
-        "login": "1400167", "password": "s3cret-pw", "server": "FTTrading-Server"})
+        "login": "TEST-ACCT-1", "password": "s3cret-pw", "server": "FTTrading-Server"})
     assert r.status_code == 200
     assert r.json()["status"]["complete"] is True
 
@@ -157,7 +157,7 @@ def test_partial_credentials_are_refused_whole(client, registry, temp_vault,
                                                acting_as_operator):
     acct = _register_mt5(client).json()["account"]
     r = client.put(f"/accounts/{acct['account_id']}/credentials",
-                   json={"login": "1400167", "password": "pw"})
+                   json={"login": "TEST-ACCT-1", "password": "pw"})
     assert r.status_code == 400
     assert "server" in r.json()["detail"]
     # Nothing was written.
@@ -186,7 +186,7 @@ def test_delete_clears_credentials_then_the_row(client, registry, temp_vault,
                                                 acting_as_operator):
     acct = _register_mt5(client).json()["account"]
     client.put(f"/accounts/{acct['account_id']}/credentials", json={
-        "login": "1400167", "password": "pw", "server": "FTTrading-Server"})
+        "login": "TEST-ACCT-1", "password": "pw", "server": "FTTrading-Server"})
     r = client.delete(f"/accounts/{acct['account_id']}")
     assert r.status_code == 200
     assert r.json()["credentials_cleared"] == 3

@@ -399,7 +399,7 @@ def test_credential_service_refuses_half_a_credential_set():
     svc = CredentialService()
     with pytest.raises(ValueError) as exc:
         svc.set_credentials("mt5", "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4",
-                            {"login": "1400167", "password": "pw"})
+                            {"login": "TEST-ACCT-1", "password": "pw"})
     assert "server" in str(exc.value)
 
 

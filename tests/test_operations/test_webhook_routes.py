@@ -64,6 +64,18 @@ def client():
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_vault(monkeypatch):
+    """Never read the machine's real vault: default to an empty one.
+
+    The real vault can carry an enrolled `webhook.<provider>.signing_secret`
+    (an operator enrolling a partner is the whole point of G4), so a test that
+    relies on "no secret is configured" would silently depend on the developer's
+    machine state. Empty by default; `enrolled_secret` overrides it.
+    """
+    monkeypatch.setattr("providers.webhooks.vault", _FakeVault({}))
+
+
 @pytest.fixture
 def webhook_db(monkeypatch):
     session = bind_test_session()

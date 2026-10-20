@@ -225,6 +225,11 @@ def _isolate_machine_credentials(monkeypatch):
         return
     real_read = vault.read
     hidden = {"auth.service_token", "auth.session_token"}
-    monkeypatch.setattr(
-        vault, "read", lambda slot: None if slot in hidden else real_read(slot))
+
+    def _read(slot):
+        if slot in hidden or str(slot).startswith("webhook."):
+            return None
+        return real_read(slot)
+
+    monkeypatch.setattr(vault, "read", _read)
     yield

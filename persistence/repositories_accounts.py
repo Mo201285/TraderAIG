@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import hashlib
 import json
+import time
 import uuid
 
 from sqlalchemy import func, select
@@ -81,6 +82,26 @@ MAX_TRUST_LEVEL = 9
 
 def _content_hash(payload: str) -> str:
     return hashlib.sha256(str(payload or "").encode("utf-8")).hexdigest()
+
+
+_last_delivery_ts = 0.0
+
+
+def _monotonic_delivery_ts() -> float:
+    """A strictly increasing arrival stamp for the delivery log.
+
+    `time.time()` can repeat within a burst (two deliveries land in the same
+    microsecond), and the log is ordered by this value -- so an exact tie would
+    fall back to a random `delivery_id` and read out of order. Bumping a
+    process-local high-water mark guarantees each append is strictly later than
+    the last, so a delivery log always reads in the order it was written.
+    """
+    global _last_delivery_ts
+    now = time.time()
+    if now <= _last_delivery_ts:
+        now = _last_delivery_ts + 1e-6
+    _last_delivery_ts = now
+    return now
 
 
 def _row_to_account(row: AccountRecord) -> Dict[str, Any]:
@@ -1127,6 +1148,7 @@ class ProviderWebhookDeliveryRepository:
                 outcome=str(outcome or "").strip(),
                 signature_status=str(signature_status or "").strip(),
                 detail=str(detail or ""),
+                received_at=_monotonic_delivery_ts(),
                 created_at=now,
             )
             session.add(row)

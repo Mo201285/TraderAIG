@@ -1315,6 +1315,213 @@ def get_account_bindings(account_id: str) -> Dict:
                           "ownership_verified": access["ownership_verified"]}}
 
 
+@app.post("/accounts")
+def register_account(payload: Dict) -> Dict:
+    """Register one trading account the acting principal owns.
+
+    The user-facing onboarding write (Phase F). An MT5 account is identified by
+    `(venue='mt5', login, server)`; a CEX account by `(venue, login)` with the
+    venue one of binance/okx/bybit. The owner is the acting principal resolved
+    through `owner_scope()` -- never a body field -- so a caller can only ever
+    create an account for itself. Credentials are NOT accepted here: this records
+    the account and its connection; the secrets go through
+    `PUT /accounts/{account_id}/credentials`, which writes them to the vault and
+    never to a database row.
+
+    Refusals are loud, not silent: an unknown venue or a missing identity field
+    is a 400, and an identity already owned by another user is a 409 (re-homing
+    an account is an operator decision, which the repository enforces).
+    """
+    from accounts.registry import AccountRegistry
+
+    payload = payload or {}
+    venue = str(payload.get("venue") or "").strip().lower()
+    venue_login = str(payload.get("venue_login") or payload.get("login") or "").strip()
+    venue_server = str(payload.get("venue_server") or payload.get("server") or "").strip()
+    display_name = str(payload.get("display_name") or "").strip()
+
+    if not venue:
+        raise HTTPException(status_code=400, detail="venue is required")
+    if not venue_login:
+        raise HTTPException(status_code=400, detail="venue_login is required")
+
+    principal = owner_scope() or identity.principal_user_id()
+    if not principal:
+        raise HTTPException(
+            status_code=409,
+            detail="no acting principal could be resolved, so there is no owner "
+                   "to register the account under; sign in first")
+
+    registry = AccountRegistry()
+    try:
+        if venue == "mt5":
+            if not venue_server:
+                raise HTTPException(
+                    status_code=400,
+                    detail="an MT5 account needs venue_server: the same login on "
+                           "a different server is a different account")
+            account = registry.register(
+                venue=venue, venue_login=venue_login, venue_server=venue_server,
+                owner_user_id=principal, display_name=display_name)
+        elif venue in ("binance", "okx", "bybit"):
+            account = registry.register_cex(
+                venue=venue, venue_login=venue_login,
+                owner_user_id=principal, display_name=display_name)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown venue {venue!r}; use 'mt5' or one of "
+                       f"binance/okx/bybit")
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    identity.record_audit("api", "account.register", "Account",
+                          account["account_id"],
+                          {"venue": venue, "owner_user_id": principal})
+    return {"ok": True, "account": account,
+            "credential_fields": _credential_required_fields(venue),
+            "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+def _credential_required_fields(venue: str) -> list:
+    from accounts.registry import CredentialService
+
+    return CredentialService().required_fields(venue)
+
+
+@app.put("/accounts/{account_id}/credentials")
+def set_account_credentials(account_id: str, payload: Dict) -> Dict:
+    """Store one account's credentials in the vault, encrypted at rest.
+
+    Body: `{"login","password","server"}` for MT5, or
+    `{"api_key","api_secret"[,"passphrase"]}` for CEX. The account id comes from
+    the path, so credentials cannot be written to an account the caller does not
+    name; ownership is proven against it first. Values are never echoed, and a
+    partial submission is refused whole (see `CredentialService.set_credentials`).
+
+    `_guard(API_ACCESS)` matches `/secrets/{slot}`: enrolling trading
+    credentials is the same class of decision as enrolling a venue key.
+    """
+    from accounts import isolation
+    from accounts.registry import CredentialService
+
+    _guard(Entitlement.API_ACCESS)
+
+    principal = owner_scope() or identity.principal_user_id()
+    access = isolation.own_record_access(principal, account_id)
+    if access["reason"] == "unknown_account":
+        return JSONResponse(status_code=404,
+                            content={"ok": False, "account_id": account_id,
+                                     "reason": "unknown_account",
+                                     "detail": "no such account in the registry"})
+    if not access["allowed"]:
+        return JSONResponse(status_code=403,
+                            content={"ok": False, "account_id": account_id,
+                                     "reason": access["reason"],
+                                     "detail": access["detail"],
+                                     "caller_authenticated":
+                                         access["caller_authenticated"]})
+
+    from persistence.repositories_accounts import AccountRegistryRepository
+
+    account = AccountRegistryRepository().get(account_id) or {}
+    venue = str(account.get("venue") or "").strip().lower()
+    service = CredentialService()
+    try:
+        result = service.set_credentials(venue, account_id, payload or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    identity.record_audit("api", "account.credentials.set", "Account",
+                          account_id, {"venue": venue,
+                                       "fields": result["fields"]})
+    return {"ok": True, "account_id": account_id, "venue": venue,
+            "set": True, "fields": result["fields"],
+            "status": service.status(venue, account_id),
+            "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/accounts/{account_id}/credentials")
+def get_account_credential_status(account_id: str) -> Dict:
+    """Set-flags for one account's credentials. Never a value.
+
+    Ownership-gated like the other `/accounts/{id}` reads, so a caller can see
+    which of its own credentials are configured (and the dashboard can show a
+    "credentials complete" tick) without the vault ever returning material.
+    """
+    from accounts import isolation
+    from accounts.registry import CredentialService
+    from persistence.repositories_accounts import AccountRegistryRepository
+
+    principal = owner_scope() or identity.principal_user_id()
+    access = isolation.own_record_access(principal, account_id)
+    if access["reason"] == "unknown_account":
+        return JSONResponse(status_code=404,
+                            content={"ok": False, "account_id": account_id,
+                                     "reason": "unknown_account",
+                                     "detail": "no such account in the registry"})
+    if not access["allowed"]:
+        return JSONResponse(status_code=403,
+                            content={"ok": False, "account_id": account_id,
+                                     "reason": access["reason"],
+                                     "detail": access["detail"],
+                                     "caller_authenticated":
+                                         access["caller_authenticated"]})
+
+    account = AccountRegistryRepository().get(account_id) or {}
+    venue = str(account.get("venue") or "").strip().lower()
+    return {"ok": True, "account_id": account_id,
+            "credentials": CredentialService().status(venue, account_id)}
+
+
+@app.delete("/accounts/{account_id}")
+def delete_account(account_id: str) -> Dict:
+    """Delete one account the caller owns, and its stored credentials.
+
+    Credentials are cleared first: a registry row can be deleted by anyone with
+    database access, and leaving a decryptable secret in the vault for an id no
+    longer reachable is exactly the residue this project refuses to leave. The
+    registry `delete()` removes only the registration; the vault delete here is
+    what makes the pair safe.
+    """
+    from accounts import isolation
+    from accounts.registry import CredentialService
+    from persistence.repositories_accounts import AccountRegistryRepository
+
+    _guard(Entitlement.API_ACCESS)
+
+    principal = owner_scope() or identity.principal_user_id()
+    access = isolation.own_record_access(principal, account_id)
+    if access["reason"] == "unknown_account":
+        return JSONResponse(status_code=404,
+                            content={"ok": False, "account_id": account_id,
+                                     "reason": "unknown_account",
+                                     "detail": "no such account in the registry"})
+    if not access["allowed"]:
+        return JSONResponse(status_code=403,
+                            content={"ok": False, "account_id": account_id,
+                                     "reason": access["reason"],
+                                     "detail": access["detail"],
+                                     "caller_authenticated":
+                                         access["caller_authenticated"]})
+
+    repo = AccountRegistryRepository()
+    account = repo.get(account_id) or {}
+    venue = str(account.get("venue") or "").strip().lower()
+    cleared = CredentialService().clear(venue, account_id)
+    repo.delete(account_id)
+    identity.record_audit("api", "account.delete", "Account", account_id,
+                          {"venue": venue, "credentials_cleared": cleared})
+    return {"ok": True, "account_id": account_id, "deleted": True,
+            "credentials_cleared": cleared}
+
+
 @app.get("/providers")
 def list_external_providers() -> Dict:
     """The External Provider Registry: every provider the platform can adopt.

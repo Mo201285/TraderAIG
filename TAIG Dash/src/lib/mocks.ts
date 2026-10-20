@@ -1,4 +1,5 @@
 import type {
+  AccountRow,
   AuditEntry,
   ChangeRequest,
   CopyFollower,
@@ -21,6 +22,68 @@ import type {
 
 // Isolated mock domain data. Pages never hardwire these inline; they come
 // through the service layer (src/lib/api.ts) with a real-API fallback path.
+
+// The onboarding page's offline stand-in: one MT5 account with a complete
+// credential set and one CEX account still missing its secret, so the mock path
+// exercises the "incomplete" render an empty list would hide. Real values are
+// opaque placeholders -- no mock secret is ever a real key.
+export const mockAccounts: AccountRow[] = [
+  {
+    account_id: "5bd99e44bced439389a27fe4c333717b",
+    venue: "mt5",
+    venue_login: "1400167",
+    venue_server: "FTTrading-Server",
+    owner_user_id: "0f90e696-ab13-4506-8e49-83d2c3fd242b",
+    display_name: "Tournament — October Clash",
+    venue_currency: "USD",
+    status: "active",
+    provider: "FTTrading",
+    program: "tournaments October Clash",
+    created_at: "2026-10-14T09:12:00Z",
+    updated_at: "2026-10-20T06:00:00Z",
+    credentials: {
+      venue: "mt5",
+      account_id: "5bd99e44bced439389a27fe4c333717b",
+      fields: { login: true, password: true, server: true },
+      complete: true,
+      missing: [],
+    },
+    connections: [
+      {
+        connection_id: "conn-mt5-1",
+        account_id: "5bd99e44bced439389a27fe4c333717b",
+        connection_kind: "mt5",
+        credential_slot: "mt5/5bd99e44bced439389a27fe4c333717b/login",
+        status: "connected",
+        last_connected_at: "2026-10-20T06:00:00Z",
+        last_heartbeat_at: "2026-10-20T06:00:00Z",
+        last_error: null,
+      },
+    ],
+  },
+  {
+    account_id: "c1cex0000000000000000000000deadbeef",
+    venue: "okx",
+    venue_login: "okx-main",
+    venue_server: "",
+    owner_user_id: "0f90e696-ab13-4506-8e49-83d2c3fd242b",
+    display_name: "OKX — main",
+    venue_currency: "USDT",
+    status: "pending",
+    provider: "",
+    program: "",
+    created_at: "2026-10-18T11:30:00Z",
+    updated_at: "2026-10-18T11:30:00Z",
+    credentials: {
+      venue: "okx",
+      account_id: "c1cex0000000000000000000000deadbeef",
+      fields: { api_key: true, api_secret: false, passphrase: false },
+      complete: false,
+      missing: ["api_secret", "passphrase"],
+    },
+    connections: [],
+  },
+];
 
 export const mockStrategies: StrategyContract[] = [
   {

@@ -1890,3 +1890,45 @@ export interface LaunchReadinessView {
   is_authorisation: boolean;
   trade_authority: string;
 }
+
+// -- Accounts (Phase F onboarding) -----------------------------------------
+
+export interface TradingAccount {
+  account_id: string;
+  venue: string;
+  venue_login: string;
+  venue_server: string;
+  owner_user_id: string;
+  display_name: string;
+  venue_currency: string;
+  status: string;
+  provider: string;
+  program: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AccountConnection {
+  connection_id: string;
+  account_id: string;
+  connection_kind: string;
+  credential_slot: string;
+  status: string;
+  last_connected_at?: string | null;
+  last_heartbeat_at?: string | null;
+  last_error?: string | null;
+}
+
+export interface CredentialStatus {
+  venue: string;
+  account_id: string;
+  fields: Record<string, boolean>;
+  complete: boolean;
+  missing: string[];
+}
+
+export interface AccountRow extends TradingAccount {
+  connections?: AccountConnection[];
+  credentials?: CredentialStatus;
+}
+

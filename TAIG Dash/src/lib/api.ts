@@ -3,6 +3,7 @@
 //   api.setBaseUrl("http://127.0.0.1:8000"); api.live = true;
 import type {
   AuditEntry,
+  AccountRow,
   ChangeRequest,
   ChangeStatus,
   ChallengeStatusView,
@@ -84,9 +85,11 @@ import type {
   ValidationReport,
   VerificationView,
   WalletView,
+  CredentialStatus,
 } from "../types";
 import {
   mockAudit,
+  mockAccounts,
   mockChangeRequests,
   mockCopyFollower,
   mockExperiences,
@@ -233,6 +236,18 @@ async function authorizedFetch(path: string, token?: string): Promise<Response> 
 }
 
 export async function postJson<T>(path: string, body: unknown): Promise<Envelope<T>> {
+  return sendJson<T>("POST", path, body);
+}
+
+export async function deleteJson<T>(path: string): Promise<Envelope<T>> {
+  return sendJson<T>("DELETE", path, undefined);
+}
+
+async function sendJson<T>(
+  method: "POST" | "PUT" | "DELETE",
+  path: string,
+  body: unknown,
+): Promise<Envelope<T>> {
   if (!health.live) {
     // A mutation that never left the browser is not a success. This branch used
     // to return ok:true, which told the operator a governed promote/quarantine
@@ -242,18 +257,18 @@ export async function postJson<T>(path: string, body: unknown): Promise<Envelope
       ok: false,
       data: {} as T,
       source: "mock",
-      error: `backend not reachable; ${path} was not sent`,
+      error: `backend not reachable; ${method} ${path} was not sent`,
     };
   }
   try {
     const res = await fetch(`${baseUrl}${path}`, {
-      method: "POST",
+      method,
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
         ...bearerHeaders(),
       },
-      body: JSON.stringify(body),
+      body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(20000),
     });
     if (res.status === 401) {
@@ -264,7 +279,16 @@ export async function postJson<T>(path: string, body: unknown): Promise<Envelope
       dropSession();
       throw new Error(`HTTP 401 — session refused; sign in again`);
     }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      // A refusal carries a reason ("venue_server is required", "already owned
+      // by another user"); dropping it would make every governed refusal read
+      // as a bare HTTP code in the UI.
+      const detail = await res
+        .json()
+        .then((b) => (b && (b.detail || b.reason)) as string | undefined)
+        .catch(() => undefined);
+      throw new Error(detail ? `HTTP ${res.status} — ${detail}` : `HTTP ${res.status}`);
+    }
     return { ok: true, data: (await res.json()) as T, source: "live" };
   } catch (e) {
     return { ok: false, data: {} as T, source: "mock", error: String(e) };
@@ -1503,6 +1527,104 @@ export const api = {
     } catch (e) {
       return { ok: false, data: null, source: "mock", error: String(e) };
     }
+  },
+
+  // -- Accounts (Phase F onboarding) ---------------------------------------
+  // An account is a venue identity the caller owns; its credentials live in the
+  // vault, never in the row. Every call below is owner-scoped by the backend's
+  // `owner_scope()`, so the UI never sends an owner id -- a caller can only
+  // register, credential, or delete accounts it already owns.
+  async getAccounts(): Promise<Envelope<AccountRow[]>> {
+    if (!health.live) return { ok: true, data: mockAccounts, source: "mock" };
+    try {
+      const res = await authorizedFetch("/accounts");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as unknown;
+      const rows = (
+        Array.isArray(body) ? body : ((body as Record<string, unknown>)?.accounts ?? [])
+      ) as AccountRow[];
+      return { ok: true, data: rows, source: "live" };
+    } catch (e) {
+      return { ok: false, data: [], source: "mock", error: String(e) };
+    }
+  },
+  async registerAccount(input: {
+    venue: string;
+    venue_login: string;
+    venue_server?: string;
+    display_name?: string;
+    venue_currency?: string;
+  }): Promise<Envelope<AccountRow>> {
+    return postJson<AccountRow>("/accounts", {
+      venue_server: "",
+      display_name: "",
+      venue_currency: "",
+      ...input,
+    });
+  },
+  async setAccountCredentials(
+    accountId: string,
+    credentials: Record<string, string>,
+  ): Promise<Envelope<CredentialStatus>> {
+    if (!health.live) {
+      return { ok: false, data: {} as CredentialStatus, source: "mock", error: "backend not reachable; credentials were not sent" };
+    }
+    try {
+      const res = await fetch(
+        `${baseUrl}/accounts/${encodeURIComponent(accountId)}/credentials`,
+        {
+          method: "PUT",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            ...bearerHeaders(),
+          },
+          body: JSON.stringify(credentials),
+          signal: AbortSignal.timeout(20000),
+        },
+      );
+      if (res.status === 401) {
+        dropSession();
+        throw new Error("HTTP 401 — session refused; sign in again");
+      }
+      if (!res.ok) {
+        const detail = await res
+          .json()
+          .then((b) => (b && (b.detail || b.reason)) as string | undefined)
+          .catch(() => undefined);
+        throw new Error(detail ? `HTTP ${res.status} — ${detail}` : `HTTP ${res.status}`);
+      }
+      // The route returns the status under `status`; the fields under `fields`.
+      const body = (await res.json()) as { status?: CredentialStatus; fields?: Record<string, boolean> };
+      return { ok: true, data: (body.status ?? (body as unknown as CredentialStatus)), source: "live" };
+    } catch (e) {
+      return { ok: false, data: {} as CredentialStatus, source: "mock", error: String(e) };
+    }
+  },
+  async getAccountCredentialStatus(accountId: string): Promise<Envelope<CredentialStatus>> {
+    if (!health.live) {
+      const mock = mockAccounts.find((a) => a.account_id === accountId);
+      return { ok: true, data: mock?.credentials as CredentialStatus, source: "mock" };
+    }
+    try {
+      const res = await authorizedFetch(
+        `/accounts/${encodeURIComponent(accountId)}/credentials`,
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { credentials?: CredentialStatus };
+      return {
+        ok: true,
+        data: (body.credentials ?? (body as unknown as CredentialStatus)),
+        source: "live",
+      };
+    } catch (e) {
+      return { ok: false, data: {} as CredentialStatus, source: "mock", error: String(e) };
+    }
+  },
+  async deleteAccount(accountId: string): Promise<Envelope<Record<string, unknown>>> {
+    return deleteJson<Record<string, unknown>>(
+      `/accounts/${encodeURIComponent(accountId)}`,
+    );
   },
 };
 

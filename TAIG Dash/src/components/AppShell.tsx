@@ -20,6 +20,7 @@ import DeveloperHubPage from "./pages/DeveloperHubPage";
 import GovernancePage from "./pages/GovernancePage";
 import LiveOpsPage from "./pages/LiveOpsPage";
 import EconomyPage from "./pages/EconomyPage";
+import AccountsPage from "./pages/AccountsPage";
 
 interface Props {
   user: User;
@@ -28,7 +29,7 @@ interface Props {
   onLogout: () => void;
 }
 
-type Page = "dashboard" | "chart" | "research" | "intelligence" | "strategy-lab" | "builder" | "paper" | "risk" | "execution" | "learning" | "subscriber" | "governance" | "ops" | "system" | "developer" | "economy";
+type Page = "dashboard" | "chart" | "research" | "intelligence" | "strategy-lab" | "builder" | "paper" | "risk" | "execution" | "learning" | "subscriber" | "governance" | "ops" | "system" | "developer" | "economy" | "accounts";
 
 const NAV_EN = [
   { id: "dashboard", label: "Command Center", icon: GridIcon },
@@ -42,6 +43,7 @@ const NAV_EN = [
   { id: "execution", label: "Execution Center", icon: SendIcon },
   { id: "learning", label: "Learning Center", icon: BookIcon },
   { id: "subscriber", label: "Subscriber", icon: StarIcon },
+  { id: "accounts", label: "Accounts", icon: PlugIcon },
   { id: "economy", label: "XTAIG Economy", icon: CoinIcon },
   { id: "governance", label: "Governance Center", icon: LockIcon },
   { id: "ops", label: "Live Ops", icon: PulseIcon },
@@ -61,6 +63,7 @@ const NAV_AR = [
   { id: "execution", label: "مركز التنفيذ" },
   { id: "learning", label: "مركز التعلم" },
   { id: "subscriber", label: "المشترك" },
+  { id: "accounts", label: "الحسابات" },
   { id: "economy", label: "اقتصاد XTAIG" },
   { id: "governance", label: "مركز الحوكمة" },
   { id: "ops", label: "العمليات الحية" },
@@ -112,6 +115,9 @@ function PulseIcon() {
 }
 function CodeIcon() {
   return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M5.5 4L2 7.5L5.5 11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/><path d="M9.5 4L13 7.5L9.5 11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+}
+function PlugIcon() {
+  return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M6 5.5V2M9 5.5V2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><rect x="4" y="5.5" width="7" height="4.5" rx="1" stroke="currentColor" strokeWidth="1.2"/><path d="M7.5 10V13.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>;
 }
 function CoinIcon() {
   return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="7.5" r="6" stroke="currentColor" strokeWidth="1.2"/><path d="M7.5 4.2V10.8M9.4 5.6C9.4 4.9 8.6 4.5 7.5 4.5C6.4 4.5 5.6 4.9 5.6 5.7C5.6 7.9 9.4 7 9.4 9.3C9.4 10.1 8.6 10.5 7.5 10.5C6.4 10.5 5.6 10.1 5.6 9.4" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/></svg>;
@@ -427,6 +433,7 @@ export default function AppShell({ user, lang, onLangToggle, onLogout }: Props) 
           {page === "execution" && <ExecutionCenterPage lang={lang} />}
           {page === "learning" && <LearningPage lang={lang} />}
           {page === "subscriber" && <SubscriberPage lang={lang} user={user} />}
+          {page === "accounts" && <AccountsPage lang={lang} />}
           {page === "economy" && <EconomyPage lang={lang} user={user} />}
           {page === "governance" && <GovernancePage lang={lang} />}
           {page === "ops" && <LiveOpsPage lang={lang} />}

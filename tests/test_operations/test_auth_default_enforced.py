@@ -131,6 +131,30 @@ def test_reference_reads_stay_open_without_a_session(client):
     assert client.get("/site").status_code == 200
 
 
+def test_cors_preflight_is_never_refused_by_enforcement(client):
+    """A browser's OPTIONS preflight must pass even with enforcement ON.
+
+    An `OPTIONS` request carries no credential by design and reaches no handler
+    logic; blocking it (401) refuses the preflight before CORSMiddleware can
+    answer it, and the browser turns that into `TypeError: Failed to fetch` on
+    every gated read. This is the exact symptom the console showed on `/risk/*`
+    the moment the default flipped ON.
+    """
+    from governance.auth import AuthService
+    from governance.identity import identity
+
+    identity._users.clear()
+    assert client.post("/users", json={"email": "first@x.co"}).status_code == 201
+    # the policy seam itself must not demand a session for OPTIONS
+    assert AuthService.requires_session("OPTIONS", "/risk/state") is False
+    res = client.options("/risk/state", headers={
+        "Origin": "http://localhost:8443",
+        "Access-Control-Request-Method": "GET",
+    })
+    assert res.status_code in (200, 204), res.text
+    assert res.headers.get("access-control-allow-origin") == "http://localhost:8443"
+
+
 # ---------------------------------------------------------------------------
 # the report matches the gate
 # ---------------------------------------------------------------------------

@@ -544,6 +544,16 @@ class AuthService:
         unchanged -- those reads stay gated -- so the exemption cannot be used
         to open a hole nobody asked for.
         """
+        # CORS preflight must never require a session. An `OPTIONS` request is
+        # the browser asking "may I make this call?" -- it carries no credential
+        # by design and reaches no handler logic, so demanding a session here
+        # refuses the preflight (401) before CORSMiddleware can answer it, and
+        # the browser turns that into a `TypeError: Failed to fetch` on every
+        # gated read (the console could not reach `/risk/*` the moment the
+        # default flipped ON). This is the one method whose policy is decided by
+        # the protocol rather than by the path or the tenant.
+        if method.upper() == "OPTIONS":
+            return False
         clean = path.split("?")[0].rstrip("/") or "/"
         if clean in {p.rstrip("/") for p in OPEN_PATHS}:
             return False

@@ -213,7 +213,7 @@ def test_the_report_is_internally_consistent(monkeypatch):
     monkeypatch.setattr(_global_identity, "_users", svc._users)
     monkeypatch.setattr(_global_identity, "_subscriptions", svc._subscriptions)
     monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", "consistency@x.com")
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
 
     client = TestClient(api.app)
     single = _tenancy(client)
@@ -327,7 +327,7 @@ def test_sabotage_rerouting_the_seam_turns_the_ownership_guard_red(two_tenants):
         api.owner_scope = original
 
 
-def test_sabotage_disabling_enforcement_flips_reads_gated(two_tenants):
+def test_sabotage_disabling_enforcement_flips_reads_gated(two_tenants, monkeypatch):
     """Prove `reads_gated` follows the policy: break the policy, it flips.
 
     `_tenancy_report` reads `auth.enforcement_enabled()`, which consults the
@@ -342,6 +342,10 @@ def test_sabotage_disabling_enforcement_flips_reads_gated(two_tenants):
 
     assert _tenancy(client)["reads_gated"] is True, (
         "precondition: the wired provider makes this a gated box")
+
+    # Isolate the provider from the env default (28.19): pin opt-out so the
+    # provider is the only thing gating reads here.
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
 
     original = auth_mod._multi_tenant_provider
     try:

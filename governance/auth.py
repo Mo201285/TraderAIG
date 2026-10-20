@@ -70,12 +70,16 @@ TOKEN_VERSION = "v1"
 #   /system/health - a watchdog or a human must be able to see WHY it is denied
 #   /payments/webhook - a payment provider calls this signed callback, has no
 #                       session and never will; it is verified by HMAC instead
+#   /site          - the public product surface (28.2.A): curated to carry no
+#                       tenant data, so it must answer an anonymous visitor on
+#                       any deployment, single-tenant included
 OPEN_PATHS = frozenset({
     "/auth/login",
     "/auth/session",
     "/auth/password",
     "/system/health",
     "/payments/webhook",
+    "/site",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -117,13 +121,11 @@ SERVICE_TOKEN_PATHS = frozenset({
 # or a new user trying to look up a venue. Matched by prefix so `/providers/{id}`
 # and `/market/quote` are covered by their roots. Deliberately NOT `/auth`: its
 # `/auth/logout` is state-changing and must stay gated. `/system/health` and the
-# docs routes are already in OPEN_PATHS. `/site` is the public product surface
-# (28.2.A): it is curated to carry no tenant data and must answer an anonymous
-# visitor even under enforcement.
+# docs routes are already in OPEN_PATHS, and the public product surface `/site`
+# is in OPEN_PATHS too so it answers anonymous visitors on any deployment.
 REFERENCE_PATHS = (
     "/providers",
     "/market",
-    "/site",
 )
 
 
@@ -487,9 +489,19 @@ class AuthService:
     # -- policy -------------------------------------------------------------
     @staticmethod
     def enforcement_enabled() -> bool:
-        return os.getenv("TRADERAIG_AUTH", "0").strip() in ("1", "true", "True",
-                                                            "yes") \
-            or _multi_tenant()
+        """Whether the session gate is active. ON by default (28.19).
+
+        An *unset* `TRADERAIG_AUTH` means enforced, not open: a fresh install
+        that never touches the variable still refuses an unauthenticated caller,
+        so the login screen is a door that locks. Enforcement is opt-OUT on an
+        isolated host -- `TRADERAIG_AUTH=0` (or `false`/`no`/`off`/empty) turns
+        it off. The multi-tenant trigger (slice I4) still turns it on regardless
+        of the variable, because a second tenant that can log in must not be
+        served by a gate that is off.
+        """
+        raw = os.getenv("TRADERAIG_AUTH", "1").strip().lower()
+        enabled = raw not in ("0", "false", "no", "off", "")
+        return enabled or _multi_tenant()
 
     @staticmethod
     def set_multi_tenant_provider(provider: "Optional[Callable[[], bool]]") -> None:

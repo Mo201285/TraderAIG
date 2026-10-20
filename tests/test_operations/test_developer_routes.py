@@ -41,7 +41,7 @@ def _isolated(tmp_path, monkeypatch):
     from governance.identity import identity
     from governance.api_tokens import ApiTokenService
 
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     monkeypatch.delenv("IDENTITY_PRIMARY_EMAIL", raising=False)
     monkeypatch.setenv("TRADERAIG_API_TOKENS_FILE",
                        str(tmp_path / "api_tokens.json"))

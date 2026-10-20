@@ -37,7 +37,12 @@ def _isolated(monkeypatch):
     from governance.auth import auth as auth_svc
     from governance.identity import identity
 
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    # This file tests both postures explicitly; its default baseline is the
+    # OPT-OUT posture (`TRADERAIG_AUTH=0`) so a test that does not set the var
+    # itself runs unenforced, and one that wants the gate sets it. Enforcement
+    # is ON by default in the code now (28.19), so pinning "0" here is what
+    # keeps the two postures distinguishable rather than relying on "unset".
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     monkeypatch.delenv("AUTH_SERVICE_TOKEN", raising=False)
     # Durable revocation writes a file. Point it at a temp path so the suite
     # cannot append test logouts into the LIVE .data directory -- a test that
@@ -195,6 +200,7 @@ def test_the_open_path_list_is_pinned_and_no_longer_than_it_needs_to_be(client):
         "/auth/password",       # the credential bootstrap; the route decides
         "/system/health",       # a watchdog or human must see WHY it is denied
         "/payments/webhook",    # provider-signed callback, no session ever
+        "/site",                # public product surface: carries no tenant data
         "/docs", "/openapi.json", "/redoc",
     }
     # and the property that matters: nothing state-changing beyond those.
@@ -291,7 +297,7 @@ def test_a_session_acts_as_ITSELF_and_not_as_the_server_principal(client, monkey
     stop that. Authentication that changes nothing is the same failure as the
     fabricated login screen, one layer down.
     """
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     op, _op_email, op_password = _operator(client, monkeypatch, plan="institutional")
 
     # An ordinary second user, with their own password. The credential is set
@@ -329,9 +335,18 @@ def test_a_session_acts_as_ITSELF_and_not_as_the_server_principal(client, monkey
 
 def test_a_deleted_users_session_stops_working(client, monkeypatch):
     """Otherwise deleting an account leaves a live credential behind, and
-    'DELETE /users/{id}' would read as revocation without being it."""
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    'DELETE /users/{id}' would read as revocation without being it.
+
+    A peer is created so the store stays non-empty after the delete: deleting
+    the LAST user empties the store and legitimately re-opens the identity
+    bootstrap window (28.19), which would otherwise mask the gate under test.
+    """
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     _uid, email, password = _operator(client, monkeypatch)
+    from governance.identity import identity
+    res_peer = client.post("/users", json={"email": f"peer{time.time_ns()}@x.co"})
+    assert res_peer.status_code == 201, res_peer.text
+    identity.set_password(res_peer.json()["user_id"], "peer-password-123")
     monkeypatch.setenv("TRADERAIG_AUTH", "1")
     token = client.post("/auth/login", json={"email": email,
                                              "password": password}).json()["token"]
@@ -339,7 +354,6 @@ def test_a_deleted_users_session_stops_working(client, monkeypatch):
     assert client.get("/auth/session", headers=headers).json()["authenticated"] is True
 
     # the operator deletes themselves out of band, as an incident response would
-    from governance.identity import identity
     victim = client.get("/auth/session", headers=headers).json()["user_id"]
     identity.delete_user(victim)
 
@@ -353,7 +367,7 @@ def test_the_service_token_still_acts_as_the_operator(client, monkeypatch):
     """Deliberate, and the reason the fallback exists: the watchdog maintains the
     operator's own rails, so treating the machine credential as a lesser caller
     would lock the 24/7 host out of the system it maintains."""
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     op, _e, _p = _operator(client, monkeypatch, plan="institutional")
     monkeypatch.setenv("TRADERAIG_AUTH", "1")
     monkeypatch.setenv("AUTH_SERVICE_TOKEN", "machine-token-value")
@@ -366,7 +380,7 @@ def test_no_session_presented_keeps_the_server_principal_behaviour(client, monke
     """The 24/7 host runs with enforcement off. Adding a caller concept must not
     quietly change who acts when nobody authenticated -- that is the regression
     that would take the platform down at the worst moment."""
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     op, _e, _p = _operator(client, monkeypatch, plan="institutional")
     assert client.get(f"/users/{op}").status_code == 200
 
@@ -381,7 +395,7 @@ def test_one_callers_session_does_not_affect_the_next_request(client, monkeypatc
     green. That is why the reset is unit-tested directly below rather than
     claimed here.
     """
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     op, op_email, op_password = _operator(client, monkeypatch, plan="institutional")
     from governance.identity import identity
 
@@ -482,7 +496,7 @@ def test_a_logout_survives_a_restart(client, monkeypatch):
     `_load_revocations` left the suite green, which is how a test that looks like
     it covers a restart can be covering nothing.
     """
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     from governance.auth import AuthError, AuthService
     from governance.auth import auth as auth_svc
 
@@ -517,7 +531,7 @@ def test_a_corrupt_revocation_file_does_not_stop_the_platform_from_starting(
     """A truncated or hand-edited file must degrade to "no durable revocations
     remembered", never to an exception on boot. An auth store that can take the
     API down is worse than one that forgets."""
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     from governance.auth import AuthService
 
     path = os.environ["TRADERAIG_REVOCATION_FILE"]
@@ -541,7 +555,7 @@ def test_a_corrupt_revocation_file_does_not_stop_the_platform_from_starting(
 def test_a_revocations_file_with_junk_entries_ignores_them(client, monkeypatch):
     """A hand-edited or half-written file may contain anything. Non-numeric
     expiry must be dropped, not trusted and not fatal."""
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     from governance.auth import AuthService
 
     path = os.environ["TRADERAIG_REVOCATION_FILE"]
@@ -593,7 +607,7 @@ def test_an_unwritable_revocation_store_still_logs_out_and_says_so(client, monke
     worse than accepting it and reporting that the cancellation did not survive
     a restart. The failure mode to avoid is the opposite one: a logout that
     raises 500 and silently keeps the session alive."""
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     _uid, email, password = _operator(client, monkeypatch)
     token = client.post("/auth/login", json={"email": email,
                                              "password": password}).json()["token"]
@@ -778,10 +792,13 @@ def test_a_credential_survives_a_database_round_trip():
 # enforcement: the door must be real, and must admit it is not there
 # ---------------------------------------------------------------------------
 
-def test_enforcement_is_off_by_default_and_says_so(client, monkeypatch):
-    """The live 24/7 deployment depends on this: it is the difference between
-    'secure' and 'quietly broken' for the watchdog."""
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+def test_enforcement_off_when_explicitly_disabled_and_says_so(client, monkeypatch):
+    """Opt-out is honoured and reported honestly.
+
+    Enforcement is ON by default now (28.19), so "off" is the explicit
+    `TRADERAIG_AUTH=0` posture -- and the deployment must say so out loud rather
+    than wear a login form it does not honour."""
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     health = client.get("/system/health").json()
 
     assert health["auth"]["enforcement_enabled"] is False
@@ -791,9 +808,8 @@ def test_enforcement_is_off_by_default_and_says_so(client, monkeypatch):
 
 
 def test_with_enforcement_off_a_post_still_works(client, monkeypatch):
-    """Pins the default so nobody can turn this on by accident and strand the
-    supervisor."""
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    """Pins the opt-out posture so the supervisor's unenforced host still runs."""
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     assert client.post("/users", json={"email": f"open{time.time_ns()}@x.co"}
                        ).status_code == 201
 
@@ -1055,7 +1071,13 @@ def test_service_token_allowed_behaviour(client):
 def test_a_valid_service_token_is_refused_on_a_human_route(client, monkeypatch):
     """The hardening step: the machine credential used to be an unbounded pass,
     so anyone holding it could `POST /users` or `/payments/charge`. Now those
-    routes demand a session even when the token itself is genuine."""
+    routes demand a session even when the token itself is genuine.
+
+    Enrolment happens first, with the door open, so the identity bootstrap
+    window (no users yet) cannot mask the gate: the point is that with a user
+    already present the machine token reaches no human route.
+    """
+    _uid, _email, _password = _operator(client, monkeypatch, plan="institutional")
     monkeypatch.setenv("TRADERAIG_AUTH", "1")
     monkeypatch.setenv("AUTH_SERVICE_TOKEN", "machine-token-value")
 
@@ -1084,7 +1106,7 @@ def test_a_human_session_still_reaches_the_human_route(client, monkeypatch):
 def test_with_enforcement_off_the_scope_changes_nothing(client, monkeypatch):
     """The 24/7 host runs with the door unlocked. Scoping must not quietly
     re-lock a route the supervisor has never needed a session for."""
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     monkeypatch.setenv("AUTH_SERVICE_TOKEN", "machine-token-value")
 
     res = client.post("/users", json={"email": f"open{time.time_ns()}@x.co"},

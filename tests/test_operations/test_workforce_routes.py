@@ -32,7 +32,7 @@ def _isolated(monkeypatch, tmp_path):
         WorkforceService,
     )
 
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     users = dict(identity._users)
     subs = dict(identity._subscriptions)
 

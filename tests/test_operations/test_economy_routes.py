@@ -59,7 +59,7 @@ def _isolated(monkeypatch):
     from governance.identity import identity
     from governance.payments import payments_service
 
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     users = dict(identity._users)
     subs = dict(identity._subscriptions)
     ledger = list(payments_service._ledger)

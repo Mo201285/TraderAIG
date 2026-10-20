@@ -69,8 +69,15 @@ def test_reference_reads_stay_open_under_multi_tenant(two_tenants):
         assert resp.status_code != 403, path
 
 
-def test_single_tenant_box_is_unchanged(monkeypatch):
-    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+def test_single_tenant_box_on_an_optout_host_is_unchanged(monkeypatch):
+    """Slice I4 must not, by itself, gate a one-operator box.
+
+    The unwritten variable no longer means "open" (enforcement is ON by default
+    as of 28.19), so the "single-tenant box is unchanged" baseline is the
+    explicit opt-out host: `TRADERAIG_AUTH=0` with one tenant stays ungated,
+    proving the multi-tenant trigger is what gates, not the default.
+    """
+    monkeypatch.setenv("TRADERAIG_AUTH", "0")
     monkeypatch.delenv("IDENTITY_PRIMARY_EMAIL", raising=False)
     monkeypatch.setattr(_global_identity, "_users", {})
     client = TestClient(api.app)
@@ -78,3 +85,16 @@ def test_single_tenant_box_is_unchanged(monkeypatch):
     block = _tenancy(client)
     assert block["multi_tenant"] is False
     assert block["reads_gated"] is False
+
+
+def test_single_tenant_box_is_gated_by_the_default(monkeypatch):
+    """An unset variable now enforces: a one-tenant box is gated (28.19)."""
+    monkeypatch.delenv("TRADERAIG_AUTH", raising=False)
+    monkeypatch.delenv("IDENTITY_PRIMARY_EMAIL", raising=False)
+    monkeypatch.setattr(_global_identity, "_users", {})
+    client = TestClient(api.app)
+    # no identity + enforcement on: only the bootstrap create path is open
+    assert client.get("/account").status_code in (401, 403)
+    block = _tenancy(client)
+    assert block["multi_tenant"] is False
+    assert block["reads_gated"] is True

@@ -225,11 +225,15 @@ app.add_middleware(
 async def _enforce_session(request: Request, call_next):
     """Require a session for every non-open request when enforcement is on.
 
-    Off by default (`TRADERAIG_AUTH=0`) and reported as off in
-    `/system/health.auth`, because a login screen on a deployment that does not
-    enforce anything is the fabricated door this project already removed once.
-    When it is on, the policy is `auth.requires_session`: every request needs a
-    session EXCEPT the named open paths — **reads included**.
+    ON by default (28.19): an unset `TRADERAIG_AUTH` no longer means "open", so
+    a fresh install refuses an unauthenticated caller and `/system/health.auth`
+    reports it as on. Enforcement is opt-out (`TRADERAIG_AUTH=0`) for an
+    isolated host. One exemption keeps the default from becoming a deadlock: the
+    *bootstrap* window, where enforcement is on but no identity exists yet, so
+    there is no principal to check against -- the first user is created and the
+    gate becomes real from the next caller. When enforcement is on, the policy
+    is `auth.requires_session`: every request needs a session EXCEPT the named
+    open paths — **reads included**.
 
     Reads used to be exempt, which meant `GET /users` returned the address book
     and `GET /account` returned the balance to a caller holding no credential at
@@ -252,6 +256,23 @@ async def _enforce_session(request: Request, call_next):
     """
     if auth.enforcement_enabled() and auth.requires_session(
             request.method, request.url.path):
+        # Bootstrap exemption (28.19): enforcement is on, but with NO identity
+        # yet there is no principal for a caller to be checked against -- the
+        # same rule `_guard`/`_own`/`owner_scope` already apply. Without it a
+        # fresh install could not create its first user over the API, and the
+        # in-handler "first identity is free" check would be unreachable.
+        #
+        # It is deliberately NARROW: the exemption opens only the identity
+        # bootstrap -- `POST /users`, the one action that establishes a
+        # principal -- not every route. An empty-store box must not answer the
+        # machine rails to a caller presenting a wrong credential; only the
+        # create path is free, and it ends the instant a user exists.
+        if (not identity.list_users()
+                and request.method.upper() == "POST"
+                and request.url.path.rstrip("/") == "/users"):
+            _identify_caller(request)
+            with _caller_bound(request):
+                return await call_next(request)
         denial = _reject_without_session(request)
         if denial is not None:
             return denial
@@ -802,11 +823,11 @@ def _tenancy_report() -> Dict:
         "multi_tenant": multi_tenant,
         "authenticated": bool(current_caller()),
         "auth_enforcement": (
-            ("TRADERAIG_AUTH=1 — every request (reads included) requires a "
-             "session") if os.environ.get("TRADERAIG_AUTH", "0").strip() in (
-                 "1", "true", "True", "yes") else
             ("read gating is ON because more than one tenant exists, even "
              "though TRADERAIG_AUTH is not set") if multi_tenant else
+            ("enforcement is ON (the default; TRADERAIG_AUTH is unset or "
+             "truthy) — every request (reads included) requires a session")
+            if enforcement else
             "TRADERAIG_AUTH=0 — NOT enforced; any caller that can reach this "
             "port acts as the acting principal"),
         # Reported honestly in both directions: reads require a credential, and

@@ -25,6 +25,7 @@ from accounts.supervisor import (  # noqa: E402
     AccountSupervisor,
     LaunchPlan,
     SupervisorError,
+    default_spawn,
     port_range,
 )
 from persistence.db import bind_test_session  # noqa: E402
@@ -345,3 +346,47 @@ def test_connection_row_carries_the_runtime_columns(session):
     assert {"pid", "port", "instance"} <= cols
     for name in ("pid", "port", "instance"):
         assert AccountConnectionRecord.__table__.columns[name].nullable is True
+
+
+# -- launcher wiring ------------------------------------------------------
+
+
+def test_with_launcher_wires_the_project_launcher(stack):
+    registry, connections, credentials = stack
+    sup = AccountSupervisor.with_launcher(
+        registry=registry, connections=connections, credentials=credentials)
+    assert sup._spawn is default_spawn
+
+
+def test_default_spawn_uses_the_project_detached_launcher(monkeypatch, tmp_path):
+    """`default_spawn` must delegate to `_start_detached`, not re-implement it.
+
+    A second process model is the drift this wiring exists to avoid, so the test
+    asserts the delegation and the shape of the arguments: argv carries only the
+    port, the credential env is passed as an overlay, and the log name is
+    account-derived.
+    """
+    captured = {}
+
+    def fake_start_detached(cmd, cwd, log_name, extra_env=None):
+        captured["cmd"] = cmd
+        captured["log_name"] = log_name
+        captured["env"] = extra_env or {}
+        return 9090
+
+    import tools.tradraig as tradraig
+    monkeypatch.setattr(tradraig, "_start_detached", fake_start_detached)
+
+    plan = LaunchPlan(account_id="acct-abcdef123456", venue="mt5", port=8150,
+                      instance="mt5-acct-abc",
+                      command=["python", "-m", "scripts.account_worker",
+                               "--port", "8150"],
+                      env={"MT5_LOGIN": "TEST-ACCT-1", "MT5_PASSWORD": "pw",
+                           "MT5_SERVER": "S"})
+    pid = default_spawn(plan)
+    assert pid == 9090
+    assert captured["cmd"][-1] == "8150"
+    assert "pw" not in captured["log_name"]
+    assert captured["env"]["MT5_PASSWORD"] == "pw"
+    assert captured["env"]["TRADERAIG_ACCOUNT_PORT"] == "8150"
+    assert captured["log_name"] == "account-acct-abcdef1"

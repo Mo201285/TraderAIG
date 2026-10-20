@@ -167,6 +167,19 @@ class AccountSupervisor:
         self._spawn = spawn
         self._worker_module = worker_module
 
+    @classmethod
+    def with_launcher(cls, **kwargs: Any) -> "AccountSupervisor":
+        """A supervisor whose `start()` really launches a worker process.
+
+        Wires the one launcher this project already uses,
+        `tools.tradraig._start_detached`, so an account worker is started the
+        same way the backend is -- same detached flags, same cwd, same
+        `logs/<name>.{out,err}.log` convention. A second launcher would be a
+        second process model, and the two would drift.
+        """
+        kwargs.setdefault("spawn", default_spawn)
+        return cls(**kwargs)
+
     # -- planning --------------------------------------------------------
 
     def plan(self, account_id: str, *, instance: str = "") -> LaunchPlan:
@@ -366,6 +379,31 @@ class AccountSupervisor:
                 "orphan_count": len(orphans), "live_count": len(live),
                 "is_authorisation": False,
                 "trade_authority": "risk/governor.py"}
+
+
+def default_spawn(plan: LaunchPlan) -> int:
+    """Launch one account worker detached, through the project's launcher.
+
+    Returns the child pid. The plan's credential `env` is merged into the child
+    environment and never written to the log name or the argv -- argv shows in a
+    process listing, so it carries only `--port`. `log_name` is derived from the
+    account id so a crashed worker's output lands in `logs/account-<id>.err.log`
+    where an operator can find it.
+    """
+    import sys
+
+    from tools.tradraig import _start_detached
+
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    extra_env = dict(plan.env)
+    extra_env.setdefault("TRADERAIG_ACCOUNT_PORT", str(plan.port))
+    if sys.platform == "win32":
+        # A worker must not fight the parent for the console; the launcher
+        # already detaches, this only names the intent.
+        extra_env.setdefault("PYTHONUTF8", "1")
+    return _start_detached(
+        plan.command, cwd=here, log_name=f"account-{plan.account_id[:12]}",
+        extra_env=extra_env)
 
 
 def pid_alive(pid: Optional[int]) -> bool:

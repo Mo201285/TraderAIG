@@ -1066,6 +1066,28 @@ def test_service_token_allowed_behaviour(client):
     # by a single path what the machine credential may WRITE.
     assert auth_svc.service_token_allowed("GET", "/paper/engine/start") is True
     assert auth_svc.service_token_allowed("GET", "/users") is True
+    # The F5c machine rail: a watchdog starts/stops a per-account engine by id.
+    assert auth_svc.service_token_allowed(
+        "POST", "/accounts/5bd99e44/runtime/start") is True
+    assert auth_svc.service_token_allowed(
+        "POST", "/accounts/5bd99e44/runtime/stop") is True
+    assert auth_svc.service_token_allowed(
+        "POST", "/accounts/5bd99e44/runtime/start/") is True
+    # ...but NOT the account's own client writes, which sit under the same
+    # `/accounts` root: a leaked machine credential must not register, re-home
+    # credentials, delete, or -- critically -- redeem an offer as a user.
+    assert auth_svc.service_token_allowed("POST", "/accounts") is False
+    assert auth_svc.service_token_allowed(
+        "PUT", "/accounts/5bd99e44/credentials") is False
+    assert auth_svc.service_token_allowed(
+        "DELETE", "/accounts/5bd99e44") is False
+    assert auth_svc.service_token_allowed(
+        "POST", "/accounts/5bd99e44/runtimex/start") is False
+    assert auth_svc.service_token_allowed(
+        "POST", "/offers/abc/redeem") is False
+    assert auth_svc.service_token_allowed("POST", "/offers") is True
+    assert auth_svc.service_token_allowed(
+        "PUT", "/offers/abc") is True
 
 
 def test_a_valid_service_token_is_refused_on_a_human_route(client, monkeypatch):

@@ -1522,6 +1522,132 @@ def delete_account(account_id: str) -> Dict:
             "credentials_cleared": cleared}
 
 
+# ---------------------------------------------------------------------------
+# Per-account engine runtime (Phase F, F5c): the durable view and its controls
+# ---------------------------------------------------------------------------
+#
+# `accounts/supervisor.py` (F5a/F5b) plans, launches and records one engine
+# process per account; these are the routes that expose that to a caller. They
+# are the *machine rail*: a watchdog or the 24/7 supervisor starts and stops an
+# account's engine by id, so they are service-token eligible
+# (`governance/auth.py::SERVICE_TOKEN_SEGMENT_PATTERNS`, which names exactly
+# `/accounts/{id}/runtime[/start|stop]` and nothing else under `/accounts` -- so
+# the account's own writes stay user-scoped). The read is not entitlement-gated,
+# for the same reason as `/mt5/engine`: an operator must be able to see that an
+# account's engine is NOT running without holding a trade entitlement. None of
+# these is a trade authority and none places an order; the Risk Governor remains
+# the only one.
+
+
+def _account_supervisor():
+    from accounts.supervisor import AccountSupervisor
+    return AccountSupervisor()
+
+
+@app.get("/accounts/{account_id}/runtime")
+def account_runtime(account_id: str) -> Dict:
+    """The recorded engine runtime for one account, honestly reported.
+
+    `pid`/`port`/`instance`/`status` come from the durable row; `process_alive`
+    is a best-effort liveness probe. A `null` pid is "no engine recorded", which
+    is a different fact from "engine stopped" and is reported as such. An
+    unknown account is a 404, never an empty box that reads as "stopped".
+    """
+    from accounts import isolation
+
+    principal = owner_scope() or identity.principal_user_id()
+    access = isolation.own_record_access(principal, account_id)
+    if access["reason"] == "unknown_account":
+        return JSONResponse(status_code=404,
+                            content={"ok": False, "account_id": account_id,
+                                     "reason": "unknown_account",
+                                     "detail": "no such account in the registry"})
+    try:
+        view = _account_supervisor().runtime(account_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the runtime could not be read", "error": str(exc)})
+    return {"ok": True, **view}
+
+
+@app.post("/accounts/{account_id}/runtime/start")
+def account_runtime_start(account_id: str, payload: Dict | None = None) -> Dict:
+    """Plan, launch and record one account's engine (machine rail).
+
+    Refuses loudly (409) when a live process is already recorded -- starting a
+    second worker on the same logins is two engines trading one account, not
+    idempotent. Refuses (409) when no launcher is configured: recording a
+    "starting" runtime with no process is the exact lie the supervisor exists to
+    prevent. An unknown account is a 404. Never a trade authority.
+    """
+    from accounts.supervisor import SupervisorError
+
+    _guard(Entitlement.MULTI_ACCOUNT)
+    from accounts import isolation
+
+    principal = owner_scope() or identity.principal_user_id()
+    access = isolation.own_record_access(principal, account_id)
+    if access["reason"] == "unknown_account":
+        return JSONResponse(status_code=404,
+                            content={"ok": False, "account_id": account_id,
+                                     "reason": "unknown_account",
+                                     "detail": "no such account in the registry"})
+    payload = payload or {}
+    instance = str(payload.get("instance") or "")
+    try:
+        result = _account_supervisor().start(account_id, instance=instance)
+    except SupervisorError as exc:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "account_id": account_id,
+            "reason": "supervisor_refused", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the engine could not be started", "error": str(exc)})
+    identity.record_audit("api", "account.runtime.start", "Account", account_id,
+                          {"pid": result.get("pid"), "port": result.get("port")})
+    return {"ok": True, **result}
+
+
+@app.post("/accounts/{account_id}/runtime/stop")
+def account_runtime_stop(account_id: str, payload: Dict | None = None) -> Dict:
+    """Forget an account's recorded engine process (machine rail).
+
+    Clears the durable runtime so a stopped account stops advertising a worker,
+    and reports the `forgot_pid` it forgot so a caller *can* terminate it --
+    signaling the OS process is the launcher's job. An account with no recorded
+    connection is a 409, not a silent success. Never a trade authority.
+    """
+    from accounts.supervisor import SupervisorError
+
+    _guard(Entitlement.MULTI_ACCOUNT)
+    from accounts import isolation
+
+    principal = owner_scope() or identity.principal_user_id()
+    access = isolation.own_record_access(principal, account_id)
+    if access["reason"] == "unknown_account":
+        return JSONResponse(status_code=404,
+                            content={"ok": False, "account_id": account_id,
+                                     "reason": "unknown_account",
+                                     "detail": "no such account in the registry"})
+    payload = payload or {}
+    reason = str(payload.get("reason") or "")
+    try:
+        result = _account_supervisor().stop(account_id, reason=reason)
+    except SupervisorError as exc:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "account_id": account_id,
+            "reason": "supervisor_refused", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the engine could not be stopped", "error": str(exc)})
+    identity.record_audit("api", "account.runtime.stop", "Account", account_id,
+                          {"forgot_pid": result.get("forgot_pid")})
+    return {"ok": True, **result}
+
+
 @app.get("/providers")
 def list_external_providers() -> Dict:
     """The External Provider Registry: every provider the platform can adopt.

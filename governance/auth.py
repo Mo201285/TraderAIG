@@ -130,6 +130,20 @@ SERVICE_TOKEN_PREFIX_EXCLUDES = (
     "/redeem",
 )
 
+# Mutating rails whose path carries a dynamic id *in the middle*, so neither an
+# exact set nor a root prefix can name them without also swallowing the client
+# routes beside them (a `/accounts` prefix would cover `POST /accounts`,
+# `PUT /accounts/{id}/credentials` and `DELETE /accounts/{id}` -- every one of
+# them ownership-gated client writes). Each pattern is a path split into
+# segments, where `*` matches exactly one segment. This names the F5c runtime
+# rail and nothing else: a machine watchdog may start/stop an account's engine
+# by id, while the account's own writes stay user-scoped.
+SERVICE_TOKEN_SEGMENT_PATTERNS = (
+    ("accounts", "*", "runtime"),
+    ("accounts", "*", "runtime", "start"),
+    ("accounts", "*", "runtime", "stop"),
+)
+
 # Global reference reads: data that belongs to no tenant (broker/provider
 # directories, raw market data). They stay reachable without a session once
 # multi-tenant enforcement is active, because gating them would not protect any
@@ -607,6 +621,12 @@ class AuthService:
                 if any(frag in clean
                        for frag in SERVICE_TOKEN_PREFIX_EXCLUDES):
                     return False
+                return True
+        segments = clean.strip("/").split("/")
+        for pattern in SERVICE_TOKEN_SEGMENT_PATTERNS:
+            if len(pattern) != len(segments):
+                continue
+            if all(p == "*" or p == s for p, s in zip(pattern, segments)):
                 return True
         return False
 

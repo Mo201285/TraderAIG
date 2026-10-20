@@ -87,11 +87,16 @@ VAULT_SLOTS: Dict[str, str] = {
 # through `is_known_slot()`.
 _ACCOUNT_ID_RE = r"[0-9a-f]{8,64}"
 
+_PROVIDER_ID_RE = r"[a-z0-9][a-z0-9_-]{0,63}"
+
 _DYNAMIC_SLOT_PATTERNS = (
     ("mt5", re.compile(rf"^mt5\.(?P<account_id>{_ACCOUNT_ID_RE})\.(?P<field>login|password|server)$")),
     ("cex", re.compile(
         rf"^cex\.(?P<venue>[a-z0-9]+)\.(?P<account_id>{_ACCOUNT_ID_RE})"
         rf"\.(?P<field>api_key|api_secret|passphrase)$")),
+    ("webhook", re.compile(
+        rf"^webhook\.(?P<provider_id>{_PROVIDER_ID_RE})"
+        rf"\.(?P<field>signing_secret)$")),
 )
 
 #: Fields a caller may write per family, so a typo cannot mint a slot nothing
@@ -99,6 +104,13 @@ _DYNAMIC_SLOT_PATTERNS = (
 DYNAMIC_SLOT_FIELDS: Dict[str, frozenset] = {
     "mt5": frozenset({"login", "password", "server"}),
     "cex": frozenset({"api_key", "api_secret", "passphrase"}),
+    # A partner's inbound webhook signer: the shared secret an external provider
+    # signs its referral deliveries with. Keyed by the registry's provider_id,
+    # not an account, so one partner = one slot and a rotation touches nothing
+    # else. Like the account slots it has no env fallback and is never
+    # enumerated by `list_slots()` -- a provider roster does not belong on the
+    # shared `/secrets/status` endpoint.
+    "webhook": frozenset({"signing_secret"}),
 }
 
 
@@ -141,6 +153,18 @@ def account_slots(kind: str, account_id: str, venue: str = "") -> Dict[str, str]
         return {f: f"cex.{v}.{account_id}.{f}"
                 for f in sorted(DYNAMIC_SLOT_FIELDS["cex"])}
     raise ValueError(f"unknown credential family: {kind!r}")
+
+
+def webhook_slot(provider_id: str) -> str:
+    """The signing-secret slot for one provider. The single place it is built.
+
+    Mirrors `account_slots`: one construction site, so a route and the verifier
+    cannot disagree about where a provider's shared secret lives.
+    """
+    pid = str(provider_id or "").strip().lower()
+    if not re.match(rf"^{_PROVIDER_ID_RE}$", pid):
+        raise ValueError(f"invalid provider_id for a webhook slot: {provider_id!r}")
+    return f"webhook.{pid}.signing_secret"
 
 
 class _DPApiBackend:

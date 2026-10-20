@@ -1846,3 +1846,71 @@ are gated on the acting principal; the client routes (`GET /offers/available`,
 acting principal and take no user id at all. `/offers/{id}/redeem` is
 service-token-**ineligible** so a leaked machine credential cannot redeem as a
 user.
+
+## Appendix F - Inbound partner webhooks (G4, 2026-10-21)
+
+This appendix documents the **partner webhook seam** -- the signed intake channel
+for the T2 referral loop (row 745). Where the loop's *event store* and its
+operator intake route (`POST /referral-events`) already existed, G4 adds the
+*channel* a real partner (ForTraders first) uses to report a registration. It is
+intake only: a delivery never verifies a purchase and never grants an
+entitlement, so the MAST rule that a partner integration is an operator act is
+preserved end to end.
+
+### The signing secret lives in the vault, per provider (S-G4a)
+
+A provider proves itself with an HMAC-SHA256 over the raw request body plus a
+timestamp. The shared secret is a new **derived vault slot family**,
+`webhook.<provider_id>.signing_secret` (`core/secrets_vault.py`), keyed by the
+registry's opaque `provider_id`:
+
+* same shape as the Phase F per-account slots: no env fallback, accepted by
+  `set`/`resolve`/`exists` through `is_known_slot()`, and **never enumerated by
+  `list_slots()`** -- a partner roster does not belong on the shared
+  `/secrets/status` endpoint. `webhook_slot(provider_id)` is the single place a
+  slot name is built.
+* the value never leaves the server: the route reports only a boolean
+  (`webhook_secret_set` in `GET /partner-network`), never the secret (28.18).
+
+### The delivery log makes the seam observable (S-G4b)
+
+`provider_webhook_deliveries` (`ProviderWebhookDeliveryRepository`) records
+**every** inbound delivery -- accepted, duplicate or refused -- so a forged
+signature, a stale timestamp, an unknown code or a re-sent registration is a row
+in a log an operator can read, rather than a silently-swallowed hole. It is
+deliberately independent of `referral_events`: a refused delivery creates no
+event, yet still belongs in the record. `outcome` is the closed vocabulary
+`accepted | duplicate | unknown_provider | bad_signature | stale_timestamp |
+invalid_body | unknown_code`; `signature_status` records the verification verdict
+separately, so "your signature was fine, the code was unknown" is one read.
+
+### The route: open, signed, and intake-only (S-G4c)
+
+`POST /webhooks/{provider_id}/referral` (`operations/api.py`) carries **no
+session and no acting principal** -- the caller is a provider, authenticated by
+signature, not a user. It is therefore an **open path** (`WEBHOOK_PREFIX` in
+`governance/auth.py`), like `/payments/webhook`, and works with
+`TRADERAIG_AUTH=1`. One path under the root stays gated: `GET /webhooks/deliveries`
+is the operator's log (`WEBHOOK_OPEN_EXCLUDES`). `GET /webhooks` is the read-only
+policy (header names, sign scheme, skew, outcomes) and carries no secret.
+
+The service (`providers/webhooks.py::WebhookService`) authenticates fail-closed,
+in order: registered provider -> enrolled secret -> signature + timestamp inside
+a 300s window -> body fields -> the code resolves to an issued referral -> then
+`RewardsService.record_event(channel="webhook")`. Status mapping: bad/missing/
+stale signature or an unconfigured provider is `401`, an unknown code or
+malformed body is `400`, and a re-sent registration is a truthful `200`
+`duplicate` (providers retry). `sign_payload`/`verify_signature` are public so a
+future egress signs exactly what the verifier expects.
+
+### Provider tracking coordinates (S-G4d)
+
+`external_providers` gains `affiliate_code` / `tracking_url` -- the provider's
+public marketing facts, so a referral link is built from the registry row rather
+than pasted in a UI. ForTraders is seeded with `affiliate_code=GL0TZ8VSBI` and
+`tracking_url=https://app.fortraders.com/trading/new-challenge`
+(`providers/seed.py`). These are **public** (they appear in the link a user
+clicks); the signing secret is not here -- it lives in the vault. Both columns are
+additive/nullable (`_required_schema()`), so a database created before them keeps
+its rows.
+

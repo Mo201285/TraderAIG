@@ -184,6 +184,16 @@ class ExternalProviderRecord(Base):
     tracking_method: Mapped[str] = mapped_column(String(64), default="", index=True)
     verification_method: Mapped[str] = mapped_column(String(128), default="")
     referral_reward_product: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # The provider's own public tracking coordinates, so a referral link can be
+    # built from the registry row rather than pasted into a UI: the affiliate
+    # code the platform's account was issued, and the tracking URL it resolves
+    # against. Additive and nullable -- a provider registered before these were
+    # recorded has neither, and inventing a code would fabricate a commercial
+    # identifier. They are *public* marketing facts (they appear in the link a
+    # user clicks); the signing secret that authenticates the provider's webhook
+    # is NOT here -- that lives in the vault (28.18).
+    affiliate_code: Mapped[str] = mapped_column(String(128), default="")
+    tracking_url: Mapped[str] = mapped_column(Text, default="")
     supported_venues: Mapped[str] = mapped_column(Text, default="[]")
     supported_accounts: Mapped[str] = mapped_column(Text, default="[]")
     policy_adapter: Mapped[str] = mapped_column(String(256), default="")
@@ -384,6 +394,56 @@ class ExternalReferralEvent(Base):
             name="uq_referral_event_registration",
         ),
     )
+
+
+class ProviderWebhookDelivery(Base):
+    """One inbound partner webhook delivery, recorded whether or not it worked.
+
+    ``ExternalReferralEvent`` is the **event** a programme reported; this row is
+    the **delivery** that carried it -- a separate concern, because a delivery
+    can fail for reasons the event never sees: a forged signature, a replayed
+    timestamp, an unknown code, or the same registration sent twice. Recording
+    every attempt (accepted, duplicate, refused) makes a partner's traffic
+    *visible* -- an operator can answer "did ForTraders' webhook ever reach us,
+    and what did it say?" -- instead of the seam being a black hole that a bad
+    secret silently swallows.
+
+    Deliberately independent of ``referral_events``: a refused delivery creates
+    no event (there is nothing to attribute), yet still belongs in the record.
+    ``event_id`` is filled only when the delivery was accepted and resolved to a
+    stored event ('' otherwise), so the two facts stay linked without a foreign
+    key -- same rule as the rest of this family.
+
+    ``outcome`` is the closed vocabulary the service writes:
+    ``accepted`` | ``duplicate`` | ``unknown_code`` | ``invalid_body`` |
+    ``stale_timestamp`` | ``bad_signature`` | ``unknown_provider``.
+    ``signature_status`` records the verification verdict separately, so a
+    provider can be told "your signature was fine, the code was unknown" in one
+    read. **No ``grants_trade_permission`` here, ever**: a delivery says a
+    partner told us something; it never says anybody may trade (rows 741/742).
+
+    ``provider_id`` resolves to a row in ``external_providers`` (no foreign key,
+    for the reason in the module docstring: a de-listed provider must not break
+    the delivery history it already produced).
+    """
+
+    __tablename__ = "provider_webhook_deliveries"
+
+    delivery_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider_id: Mapped[str] = mapped_column(String(64), index=True)
+    channel: Mapped[str] = mapped_column(String(32), default="webhook")
+    external_registration_id: Mapped[str] = mapped_column(String(128),
+                                                          default="",
+                                                          index=True)
+    referral_code: Mapped[str] = mapped_column(String(128), default="",
+                                               index=True)
+    event_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    outcome: Mapped[str] = mapped_column(String(32), default="", index=True)
+    signature_status: Mapped[str] = mapped_column(String(32), default="")
+    detail: Mapped[str] = mapped_column(Text, default="")
+    received_at: Mapped[float] = mapped_column(Float, default=_now_ts)
+    created_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
+    updated_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
 
 
 class EvidenceRecord(Base):

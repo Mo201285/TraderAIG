@@ -27,6 +27,13 @@ _DEFAULT_PROVIDERS: List[Dict[str, Any]] = [
         "tracking_method": "referral_code",
         "verification_method": "verified-provider-purchase",
         "referral_reward_product": "challenge_basic",
+        # Public tracking coordinates, from the operator's own marketing data:
+        # the affiliate code this platform's account was issued and the URL a
+        # referral link resolves against. Public facts (they appear in the link a
+        # user clicks) -- the webhook signing secret is NOT here, it lives in the
+        # vault (28.18).
+        "affiliate_code": "GL0TZ8VSBI",
+        "tracking_url": "https://app.fortraders.com/trading/new-challenge",
         "supported_venues": ["mt5"],
         "supported_accounts": ["challenge", "demo", "funded"],
         "policy_adapter": "providers.fortraders:ForTradersProviderAdapter",

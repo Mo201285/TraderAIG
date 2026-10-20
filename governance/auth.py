@@ -89,6 +89,22 @@ OPEN_PATHS = frozenset({
 # given — an earlier version excluded the entire `/auth/` prefix for convenience
 # and logout then had no way to know which session to end.
 
+# Inbound partner webhooks (G4): a third-party provider calls these signed
+# callbacks, has no session and never will. Like `/payments/webhook` they are
+# authenticated by the caller's own signature (HMAC over the body with a
+# per-provider secret held in the vault), so demanding a session would make them
+# unreachable while adding no security. This is a *prefix* rather than an exact
+# path because the route is `/webhooks/{provider_id}/referral`; the shared root
+# is `/webhooks`, and the route itself refuses any provider whose signing secret
+# is not enrolled (verify-then-accept, fail-closed).
+#
+# One path under the root is deliberately NOT open: `/webhooks/deliveries` is an
+# operator's read of the delivery log, which is gated like any other read. A
+# partner must not be able to enumerate the platform's view of its traffic, so
+# the exclusion is explicit rather than left to chance.
+WEBHOOK_PREFIX = "/webhooks"
+WEBHOOK_OPEN_EXCLUDES = frozenset({"/webhooks/deliveries"})
+
 # The machine rails the 24/7 supervisor is allowed to drive with the service
 # token. The service token is a MACHINE credential for keeping the engine and the
 # venue connections alive — `scripts/ensure_backend.py` POSTs exactly these after
@@ -586,6 +602,10 @@ class AuthService:
             return False
         clean = path.split("?")[0].rstrip("/") or "/"
         if clean in {p.rstrip("/") for p in OPEN_PATHS}:
+            return False
+        if clean == WEBHOOK_PREFIX or (
+                clean.startswith(WEBHOOK_PREFIX + "/")
+                and clean not in WEBHOOK_OPEN_EXCLUDES):
             return False
         if clean.startswith("/docs") or clean.startswith("/redoc"):
             return False

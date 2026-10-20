@@ -79,6 +79,19 @@ class PartnerNetworkService:
         return self._scorecard
 
     @staticmethod
+    def _webhook_secret_set(provider_id: str) -> bool:
+        """Whether the provider has a webhook signing secret enrolled.
+
+        A boolean, never the secret (28.18). Advisory: it tells an operator
+        whether the provider *can* deliver a signed webhook, not whether it has.
+        """
+        try:
+            from core.secrets_vault import vault, webhook_slot
+            return bool(vault.resolve(webhook_slot(provider_id)))
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
     def _enrich(**fields) -> Dict[str, Any]:
         return {**fields, "is_authorisation": IS_AUTHORISATION,
                 "trade_authority": TRADE_AUTHORITY}
@@ -166,6 +179,9 @@ class PartnerNetworkService:
                 "provider_id": p["provider_id"],
                 "name": p.get("name", ""),
                 "provider_type": p.get("provider_type", ""),
+                "affiliate_code": p.get("affiliate_code", ""),
+                "tracking_url": p.get("tracking_url", ""),
+                "webhook_secret_set": self._webhook_secret_set(p["provider_id"]),
                 "supported_venues": list(p.get("supported_venues") or []),
                 "registry_status": p.get("status", ""),
                 "attestation_status": (att["status"] if att else "pending"),

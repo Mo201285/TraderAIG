@@ -114,7 +114,17 @@ def _required_schema() -> dict[str, dict[str, str]]:
         # fresh CREATE still has it). Additive and nullable; a provider
         # registered before the contract existed has no product to name, and
         # inventing one would fabricate a commercial term.
-        "external_providers": {"referral_reward_product": "TEXT"},
+        "external_providers": {"referral_reward_product": "TEXT",
+                               # The provider's public tracking coordinates (G4):
+                               # the affiliate code a referral link is built from
+                               # and the URL it resolves against. Additive and
+                               # nullable -- a provider registered before these
+                               # were recorded has neither, and inventing a code
+                               # would fabricate a commercial identifier. These
+                               # are public marketing facts; the webhook signing
+                               # secret lives in the vault, never here (28.18).
+                               "affiliate_code": "TEXT",
+                               "tracking_url": "TEXT"},
         # The engine process serving a connection (Phase F5): pid, port and an
         # instance label, so the AccountSupervisor can reconcile an orphan after
         # a restart. Additive and nullable -- a connection declared before any

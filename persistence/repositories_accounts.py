@@ -46,6 +46,7 @@ from persistence.models_accounts import (
     ExternalProviderRecord,
     ExternalReferralEvent,
     PartnerAttestationRecord,
+    ProviderWebhookDelivery,
     ReferralRecord,
     UserLocaleRecord,
     ResearchMissionRecord,
@@ -385,6 +386,7 @@ class ExternalProviderRepository:
                  provider_type: str = "", referral_program: str = "",
                  tracking_method: str = "", verification_method: str = "",
                  referral_reward_product: str = "",
+                 affiliate_code: str = "", tracking_url: str = "",
                  supported_venues: Optional[List[str]] = None,
                  supported_accounts: Optional[List[str]] = None,
                  policy_adapter: str = "", status: str = "active"
@@ -398,6 +400,11 @@ class ExternalProviderRepository:
         `referral_reward_product` is the commercial contract `_validate_provider`
         pins against the product catalogue: a programme may only promise an
         existing, non-trade-granting service as its reward.
+
+        `affiliate_code` / `tracking_url` are the provider's *public* tracking
+        coordinates, so a referral link is built from this row rather than pasted
+        in a UI. They are marketing facts, not credentials: the webhook signing
+        secret lives in the vault (28.18), never here.
         """
         payload = {
             "provider_id": provider_id, "name": name,
@@ -425,6 +432,8 @@ class ExternalProviderRepository:
                     tracking_method=str(tracking_method or ""),
                     verification_method=str(verification_method or ""),
                     referral_reward_product=str(referral_reward_product or ""),
+                    affiliate_code=str(affiliate_code or ""),
+                    tracking_url=str(tracking_url or ""),
                     supported_venues=_json_dumps((
                         list(supported_venues) if supported_venues else [])),
                     supported_accounts=_json_dumps((
@@ -440,6 +449,8 @@ class ExternalProviderRepository:
                 row.tracking_method = str(tracking_method or "")
                 row.verification_method = str(verification_method or "")
                 row.referral_reward_product = str(referral_reward_product or "")
+                row.affiliate_code = str(affiliate_code or "")
+                row.tracking_url = str(tracking_url or "")
                 row.supported_venues = _json_dumps((
                     list(supported_venues) if supported_venues else []))
                 row.supported_accounts = _json_dumps((
@@ -506,6 +517,8 @@ def _row_to_provider(row: ExternalProviderRecord) -> Dict[str, Any]:
         "tracking_method": row.tracking_method,
         "verification_method": row.verification_method,
         "referral_reward_product": row.referral_reward_product,
+        "affiliate_code": row.affiliate_code,
+        "tracking_url": row.tracking_url,
         "supported_venues": _loads(row.supported_venues),
         "supported_accounts": _loads(row.supported_accounts),
         "policy_adapter": row.policy_adapter,
@@ -737,6 +750,23 @@ def _row_to_event(row: ExternalReferralEvent) -> Dict[str, Any]:
         "reward_status": row.reward_status,
         "error_detail": row.error_detail,
         "note": row.note,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+def _row_to_webhook_delivery(row: ProviderWebhookDelivery) -> Dict[str, Any]:
+    return {
+        "delivery_id": row.delivery_id,
+        "provider_id": row.provider_id,
+        "channel": row.channel,
+        "external_registration_id": row.external_registration_id,
+        "referral_code": row.referral_code,
+        "event_id": row.event_id,
+        "outcome": row.outcome,
+        "signature_status": row.signature_status,
+        "detail": row.detail,
+        "received_at": row.received_at,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
@@ -1048,6 +1078,81 @@ class ReferralEventRepository:
             row.updated_at = datetime.now(timezone.utc).isoformat()
             session.commit()
             return _row_to_event(row)
+
+
+class ProviderWebhookDeliveryRepository:
+    """Durable record of every inbound partner webhook delivery.
+
+    Where `ReferralEventRepository` stores the *events* a partner reported, this
+    stores the *deliveries* that carried them -- accepted or refused. The
+    distinction is the point: a forged signature or an unknown code produces no
+    event, yet an operator still needs to see that the partner called and what
+    went wrong. Every attempt is written, so the seam is observable rather than
+    a black hole.
+
+    Same family discipline: a definite answer or raise. A delivery log that
+    returned nothing during an outage would read as "the partner never called",
+    which is the one reading that must never be guessed.
+    """
+
+    def __init__(self, session: Optional[Session] = None) -> None:
+        self._injected = session
+        self._session = session
+
+    @contextmanager
+    def _db(self):
+        if self._injected is not None:
+            yield self._injected
+            return
+        session = self._session or make_live_session()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    def record(self, *, provider_id: str, outcome: str, channel: str = "webhook",
+               external_registration_id: str = "", referral_code: str = "",
+               event_id: str = "", signature_status: str = "",
+               detail: str = "") -> Dict[str, Any]:
+        """Append one delivery attempt. Always writes, accepted or not."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._db() as session:
+            row = ProviderWebhookDelivery(
+                delivery_id=uuid.uuid4().hex,
+                provider_id=str(provider_id or "").strip(),
+                channel=str(channel or "webhook").strip(),
+                external_registration_id=str(external_registration_id or "").strip(),
+                referral_code=str(referral_code or "").strip(),
+                event_id=str(event_id or "").strip(),
+                outcome=str(outcome or "").strip(),
+                signature_status=str(signature_status or "").strip(),
+                detail=str(detail or ""),
+                created_at=now,
+            )
+            session.add(row)
+            session.commit()
+            return _row_to_webhook_delivery(row)
+
+    def get(self, delivery_id: str) -> Optional[Dict[str, Any]]:
+        with self._db() as session:
+            row = session.get(ProviderWebhookDelivery, str(delivery_id or ""))
+        return _row_to_webhook_delivery(row) if row is not None else None
+
+    def list_all(self, *, provider_id: str = "", outcome: str = "",
+                 limit: int = 10_000) -> List[Dict[str, Any]]:
+        with self._db() as session:
+            query = select(ProviderWebhookDelivery)
+            if provider_id:
+                query = query.where(
+                    ProviderWebhookDelivery.provider_id == str(provider_id))
+            if outcome:
+                query = query.where(
+                    ProviderWebhookDelivery.outcome == str(outcome))
+            rows = session.execute(
+                query.order_by(ProviderWebhookDelivery.received_at,
+                               ProviderWebhookDelivery.delivery_id).limit(limit)
+            ).scalars().all()
+        return [_row_to_webhook_delivery(r) for r in rows]
 
 
 class EvidenceRepository:

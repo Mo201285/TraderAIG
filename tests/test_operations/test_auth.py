@@ -940,7 +940,13 @@ def test_every_route_is_covered_by_the_policy(client):
     GET/HEAD/OPTIONS entirely, which is how an enforced write path beside an
     open read path passed this suite for so long.
     """
-    from governance.auth import OPEN_PATHS, _multi_tenant, auth as auth_svc
+    from governance.auth import (
+        OPEN_PATHS,
+        WEBHOOK_OPEN_EXCLUDES,
+        WEBHOOK_PREFIX,
+        _multi_tenant,
+        auth as auth_svc,
+    )
     from operations.api import app
 
     open_paths = {p.rstrip("/") for p in OPEN_PATHS}
@@ -956,10 +962,18 @@ def test_every_route_is_covered_by_the_policy(client):
         (`is_reference`) -- but only in the multi-tenant mode, so it is mirrored
         conditionally: on a single-tenant box those reads stay gated and must
         still be reported as covered by the policy.
+
+        G4 adds the partner webhook prefix, with one gated exclusion
+        (`/webhooks/deliveries`), mirrored here so the walk tests the route table
+        against the same rule the policy enforces.
         """
         clean = path.rstrip("/")
         if (clean in open_paths or clean.startswith("/docs")
                 or clean.startswith("/redoc")):
+            return True
+        if clean == WEBHOOK_PREFIX or (
+                clean.startswith(WEBHOOK_PREFIX + "/")
+                and clean not in WEBHOOK_OPEN_EXCLUDES):
             return True
         return auth_svc.is_reference(path) and _multi_tenant()
 

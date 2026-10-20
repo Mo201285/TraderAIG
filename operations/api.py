@@ -934,8 +934,22 @@ def _tenancy_report() -> Dict:
             "product (snapshotted at intake) through products.grant with "
             "actor=referral_rewards and price_usd=0.0 -- the promotion path, "
             "distinct from payments.charge_product. An event and a reward are "
-"commercial facts: none of them grants or reads a trade permission, "
+            "commercial facts: none of them grants or reads a trade permission, "
              "and every payload carries is_authorisation: False (row 745)"
+        ),
+        "partner_webhooks": (
+            "POST /webhooks/{provider_id}/referral (the signed intake seam of "
+            "the T2 loop: a partner proves itself with an HMAC over the raw body "
+            "+ a timestamp against the secret at "
+            "webhook.<provider_id>.signing_secret in the vault -- no session, "
+            "open path; a bad/stale signature or an unconfigured provider is "
+            "401, an unknown code is 400, a re-sent registration is a truthful "
+            "200 duplicate). Every delivery -- accepted, duplicate or refused -- "
+            "is recorded in provider_webhook_deliveries; GET /webhooks is the "
+            "read-only policy and GET /webhooks/deliveries (gated) is the "
+            "operator's log. Intake only: it never verifies a purchase and never "
+            "grants an entitlement; every payload carries is_authorisation: "
+            "False (rows 741/742/745)"
         ),
         "localization": (
             "GET /localization/locales + GET /localization/regions + "
@@ -2408,6 +2422,113 @@ def get_referral_event(event_id: str) -> Dict:
             "error": str(exc)})
     return {"ok": True, "event": event, "read_only": True,
             "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+# ---------------------------------------------------------------------------
+# Inbound partner webhooks (G4): the signed intake seam for the T2 loop.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/webhooks")
+def webhook_policy() -> Dict:
+    """The onboarding contract for the partner webhook seam.
+
+    Read-only, carries no secret: a provider operator reads what header to sign,
+    which slots their delivery will be authenticated against, and that an
+    accepted delivery only *intakes a registration* -- it never verifies a
+    purchase and never grants an entitlement (that stays the sponsor's act).
+    """
+    from providers.webhooks import OUTCOMES
+
+    return {
+        "ok": True,
+        "read_only": True,
+        "provider_webhook_prefix": "/webhooks/{provider_id}/referral",
+        "signature_header": "X-TAIG-Signature",
+        "timestamp_header": "X-TAIG-Timestamp",
+        "signature_scheme": "sha256=HMAC_SHA256(secret, timestamp + '.' + body)",
+        "skew_seconds": 300,
+        "outcomes": list(OUTCOMES),
+        "meaning": ("an accepted delivery records a referral registration event; "
+                    "it never verifies a purchase and never grants an entitlement"),
+        "not_an_authority": ("the Risk Governor remains the sole trade authority; "
+                             "a webhook cannot move a trade permission"),
+        "is_authorisation": False,
+        "trade_authority": "risk/governor.py",
+    }
+
+
+@app.get("/webhooks/deliveries")
+def list_webhook_deliveries(provider_id: str = "", outcome: str = "") -> Dict:
+    """Recent partner deliveries, accepted and refused, for an operator.
+
+    Deliberately a read behind the session gate (not under the open webhook
+    prefix's matching logic -- this exact path is a normal gated read): an
+    operator sees the partner's traffic; a partner does not enumerate its own
+    rejections.
+    """
+    from providers.webhooks import WebhookService
+
+    try:
+        service = WebhookService()
+        rows = service.deliveries(provider_id=provider_id, outcome=outcome)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the webhook delivery registry could not be read",
+            "error": str(exc)})
+    return {"ok": True, "read_only": True, "deliveries": rows,
+            "summary": WebhookService.summary(rows),
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/webhooks/{provider_id}/referral")
+async def provider_referral_webhook(provider_id: str, request: Request) -> Dict:
+    """A signed partner delivery: authenticate the provider, intake the event.
+
+    No session and no acting principal: the caller is a *provider*, proven by an
+    HMAC signature over the raw body (`X-TAIG-Signature`) and a timestamp
+    (`X-TAIG-Timestamp`) inside a small window, against the secret the operator
+    enrolled in `webhook.<provider_id>.signing_secret`. An unconfigured provider
+    or a bad/stale signature is refused (`401`), an unknown code is `400`, and a
+    re-sent registration is a truthful `200` `duplicate` (providers retry). Only
+    `accepted` records a `referral_event`; the delivery itself is recorded either
+    way. Never grants, never verifies -- `is_authorisation: False`.
+    """
+    from providers.webhooks import WebhookService
+
+    raw = await request.body()
+    signature = request.headers.get("X-TAIG-Signature", "")
+    ts_header = request.headers.get("X-TAIG-Timestamp", "")
+    try:
+        timestamp = int(ts_header) if str(ts_header).strip() else None
+    except (TypeError, ValueError):
+        timestamp = None
+
+    try:
+        result = WebhookService().deliver(
+            provider_id, body=raw, signature=signature, timestamp=timestamp)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the webhook delivery registry could not be written",
+            "error": str(exc)})
+
+    reason = result.get("reason")
+    if result.get("ok"):
+        status_code = 200
+    elif reason == "duplicate":
+        status_code = 200
+    elif reason in ("unknown_provider", "no_signing_secret", "bad_signature",
+                    "missing_signature", "stale_timestamp"):
+        status_code = 401
+    elif reason == "store_unavailable":
+        status_code = 503
+    else:
+        status_code = 400
+    if status_code != 200:
+        return JSONResponse(status_code=status_code, content=result)
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -2311,7 +2311,26 @@ prevent. Now:
   global reconciliation ledger does not call another account's positions
   "missing_remote".
 
-### 4. What this slice does not do
+### 4. The live restart caught what the fakes hid
+
+Restarting the API to load the slice produced `"account_id": ""` in
+`/mt5/engine/status`. The adapter called `AccountRegistry.by_identity`, but the
+real method is `get_by_identity`; the `except Exception: resolved = ""` guard --
+there so a missing registry cannot break trading -- swallowed the
+`AttributeError`. The bridge tests all injected identity with
+`monkeypatch.setattr(adapter, "account_id", ...)`, so no test had ever exercised
+the lookup against the real method name.
+
+Fixed in `execution/mt5_adapter.py` (commit `e9637e3`), with
+`test_adapter_resolves_its_account_from_the_registry`: a fake registry exposes
+**only** `get_by_identity`, asserts the `("mt5", "1400167",
+"FTTrading-Server")` key, and the adapter must return the id and cache it. An
+unknown identity still returns `""`, which keeps the documented legacy
+behaviour. This is also the argument for the identity being read from live
+state at least once, not only from a fake: an optional-metadata guard is exactly
+where a wrong method name survives.
+
+### 5. What this slice does not do
 
 Two accounts still cannot *generate decisions* simultaneously: the market feed,
 the opportunity board and the pipeline loop remain one-per-process. This slice is
@@ -2319,16 +2338,16 @@ the execution and reconciliation half they will use. The next slice (F5d) is the
 per-account candle/quote rail plus per-account loops; until then the honest
 statement is "the bridge is ready, the multi-account engine is not".
 
-### 5. Gate
+### 6. Gate
 
-`tests/test_worker_bridge.py` (14): frame validation including wrong account,
+`tests/test_worker_bridge.py` (15): frame validation including wrong account,
 NaN and zero volume; idempotent placement; a retryable 502 versus a raising 401;
 HTTP order and positions routes; worker routing with a local terminal that must
 not trade; no fallback on rejection; account-scoped remote sync; account-scoped
-adapter sync; token derivation; endpoint liveness.
+adapter sync; registry identity resolution; token derivation; endpoint liveness.
 
-Run: 14 bridge + 32 supervisor/bridge + 42 adapter/live-engine/bridge-paths/
-ownership + 18 api-lab + 2 hygiene. Ruff clean. Commit `fec6744`.
+Run: 15 bridge + 32 supervisor/bridge + 42 adapter/live-engine/bridge-paths/
+ownership + 18 api-lab + 2 hygiene. Ruff clean. Commits `fec6744`, `e9637e3`.
 
 
 

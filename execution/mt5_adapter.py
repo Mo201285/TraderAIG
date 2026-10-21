@@ -142,7 +142,7 @@ class MT5Adapter:
             try:
                 from accounts.registry import AccountRegistry
 
-                row = AccountRegistry().by_identity("mt5", str(login), server)
+                row = AccountRegistry().get_by_identity("mt5", str(login), server)
                 if row:
                     resolved = str(row.get("account_id") or "")
             except Exception:  # noqa: BLE001 - identity is optional metadata

@@ -360,6 +360,27 @@ def test_adapter_sync_does_not_close_another_accounts_position(fresh_state,
     assert fresh_state.get_position("B1").status.value == "open"
 
 
+def test_adapter_resolves_its_account_from_the_registry(monkeypatch):
+    """The live process must find its own registry row by (login, server)."""
+    from accounts import registry as registry_module
+
+    class Registry:
+        def get_by_identity(self, venue, login, server):
+            assert (venue, login, server) == (
+                "mt5", "1400167", "FTTrading-Server")
+            return {"account_id": ACCOUNT_A}
+
+    monkeypatch.setattr(registry_module, "AccountRegistry", Registry)
+    monkeypatch.setattr(mt5_module, "settings", SimpleNamespace(
+        mt5=SimpleNamespace(login=1400167, server="FTTrading-Server")))
+
+    adapter = MT5Adapter()
+    assert adapter.account_id() == ACCOUNT_A
+    assert adapter.account_id() == ACCOUNT_A
+    adapter.forget_account_identity()
+    assert adapter.account_id() == ACCOUNT_A
+
+
 def test_worker_token_is_per_account_and_deterministic(monkeypatch):
     monkeypatch.setenv("TRADERAIG_WORKER_SECRET", "test-secret")
     a = worker_token(ACCOUNT_A)

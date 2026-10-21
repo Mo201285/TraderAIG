@@ -95,6 +95,7 @@ import type {
   ReaJobsView,
   ReaSummaryView,
   ReaInvestigateResult,
+  ReaJobEvidenceView,
 } from "../types";
 import {
   mockAudit,
@@ -1810,6 +1811,19 @@ export const api = {
       return { ok: true, data: await res.json(), source: "live" };
     } catch (e) {
       return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async getReaJobEvidence(jobId: string): Promise<Envelope<ReaJobEvidenceView>> {
+    if (!health.live)
+      return { ok: false, data: null as unknown as ReaJobEvidenceView, source: "mock", error: "backend not reachable" };
+    try {
+      const res = await authorizedFetch(`/rea/jobs/${encodeURIComponent(jobId)}/evidence`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { rea?: ReaJobEvidenceView };
+      if (!body.rea) throw new Error("malformed /rea/jobs/{id}/evidence payload");
+      return { ok: true, data: body.rea, source: "live" };
+    } catch (e) {
+      return { ok: false, data: null as unknown as ReaJobEvidenceView, source: "mock", error: String(e) };
     }
   },
   async investigateRea(input: {

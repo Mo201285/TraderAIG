@@ -112,6 +112,7 @@ def test_all_rea_routes_need_a_principal(client, rea_db, monkeypatch):
         ("get", "/rea/jobs", {}),
         ("get", "/rea/jobs/summary", {}),
         ("get", "/rea/jobs/any", {}),
+        ("get", "/rea/jobs/any/evidence", {}),
     ]
     for method, route, kwargs in calls:
         r = getattr(client, method)(route, **kwargs)
@@ -266,6 +267,50 @@ def test_capabilities_surface(client, rea_db, monkeypatch):
 def test_unknown_job_is_404(client, rea_db, monkeypatch):
     _bind_service(monkeypatch, rea_db, _ok_result())
     resp = client.get("/rea/jobs/does-not-exist")
+    assert resp.status_code == 404
+    assert resp.json()["reason"] == "unknown_job"
+
+
+# -- the linked evidence read -------------------------------------------------
+
+def test_job_evidence_reads_the_fed_item(client, rea_db, monkeypatch):
+    # A fed run is readable back through the linked-evidence surface: the plane
+    # item the job was fed into is returned, with `linked: True`.
+    service = _bind_service(monkeypatch, rea_db, _ok_result())
+    job = service.investigate(command="analyze-javascript-application",
+                              target="C:/tmp/app", feed_evidence=True)
+    job_id = job["job_id"]
+    assert job["evidence_id"], "a fed run links an evidence id"
+
+    resp = client.get(f"/rea/jobs/{job_id}/evidence")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["rea"]["linked"] is True
+    assert body["rea"]["linked_evidence_id"] == job["evidence_id"]
+    assert body["rea"]["evidence"]["evidence_id"] == job["evidence_id"]
+    assert body["rea"]["evidence"]["trust_ladder"] == 0
+    assert body["is_authorisation"] is False
+    assert body["trade_authority"] == TRADE_AUTHORITY
+
+
+def test_job_evidence_unfed_is_honest_linked_false(client, rea_db, monkeypatch):
+    # A completed run that was never fed is `linked: False` with `reason:
+    # not_fed` -- not an error, and not a fabricated item.
+    service = _bind_service(monkeypatch, rea_db, _ok_result())
+    job = service.investigate(command="analyze-javascript-application",
+                              target="C:/tmp/app")
+    resp = client.get(f"/rea/jobs/{job['job_id']}/evidence")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["rea"]["linked"] is False
+    assert body["rea"]["evidence"] is None
+    assert body["rea"]["reason"] == "not_fed"
+
+
+def test_job_evidence_unknown_job_is_404(client, rea_db, monkeypatch):
+    _bind_service(monkeypatch, rea_db, _ok_result())
+    resp = client.get("/rea/jobs/ghost/evidence")
     assert resp.status_code == 404
     assert resp.json()["reason"] == "unknown_job"
 

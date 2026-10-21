@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Language, ReaJob } from "../../types";
+import type { Language, ReaJob, ReaJobEvidenceView } from "../../types";
 import {
   Btn,
   Card,
@@ -72,6 +72,32 @@ export default function ReaPage({ lang }: { lang: Language }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  // Linked-evidence read: one row at a time. `null` = nothing opened yet.
+  const [evidenceJob, setEvidenceJob] = useState<string | null>(null);
+  const [evidence, setEvidence] = useState<ReaJobEvidenceView | null>(null);
+  const [evidenceBusy, setEvidenceBusy] = useState(false);
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
+
+  const openEvidence = async (jobId: string) => {
+    if (evidenceJob === jobId) {
+      setEvidenceJob(null);
+      setEvidence(null);
+      setEvidenceError(null);
+      return;
+    }
+    setEvidenceJob(jobId);
+    setEvidence(null);
+    setEvidenceError(null);
+    setEvidenceBusy(true);
+    const res = await api.getReaJobEvidence(jobId);
+    setEvidenceBusy(false);
+    if (!res.ok) {
+      setEvidenceError(res.error ?? (en ? "Could not read the linked evidence" : "تعذّرت قراءة الأدلة المرتبطة"));
+      return;
+    }
+    setEvidence(res.data);
+  };
 
   const submit = async () => {
     setError(null);
@@ -326,7 +352,27 @@ export default function ReaPage({ lang }: { lang: Language }) {
                         <span style={{ marginInlineStart: 6, fontSize: "0.66rem", color: "var(--muted-foreground)" }}>{j.detail}</span>
                       )}
                     </td>
-                    <td style={{ ...tdStyle, fontFamily: "var(--font-mono)", fontSize: "0.62rem" }}>{j.evidence_id || "—"}</td>
+                    <td style={{ ...tdStyle, fontFamily: "var(--font-mono)", fontSize: "0.62rem" }}>
+                      {j.evidence_id ? (
+                        <button
+                          onClick={() => openEvidence(j.job_id)}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            padding: 0,
+                            cursor: "pointer",
+                            color: "var(--primary)",
+                            fontFamily: "var(--font-mono)",
+                            fontSize: "0.62rem",
+                            textDecoration: "underline",
+                          }}
+                        >
+                          {evidenceJob === j.job_id ? (en ? "hide" : "إخفاء") : (en ? "view" : "عرض")} · {j.evidence_id}
+                        </button>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -346,6 +392,55 @@ export default function ReaPage({ lang }: { lang: Language }) {
                 </Btn>
               </div>
             </div>
+
+            {evidenceJob && (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: 12,
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  background: "var(--muted)",
+                }}
+              >
+                <SectionLabel lang={lang}>{en ? "LINKED EVIDENCE" : "الأدلة المرتبطة"}</SectionLabel>
+                {evidenceBusy && (
+                  <LoadingState lang={lang} label={en ? "Reading linked evidence…" : "جارٍ قراءة الأدلة المرتبطة…"} />
+                )}
+                {!evidenceBusy && evidenceError && (
+                  <div style={{ fontSize: "0.72rem", color: "#f87171", fontFamily: ff(lang) }}>{evidenceError}</div>
+                )}
+                {!evidenceBusy && evidence && evidence.linked === false && (
+                  <div style={{ fontSize: "0.72rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
+                    {evidence.reason === "not_fed"
+                      ? en
+                        ? "This run was not fed into the Evidence Plane (it completed without feed_evidence), so there is no linked item. Nothing is fabricated in its place."
+                        : "لم يُدخل هذا التشغيل إلى مستوى الأدلة (اكتمل دون feed_evidence)، لذا لا يوجد عنصر مرتبط. لا يُختلق شيء مكانه."
+                      : en
+                        ? "This run was fed, but the linked Evidence-Plane item is no longer present."
+                        : "أُدخل هذا التشغيل، لكن عنصر مستوى الأدلة المرتبط لم يعد موجوداً."}
+                  </div>
+                )}
+                {!evidenceBusy && evidence && evidence.linked && evidence.evidence && (
+                  <div style={{ fontSize: "0.72rem", fontFamily: ff(lang) }}>
+                    <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 6 }}>
+                      <Meta label={en ? "evidence id" : "معرّف الدليل"} value={evidence.evidence.evidence_id} mono />
+                      <Meta label={en ? "source kind" : "نوع المصدر"} value={evidence.evidence.source_kind ?? "—"} />
+                      <Meta label={en ? "topic" : "الموضوع"} value={evidence.evidence.topic ?? "—"} />
+                      <Meta label={en ? "trust ladder" : "درجة الثقة"} value={String(evidence.evidence.trust_ladder ?? "—")} />
+                    </div>
+                    {evidence.evidence.headline && (
+                      <div style={{ color: "var(--muted-foreground)" }}>{evidence.evidence.headline}</div>
+                    )}
+                    <div style={{ marginTop: 6, fontSize: "0.66rem", color: "var(--muted-foreground)", fontFamily: ff(lang) }}>
+                      {en
+                        ? "Fed as our own analysis at trust 0 (internal). The ladder only ever rises; nothing here grants any authority."
+                        : "أُدخل كتحليلنا الخاص عند درجة ثقة 0 (داخلي). لا تنخفض الدرجة أبداً؛ لا شيء هنا يمنح أي سلطة."}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
       </Card>

@@ -145,6 +145,38 @@ class ReaService:
                 "is_authorisation": IS_AUTHORISATION,
                 "trade_authority": TRADE_AUTHORITY}
 
+    def job_evidence(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Read the Evidence-Plane item an REA investigation was fed into.
+
+        Returns ``None`` when no such job exists. For an existing job, returns a
+        small envelope: ``linked`` is True only when the job carries a linked
+        plane ``evidence_id`` that resolves to a row the plane still holds, and
+        then ``evidence`` is that item. A run that was never fed (or whose fed
+        item has since gone) reads as ``linked: False`` with a stated reason --
+        never an empty object dressed up as an item, and never the raw engine
+        graph, which is deliberately not stored here.
+        """
+        job = self._job_repo().get(job_id)
+        if job is None:
+            return None
+        linked_id = str(job.get("evidence_id") or "")
+        evidence: Optional[Dict[str, Any]] = None
+        if linked_id:
+            evidence = self._evidence_plane().get(linked_id)
+        return {
+            "job_id": job["job_id"],
+            "linked": evidence is not None,
+            "linked_evidence_id": linked_id,
+            "evidence": evidence,
+            "reason": "" if evidence is not None else (
+                "not_fed" if not linked_id
+                else "linked_evidence_missing"),
+            "summary": job.get("summary") or {},
+            "read_only": True,
+            "is_authorisation": IS_AUTHORISATION,
+            "trade_authority": TRADE_AUTHORITY,
+        }
+
     @staticmethod
     def _enrich(job: Dict[str, Any]) -> Dict[str, Any]:
         return {**job, "is_authorisation": IS_AUTHORISATION,

@@ -332,6 +332,66 @@ def test_service_capabilities_roster(session):
     assert report["trade_authority"] == TRADE_AUTHORITY
 
 
+# -- linked evidence read ---------------------------------------------------
+
+def _service_with(session, evidence_service):
+    stub = _StubAdapter({"outcome": "completed", "ok": True,
+                         "evidence": _FAKE_EVIDENCE, "stdout_bytes": 7,
+                         "progress": []})
+    return ReaService(adapter=stub, jobs=ReaJobRepository(session),
+                      evidence=evidence_service)
+
+
+def test_job_evidence_reads_the_fed_row(session):
+    evidence = EvidencePlaneService(EvidenceRepository(session))
+    service = _service_with(session, evidence)
+    job = service.investigate(command="analyze-javascript-application",
+                              target="C:/tmp/app", feed_evidence=True)
+    report = service.job_evidence(job["job_id"])
+    assert report["linked"] is True
+    assert report["linked_evidence_id"] == job["evidence_id"]
+    assert report["evidence"]["evidence_id"] == job["evidence_id"]
+    assert report["evidence"]["trust_ladder"] == 0
+    assert report["reason"] == ""
+    assert report["read_only"] is True
+    assert report["is_authorisation"] is False
+    assert report["trade_authority"] == TRADE_AUTHORITY
+
+
+def test_job_evidence_unfed_run_is_honest(session):
+    evidence = EvidencePlaneService(EvidenceRepository(session))
+    service = _service_with(session, evidence)
+    job = service.investigate(command="analyze-javascript-application",
+                              target="C:/tmp/app")
+    report = service.job_evidence(job["job_id"])
+    assert report["linked"] is False
+    assert report["evidence"] is None
+    assert report["reason"] == "not_fed"
+    # the engine's own digest still rides along -- nothing is fabricated
+    assert report["summary"]["evidence_id"] == "ev_deadbeef"
+
+
+def test_job_evidence_unknown_job_is_none(session):
+    service = _service_with(session,
+                            EvidencePlaneService(EvidenceRepository(session)))
+    assert service.job_evidence("no-such-job") is None
+
+
+def test_job_evidence_missing_linked_row_is_stated(session):
+    # If the fed plane row is gone, the read says so rather than pretending the
+    # job was never fed.
+    evidence = EvidencePlaneService(EvidenceRepository(session))
+    service = _service_with(session, evidence)
+    job = service.investigate(command="analyze-javascript-application",
+                              target="C:/tmp/app", feed_evidence=True)
+    session.execute(delete(EvidenceRecord))
+    session.commit()
+    report = service.job_evidence(job["job_id"])
+    assert report["linked"] is False
+    assert report["reason"] == "linked_evidence_missing"
+    assert report["linked_evidence_id"] == job["evidence_id"]
+
+
 # -- real engine integration (skipped when the engine is not pinned) ---------
 
 def _engine_present() -> bool:

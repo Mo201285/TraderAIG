@@ -3836,6 +3836,34 @@ def rea_get_job(job_id: str) -> Dict:
             "is_authorisation": False, "trade_authority": "risk/governor.py"}
 
 
+@app.get("/rea/jobs/{job_id}/evidence")
+def rea_job_evidence(job_id: str) -> Dict:
+    """Read the Evidence-Plane item one REA investigation was fed into.
+
+    The full engine graph is never copied onto the job; a run is fed into the
+    plane only when `feed_evidence` was set, at trust 0 (`internal`). This surface
+    reads that linked item back. A job that was never fed -- or whose fed item is
+    gone -- is an honest `linked: false` with a stated reason, never a fabricated
+    item and never a 404, which is reserved for an unknown job.
+    """
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        report = _rea_service().job_evidence(job_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the REA job evidence could not be read",
+            "error": str(exc)})
+    if report is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "job_id": job_id, "reason": "unknown_job",
+            "detail": "no such REA investigation"})
+    return {"ok": True, "rea": report, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
 # ---------------------------------------------------------------------------
 # Governance
 # ---------------------------------------------------------------------------

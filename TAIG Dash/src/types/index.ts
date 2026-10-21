@@ -2121,3 +2121,28 @@ export interface ReaInvestigateResult {
   trade_authority: string;
 }
 
+export interface ReaEvidenceItem {
+  evidence_id: string;
+  source_kind?: string;
+  topic?: string;
+  headline?: string;
+  trust_ladder?: number;
+  external_id?: string;
+  note?: string;
+  created_at?: string;
+  is_authorisation?: boolean;
+  trade_authority?: string;
+}
+
+export interface ReaJobEvidenceView {
+  job_id: string;
+  linked: boolean;
+  linked_evidence_id: string;
+  evidence: ReaEvidenceItem | null;
+  reason: string;
+  summary: ReaJobSummary;
+  read_only: boolean;
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+

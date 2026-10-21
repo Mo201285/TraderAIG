@@ -115,10 +115,29 @@ class ReaService:
         return self._enrich(row) if row is not None else None
 
     def list_all(self, *, status: str = "", command: str = "",
-                 limit: int = 10_000) -> List[Dict[str, Any]]:
+                 outcome: str = "", limit: int = 10_000,
+                 offset: int = 0) -> List[Dict[str, Any]]:
         return [self._enrich(r)
                 for r in self._job_repo().list_all(
-                    status=status, command=command, limit=limit)]
+                    status=status, command=command, outcome=outcome,
+                    limit=limit, offset=offset)]
+
+    def count(self, *, status: str = "", command: str = "",
+              outcome: str = "") -> int:
+        return self._job_repo().count(status=status, command=command,
+                                      outcome=outcome)
+
+    def capabilities(self) -> Dict[str, Any]:
+        """The declared capability roster, one entry per routed command."""
+        entries = [c.as_dict() for c in self._registry.list()]
+        return {
+            "count": len(entries),
+            "capabilities": entries,
+            "registry": self._registry.summary(),
+            "read_only": True,
+            "is_authorisation": IS_AUTHORISATION,
+            "trade_authority": TRADE_AUTHORITY,
+        }
 
     def summary(self) -> Dict[str, Any]:
         return {**self._job_repo().summary(),
@@ -142,7 +161,18 @@ class ReaService:
         Returns the finished job. ``feed_evidence`` ingests a *successful* run
         into the Evidence Plane at trust 0 and links the resulting evidence id
         onto the job; a failed run is never fed (there is nothing to feed).
+
+        The command is checked against the DECLARED registry first: a command the
+        adapter could route but this deployment has not named is refused here with
+        a ``ValueError`` (the route maps it to `400 invalid_request`) rather than
+        opened as a job the registry never blessed. The adapter still validates
+        again as the last line of defence.
         """
+        capability = self._registry.get(command)
+        if capability is None:
+            raise ValueError(
+                f"unknown REA command {str(command or '').strip()!r}; this "
+                f"deployment routes: {', '.join(c.command for c in self._registry.list())}")
         # Open the ledger row before touching the engine, so an investigation
         # exists even if the engine refuses immediately.
         job = self._jobs.request(command=command, target=target,

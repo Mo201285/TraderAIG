@@ -3064,6 +3064,19 @@ class ResearchMissionRepository:
 # are terminal and never re-opened -- an investigation is a fact about a run, not
 # a mutable draft.
 REA_JOB_STATUSES = ("requested", "running", "completed", "failed")
+# The closed outcome vocabulary a finished REA job records. Mirrors
+# `research.rea.adapter.OUTCOMES` (a test pins the two equal) but is duplicated
+# here on purpose: the repository must not import the research package at module
+# load, because `research.rea.__init__` imports the service, which imports this
+# module -- a load-time cycle. The duplicate is a filter vocabulary, not logic.
+REA_OUTCOMES = (
+    "completed",
+    "timeout",
+    "engine_failed",
+    "invalid_output",
+    "unavailable",
+    "invalid_request",
+)
 REA_JOB_FROM = {
     "running": ("requested",),
     "completed": ("running",),
@@ -3161,18 +3174,47 @@ class ReaJobRepository:
             row = session.get(ReaJobRecord, str(job_id or ""))
         return _row_to_rea_job(row) if row is not None else None
 
-    def list_all(self, *, status: str = "", command: str = "",
-                 limit: int = 10_000) -> List[Dict[str, Any]]:
+    def count(self, *, status: str = "", command: str = "",
+              outcome: str = "") -> int:
+        """How many jobs match a filter, without materialising the rows."""
         with self._db() as session:
-            query = select(ReaJobRecord)
-            if status:
-                if status not in REA_JOB_STATUSES:
-                    raise ValueError("unknown REA job status filter")
-                query = query.where(ReaJobRecord.status == status)
-            if command:
-                query = query.where(ReaJobRecord.command == str(command).strip())
+            query = self._filtered(select(func.count()).select_from(ReaJobRecord),
+                                   status=status, command=command,
+                                   outcome=outcome)
+            return int(session.execute(query).scalar() or 0)
+
+    @staticmethod
+    def _filtered(query, *, status: str, command: str, outcome: str):
+        if status:
+            if status not in REA_JOB_STATUSES:
+                raise ValueError("unknown REA job status filter")
+            query = query.where(ReaJobRecord.status == status)
+        if command:
+            query = query.where(ReaJobRecord.command == str(command).strip())
+        if outcome:
+            if outcome not in REA_OUTCOMES:
+                raise ValueError("unknown REA job outcome filter")
+            query = query.where(ReaJobRecord.outcome == str(outcome).strip())
+        return query
+
+    def list_all(self, *, status: str = "", command: str = "",
+                 outcome: str = "", limit: int = 10_000,
+                 offset: int = 0) -> List[Dict[str, Any]]:
+        """List jobs newest-first, with an optional status/command/outcome
+        filter and a bounded window (`limit`/`offset`).
+
+        A growing ledger needs a bounded read: `limit` caps a page and `offset`
+        walks it, while `count()` reports the true total for the same filter so a
+        caller never mistakes a page for the whole table (28.15 auditability).
+        An unknown filter value is refused rather than silently returning an
+        empty page that reads like "no jobs".
+        """
+        with self._db() as session:
+            query = self._filtered(select(ReaJobRecord), status=status,
+                                   command=command, outcome=outcome)
             rows = session.execute(
-                query.order_by(ReaJobRecord.created_at.desc()).limit(limit)
+                query.order_by(ReaJobRecord.created_at.desc())
+                .limit(int(limit)).offset(max(0, int(offset)))
             ).scalars().all()
         return [_row_to_rea_job(r) for r in rows]
 

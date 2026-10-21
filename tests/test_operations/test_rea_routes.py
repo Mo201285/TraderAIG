@@ -9,7 +9,8 @@ the routes can get wrong:
 - a run the engine could not answer is a recorded job whose outcome names why --
   the route maps it to `502` with the engine's reason, never a fake `200`;
 - a completed run is `200`, the job is readable back by id (`404` for a ghost),
-  and the list/summary surfaces report it;
+  and the list/summary/capabilities surfaces report it -- the list is a bounded
+  page with a true `total`, never a page mistaken for the whole ledger;
 - nothing grants authority: `is_authorisation: False` and the Risk Governor ride
   on every payload.
 """
@@ -104,6 +105,7 @@ def test_all_rea_routes_need_a_principal(client, rea_db, monkeypatch):
                         lambda: None)
     calls = [
         ("get", "/rea/health", {}),
+        ("get", "/rea/capabilities", {}),
         ("post", "/rea/investigate",
          {"json": {"command": "analyze-javascript-application",
                    "target": "C:/x"}}),
@@ -133,14 +135,35 @@ def test_investigate_engine_failure_is_502(client, rea_db, monkeypatch):
     assert body["trade_authority"] == TRADE_AUTHORITY
 
 
-def test_investigate_unrouted_command_is_400(client, rea_db, monkeypatch):
+def test_investigate_adapter_invalid_request_is_502(client, rea_db, monkeypatch):
+    # When the ADAPTER reports invalid_request for a DECLARED command (the engine
+    # refused it), the run is a recorded failure -> 502 with the named reason.
+    # (The registry pre-check is the separate 400 path, covered below.)
     _bind_service(monkeypatch, rea_db,
                   {"outcome": "invalid_request", "ok": False,
-                   "detail": "unknown REA command", "progress": []})
+                   "detail": "the engine refused the target", "progress": []})
     resp = client.post("/rea/investigate",
-                       json={"command": "no-such-command", "target": "C:/x"})
+                       json={"command": "analyze-javascript-application",
+                             "target": "C:/x"})
     assert resp.status_code == 502
     assert resp.json()["reason"] == "invalid_request"
+
+
+def test_investigate_undeclared_command_is_400(client, rea_db, monkeypatch):
+    # The REAL service refuses a command the registry does not declare, before
+    # any job row exists -- a clean 400, the adapter never touched.
+    from sqlalchemy import select
+    from research.evidence_plane import EvidencePlaneService
+    from research.rea.service import ReaService
+    service = ReaService(jobs=ReaJobRepository(rea_db),
+                         evidence=EvidencePlaneService(EvidenceRepository(rea_db)))
+    monkeypatch.setattr("operations.api._rea_service", lambda: service)
+    resp = client.post("/rea/investigate",
+                       json={"command": "definitely-not-a-command",
+                             "target": "C:/x"})
+    assert resp.status_code == 400
+    assert resp.json()["reason"] == "invalid_request"
+    assert rea_db.execute(select(ReaJobRecord)).scalars().all() == []
 
 
 def test_investigate_empty_target_is_400(client, rea_db, monkeypatch):
@@ -204,6 +227,40 @@ def test_list_invalid_status_filter_is_400(client, rea_db, monkeypatch):
     resp = client.get("/rea/jobs?status=no-such-status")
     assert resp.status_code == 400
     assert resp.json()["reason"] == "invalid_filter"
+
+
+def test_list_invalid_outcome_filter_is_400(client, rea_db, monkeypatch):
+    _bind_service(monkeypatch, rea_db, _ok_result())
+    resp = client.get("/rea/jobs?outcome=no-such-outcome")
+    assert resp.status_code == 400
+    assert resp.json()["reason"] == "invalid_filter"
+
+
+def test_list_pages_the_ledger_with_a_true_total(client, rea_db, monkeypatch):
+    service = _bind_service(monkeypatch, rea_db, _ok_result())
+    for i in range(5):
+        service.investigate(command="analyze-javascript-application",
+                            target=f"C:/t{i}")
+    page = client.get("/rea/jobs?limit=2&offset=0")
+    assert page.status_code == 200
+    body = page.json()
+    assert body["count"] == 2, "the page is bounded"
+    assert body["total"] == 5, "the total is the whole ledger, not the page"
+    assert body["limit"] == 2 and body["offset"] == 0
+    page2 = client.get("/rea/jobs?limit=2&offset=2")
+    assert page2.json()["count"] == 2
+    assert page2.json()["total"] == 5
+
+
+def test_capabilities_surface(client, rea_db, monkeypatch):
+    _bind_service(monkeypatch, rea_db, _ok_result())
+    resp = client.get("/rea/capabilities")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["rea"]["count"] >= 1
+    assert body["rea"]["capabilities"]
+    assert body["is_authorisation"] is False
+    assert body["trade_authority"] == TRADE_AUTHORITY
 
 
 def test_unknown_job_is_404(client, rea_db, monkeypatch):

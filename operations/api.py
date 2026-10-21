@@ -3742,14 +3742,48 @@ def rea_investigate(payload: Optional[Dict] = None) -> Dict:
     return JSONResponse(status_code=status_code, content=body)
 
 
-@app.get("/rea/jobs")
-def rea_list_jobs(status: str = "", command: str = "") -> Dict:
-    """List REA investigations, newest first; optional status/command filter."""
+@app.get("/rea/capabilities")
+def rea_capabilities() -> Dict:
+    """The declared REA capability roster: one entry per routed command.
+
+    Read-only and non-leaking. A capability is a DECLARED fact -- what this
+    deployment will route -- never a permission, so the surface carries
+    `is_authorisation: False` like every other REA payload.
+    """
     guard = _guard_factory(_acting_actor())
     if guard is not None:
         return guard
     try:
-        rows = _rea_service().list_all(status=status, command=command)
+        report = _rea_service().capabilities()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the REA capability roster could not be read",
+            "error": str(exc)})
+    return {"ok": True, "rea": report, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/rea/jobs")
+def rea_list_jobs(status: str = "", command: str = "", outcome: str = "",
+                  limit: int = 100, offset: int = 0) -> Dict:
+    """List REA investigations, newest first, as a bounded page.
+
+    Optional `status`/`command`/`outcome` filters narrow the page; `limit`
+    (default 100) and `offset` walk it, and `count` reports the true total for
+    the same filter so a caller never mistakes a page for the whole ledger. An
+    unknown filter value is a `400 invalid_filter`, not an empty page.
+    """
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    bounded = max(1, min(int(limit or 0), 1000))
+    try:
+        service = _rea_service()
+        rows = service.list_all(status=status, command=command,
+                                outcome=outcome, limit=bounded,
+                                offset=max(0, int(offset or 0)))
+        total = service.count(status=status, command=command, outcome=outcome)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={
             "ok": False, "reason": "invalid_filter", "detail": str(exc)})
@@ -3758,9 +3792,10 @@ def rea_list_jobs(status: str = "", command: str = "") -> Dict:
             "ok": False, "reason": "store_unavailable",
             "detail": "the REA job ledger could not be read",
             "error": str(exc)})
-    return {"ok": True, "count": len(rows), "jobs": rows,
-            "read_only": True, "is_authorisation": False,
-            "trade_authority": "risk/governor.py"}
+    return {"ok": True, "count": len(rows), "total": total,
+            "limit": bounded, "offset": max(0, int(offset or 0)),
+            "jobs": rows, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
 
 
 @app.get("/rea/jobs/summary")

@@ -248,6 +248,90 @@ def test_job_repository_lifecycle_is_terminal(session):
         repo.start(job["job_id"])
 
 
+# -- hardening: the closed vocabulary, the bounded read, the declared roster --
+
+def test_repository_outcome_vocabulary_matches_the_adapter():
+    # The repository duplicates the outcome vocabulary on purpose (a load-time
+    # cycle forbids importing it); this pins the two equal so they can never drift.
+    from persistence.repositories_accounts import REA_OUTCOMES
+    assert REA_OUTCOMES == OUTCOMES
+
+
+def test_job_repository_filters_by_outcome(session):
+    repo = ReaJobRepository(session)
+    done = repo.request(command="analyze-javascript-application", target="C:/a")
+    repo.start(done["job_id"])
+    repo.finish(done["job_id"], outcome="completed", progress=[])
+    failed = repo.request(command="analyze-javascript-application", target="C:/b")
+    repo.start(failed["job_id"])
+    repo.fail(failed["job_id"], outcome="engine_failed")
+
+    completed = repo.list_all(outcome="completed")
+    assert [r["job_id"] for r in completed] == [done["job_id"]]
+    assert repo.count(outcome="engine_failed") == 1
+    assert repo.count() == 2
+    with pytest.raises(ValueError):
+        repo.list_all(outcome="no-such-outcome")
+
+
+def test_job_repository_pages_a_growing_ledger(session):
+    repo = ReaJobRepository(session)
+    ids = []
+    for i in range(5):
+        row = repo.request(command="analyze-javascript-application",
+                           target=f"C:/t{i}")
+        repo.start(row["job_id"])
+        repo.finish(row["job_id"], outcome="completed", progress=[])
+        ids.append(row["job_id"])
+
+    page1 = repo.list_all(limit=2, offset=0)
+    page2 = repo.list_all(limit=2, offset=2)
+    page3 = repo.list_all(limit=2, offset=4)
+    assert len(page1) == 2 and len(page2) == 2 and len(page3) == 1
+    seen = [r["job_id"] for r in page1 + page2 + page3]
+    assert sorted(seen) == sorted(ids)
+    # count reports the whole ledger, not the page -- so a page is never
+    # mistaken for the table
+    assert repo.count() == 5
+
+
+def test_service_refuses_a_command_the_registry_does_not_declare(session):
+    # A command the engine might route but this deployment has NOT declared must
+    # be refused before a job row is opened -- the registry is the authority.
+    import research.rea.registry as registry_mod
+    original = registry_mod._BY_COMMAND
+    registry_mod._BY_COMMAND = {}
+    try:
+        service = ReaService(
+            adapter=_StubAdapter({"outcome": "completed", "ok": True,
+                                  "evidence": _FAKE_EVIDENCE}),
+            jobs=ReaJobRepository(session))
+        with pytest.raises(ValueError):
+            service.investigate(command="analyze-javascript-application",
+                                target="C:/x")
+    finally:
+        registry_mod._BY_COMMAND = original
+    # no job was opened for a command the deployment never declared
+    assert session.execute(select(ReaJobRecord)).scalars().all() == []
+
+
+def test_service_capabilities_roster(session):
+    service = ReaService(adapter=_StubAdapter({"outcome": "completed",
+                                               "ok": True,
+                                               "evidence": _FAKE_EVIDENCE}),
+                         jobs=ReaJobRepository(session))
+    report = service.capabilities()
+    assert report["count"] >= 1
+    commands = [c["command"] for c in report["capabilities"]]
+    assert commands
+    for capability in report["capabilities"]:
+        assert capability["proposes_never_executes"] is True
+        assert capability["is_authorisation"] is False
+        assert capability["trade_authority"] == TRADE_AUTHORITY
+    assert report["is_authorisation"] is False
+    assert report["trade_authority"] == TRADE_AUTHORITY
+
+
 # -- real engine integration (skipped when the engine is not pinned) ---------
 
 def _engine_present() -> bool:

@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import tempfile
 import os
+from dataclasses import replace
 
 from research.strategy_lab.contracts import (
     ExitReason,
@@ -112,3 +113,35 @@ def test_attach_validation():
     reg.register("s1", "h", StrategyFamily.OB_MITIGATION, "XAUUSD")
     assert reg.attach_validation("s1", _passing_report("s1"))
     assert reg.get("s1").validation.samples == 40
+
+
+def test_a_failing_report_quarantines_an_already_promoted_strategy():
+    """The registry must not advertise a live stage with failing evidence.
+
+    The start gate reads the stage only, while the order path exposes a prior
+    only when the report passed. Leaving `paper` + failing report in place makes
+    the engine promise trades it can never link. A revalidation that fails must
+    reconcile the stage in the same write.
+    """
+    reg = StrategyRegistry()
+    passing = _passing_report("s1")
+    reg.register("s1", "h", StrategyFamily.OB_MITIGATION, "XAUUSD")
+    reg.attach_validation("s1", passing)
+    reg.promote("s1")                              # -> CANDIDATE
+    reg.promote("s1", validation=passing)          # -> VALIDATED
+    reg.promote("s1")                              # -> PAPER
+    assert reg.get("s1").stage is PromotionStage.PAPER
+
+    reg.attach_validation("s1", replace(passing, passed=False))
+
+    entry = reg.get("s1")
+    assert entry.stage is PromotionStage.QUARANTINED
+    assert "quarantine#revalidation_failed" in entry.history
+
+
+def test_a_failing_report_does_not_quarantine_a_non_live_stage():
+    reg = StrategyRegistry()
+    reg.register("r1", "h", StrategyFamily.OB_MITIGATION, "XAUUSD")
+    reg.promote("r1")                              # -> CANDIDATE
+    reg.attach_validation("r1", replace(_passing_report("r1"), passed=False))
+    assert reg.get("r1").stage is PromotionStage.CANDIDATE

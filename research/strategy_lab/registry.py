@@ -101,6 +101,20 @@ class StrategyRegistry:
         if entry is None:
             return False
         entry.validation = validation
+        # A failing report must never coexist with a live stage. The start gate
+        # reads the stage only, while the order path (`PriorProvider`) exposes a
+        # strategy only when its report passed -- so leaving a PAPER/PRODUCTION
+        # entry with a failing report makes the two gates disagree: the engine
+        # reports strategies "promotion-cleared" that can never be linked, and
+        # every candidate is then refused for lacking a live-stage prior. Demote
+        # to the governed sink in the same write so the registry cannot
+        # advertise a strategy the order path will always reject.
+        if (not validation.passed
+                and entry.stage in (PromotionStage.VALIDATED,
+                                    PromotionStage.PAPER,
+                                    PromotionStage.PRODUCTION)):
+            entry.stage = PromotionStage.QUARANTINED
+            entry.history.append("quarantine#revalidation_failed")
         self._save()
         return True
 

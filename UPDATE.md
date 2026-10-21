@@ -2198,6 +2198,52 @@ quarantine instead of drifting.
 Gate: ruff clean; 68 registry/priors/arming/api-lab/assets/hygiene tests and 163
 strategy-lab/quality/autonomous/scripts tests pass. Commit `29af1a6`.
 
+## Appendix M - Revalidation without promotion, and the first live fill (2026-10-21)
+
+The row-824 fix made the registry honest, but it left the five BTCUSD live-stage
+strategies unusable: their passing evidence only exists under the governed `12R`
+drawdown cap, and `/research/revalidate` did two jobs in one call -- it refreshed
+the evidence *and* promoted a passing result. Re-checking the five under
+`mode=governed` would therefore have advanced `paper` to `production` as a side
+effect, while the engine was stopped, before anyone decided to ship them.
+
+`POST /research/revalidate` now accepts `promote` (default `true`, so the
+existing contract and its pinned tests are unchanged). With `promote=false` the
+report is attached and the stage is left exactly where it is. The promotion path
+runs only when the report passes **and** the caller asked for it; the response
+states `promoted`.
+
+The governed re-check was run with `promote=false`, `lab_cap_r=3.0`,
+`gov_cap_r=12.0`. The HTTP client timed out at 240s; the server finished, which
+is visible in `research/strategy_lab/data/registry.json`. All five entries
+(`btcusd:ob_mitigation:v3` and `btcusd:ict_liquidity_sweep_reversal:v0/v2/v6/v7`)
+came back `stage=paper`, `validation.passed=true`, drawdown `mode=governed`, with
+max drawdown between `3.4R` and `11.301R` -- inside the `12R` cap and still on
+`paper`. `PriorProvider.by_asset("BTCUSD")` now returns all five.
+
+With the engine restarted, the chain that had been broken linked end to end on
+live data:
+
+```
+BTCUSD: resolved validated prior btcusd:ict_liquidity_sweep_reversal:v7 (paper) edge=0.1960
+New candidate 839bcbd5 BTCUSD long priority=83
+Opportunity OPP-43AC7C32-975 BTCUSD long -> qualified (risk_ok=True, score=83.0)
+Risk approved candidate 839bcbd5 (BTCUSD long)
+MT5 FILLED BTCUSD long vol=0.1 @ 84505 (ticket=54968324)
+Bridge signal written: BTCUSD buy vol=0.1
+BTCUSD: school trade executed (institutional/sellside_raid)
+```
+
+The bridge signal carries `SL 84370.4` and `TP 84734.3`, and
+`logs/position_manager.json` records `{"54968324": {"entry_volume": 0.1}}`.
+
+The `0.1` lot is not a sizing fault. The governor computed `1.97` lots
+(contract-aware, margin-capped) and `TradingLoop._resolve_position_size` applied
+the pilot policy: `min(1.97 * 0.50, 0.10)` -- the `0.10` being
+`TRADERAIG_PILOT_MAX_SIZE`. The pilot cap is doing exactly what it was set to do.
+
+Gate: ruff clean; 20 api-lab/hygiene tests pass. Commit `6e62d29`.
+
 
 
 

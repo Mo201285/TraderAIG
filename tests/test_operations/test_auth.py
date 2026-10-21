@@ -1102,6 +1102,15 @@ def test_service_token_allowed_behaviour(client):
     assert auth_svc.service_token_allowed("POST", "/offers") is True
     assert auth_svc.service_token_allowed(
         "PUT", "/offers/abc") is True
+    # The REA machine rail: the unattended runner opens an investigation. It is
+    # the ONLY REA mutation, and a near-miss under `/rea` is refused.
+    assert auth_svc.service_token_allowed(
+        "POST", "/rea/investigate") is True
+    assert auth_svc.service_token_allowed(
+        "POST", "/rea/investigate/") is True
+    assert auth_svc.service_token_allowed("POST", "/rea") is False
+    assert auth_svc.service_token_allowed(
+        "POST", "/rea/investigatx") is False
 
 
 def test_a_valid_service_token_is_refused_on_a_human_route(client, monkeypatch):

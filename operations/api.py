@@ -3451,6 +3451,11 @@ def _research_mission_service():
     return ResearchMissionService()
 
 
+def _rea_service():
+    from research.rea.service import ReaService
+    return ReaService()
+
+
 @app.post("/research/missions")
 def research_create_mission(payload: Optional[Dict] = None) -> Dict:
     """Paperclip issues a Research Mission against an existing queue problem.
@@ -3663,6 +3668,136 @@ def research_intelligence_router() -> Dict:
             "detail": "the intelligence router could not be read",
             "error": str(exc)})
     return {"ok": True, "router": report, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+# ---------------------------------------------------------------------------
+# Reverse Engineering Agent (research/rea): the REA investigation seat
+#
+# REA is an external engine (`rea-agents`) the core runs over a shipped artifact.
+# The mutation rail is fenced for the service token exactly like the F5c runtime
+# rail (`governance/auth.py::SERVICE_TOKEN_SEGMENT_PATTERNS` names `rea
+# investigate`), so the unattended runner may open an investigation while a
+# session-less leaked credential cannot reach any other mutating route. Every
+# payload proposes findings about an artifact and never grants authority.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/rea/health")
+def rea_health() -> Dict:
+    """Whether the pinned REA engine is reachable, plus the routed capabilities.
+
+    Reports paths and readiness only -- never a secret. An uninstalled engine is
+    an honest `available: false`, not an error.
+    """
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        report = _rea_service().health()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the REA engine readiness could not be read",
+            "error": str(exc)})
+    return {"ok": True, "rea": report, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.post("/rea/investigate")
+def rea_investigate(payload: Optional[Dict] = None) -> Dict:
+    """Run one declared REA command over one local artifact and record the run.
+
+    A refused request (unknown command, empty target) is a distinct 400
+    `invalid_request`; a run the engine could not answer is a recorded job whose
+    `outcome` names why (`unavailable`, `timeout`, `engine_failed`,
+    `invalid_output`). The run's Evidence may OPTIONALLY be fed into the Evidence
+    Plane at trust 0 (`feed_evidence: true`), which never grants any authority.
+    """
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    payload = payload or {}
+    try:
+        job = _rea_service().investigate(
+            command=payload.get("command", ""),
+            target=payload.get("target", ""),
+            requested_by=_acting_actor() or "",
+            note=payload.get("note", ""),
+            feed_evidence=bool(payload.get("feed_evidence")))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_request", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the REA job ledger could not be written",
+            "error": str(exc)})
+    status_code = 200 if job.get("ok") else 502
+    body = {"ok": bool(job.get("ok")), "job": job,
+            "action": "investigated",
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+    if not job.get("ok"):
+        body["reason"] = job.get("outcome") or "engine_failed"
+    return JSONResponse(status_code=status_code, content=body)
+
+
+@app.get("/rea/jobs")
+def rea_list_jobs(status: str = "", command: str = "") -> Dict:
+    """List REA investigations, newest first; optional status/command filter."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        rows = _rea_service().list_all(status=status, command=command)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "invalid_filter", "detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the REA job ledger could not be read",
+            "error": str(exc)})
+    return {"ok": True, "count": len(rows), "jobs": rows,
+            "read_only": True, "is_authorisation": False,
+            "trade_authority": "risk/governor.py"}
+
+
+@app.get("/rea/jobs/summary")
+def rea_jobs_summary_surface() -> Dict:
+    """REA job summary: per-status and per-outcome counts, open investigations."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        summary = _rea_service().summary()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the REA job ledger could not be read",
+            "error": str(exc)})
+    return {"ok": True, "rea": summary, "read_only": True,
+            "is_authorisation": False, "trade_authority": "risk/governor.py"}
+
+
+@app.get("/rea/jobs/{job_id}")
+def rea_get_job(job_id: str) -> Dict:
+    """Read one REA investigation (with its bounded evidence summary), or 404."""
+    guard = _guard_factory(_acting_actor())
+    if guard is not None:
+        return guard
+    try:
+        job = _rea_service().get(job_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={
+            "ok": False, "reason": "store_unavailable",
+            "detail": "the REA job ledger could not be read",
+            "error": str(exc)})
+    if job is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "job_id": job_id, "reason": "unknown_job",
+            "detail": "no such REA investigation"})
+    return {"ok": True, "job": job, "read_only": True,
             "is_authorisation": False, "trade_authority": "risk/governor.py"}
 
 

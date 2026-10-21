@@ -754,3 +754,43 @@ class UserLocaleRecord(Base):
     updated_by: Mapped[str] = mapped_column(String(128), default="")
     created_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
     updated_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
+
+
+class ReaJobRecord(Base):
+    """One Reverse Engineering Agent investigation (research/rea, the REA seat).
+
+    REA is an *investigation* seat: an operator or the machine rails name a
+    shipped artifact and a declared REA command, and the deployment runs the
+    external `rea-agents` engine over it. This row is the durable ledger entry
+    for that run: what was asked (command + target), what happened (outcome),
+    what the engine observed (a bounded evidence summary), and -- when a caller
+    asks for it -- the Evidence Plane row the run was fed into.
+
+    Lifecycle: `requested -> running -> completed | failed`
+    (`requested -> failed` is allowed too); completed/failed are terminal and
+    never re-opened. A run that could not even start records its honest outcome
+    (`unavailable`, `invalid_request`) rather than being left `running`.
+
+    Self-contained (no ForeignKeys: an investigation references an evidence row
+    by id, and a deleted artifact must not break the provenance read) and
+    carrying **no trade-permission column**: an investigation is evidence about
+    an artifact, never permission (rows 741/746/748 invariant).
+    """
+
+    __tablename__ = "rea_jobs"
+
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    command: Mapped[str] = mapped_column(String(128), default="", index=True)
+    target: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="requested", index=True)
+    outcome: Mapped[str] = mapped_column(String(32), default="", index=True)
+    requested_by: Mapped[str] = mapped_column(String(64), default="")
+    evidence_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    progress_json: Mapped[str] = mapped_column(Text, default="[]")
+    detail: Mapped[str] = mapped_column(Text, default="")
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
+    updated_at: Mapped[str] = mapped_column(String(64), default=_now_iso)
+    started_at: Mapped[str] = mapped_column(String(64), default="")
+    finished_at: Mapped[str] = mapped_column(String(64), default="")

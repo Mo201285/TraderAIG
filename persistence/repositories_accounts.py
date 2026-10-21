@@ -48,6 +48,7 @@ from persistence.models_accounts import (
     ExternalReferralEvent,
     PartnerAttestationRecord,
     ProviderWebhookDelivery,
+    ReaJobRecord,
     ReferralRecord,
     UserLocaleRecord,
     ResearchMissionRecord,
@@ -3054,4 +3055,201 @@ class ResearchMissionRepository:
             "per_status": per_status,
             "open": per_status["assigned"] + per_status["running"],
             "known_statuses": list(MISSION_STATUSES),
+        }
+
+
+# The REA investigation lifecycle (research/rea). `requested -> running ->
+# completed` records a run that the engine answered; `requested|running ->
+# failed` records one that could not start or could not be read. completed/failed
+# are terminal and never re-opened -- an investigation is a fact about a run, not
+# a mutable draft.
+REA_JOB_STATUSES = ("requested", "running", "completed", "failed")
+REA_JOB_FROM = {
+    "running": ("requested",),
+    "completed": ("running",),
+    "failed": ("requested", "running"),
+}
+
+
+def _row_to_rea_job(row: ReaJobRecord) -> Dict[str, Any]:
+    def _loads(raw: str, fallback: Any) -> Any:
+        try:
+            value = json.loads(raw or "")
+        except (TypeError, ValueError):
+            return fallback
+        return value
+
+    return {
+        "job_id": row.job_id,
+        "command": row.command,
+        "target": row.target,
+        "status": row.status,
+        "outcome": row.outcome,
+        "requested_by": row.requested_by,
+        "evidence_id": row.evidence_id,
+        "summary": _loads(row.summary_json, {}),
+        "progress": _loads(row.progress_json, []),
+        "detail": row.detail,
+        "note": row.note,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+        "started_at": row.started_at,
+        "finished_at": row.finished_at,
+    }
+
+
+class ReaJobRepository:
+    """The durable ledger of Reverse Engineering Agent investigations.
+
+    REA is an investigation seat: a caller names a declared REA command and a
+    local artifact, and the deployment runs the external `rea-agents` engine over
+    it. This repository keeps the run honest:
+
+    * `request` opens a row in `requested` with what was asked (command, target,
+      requester) -- so an investigation exists before the engine is touched;
+    * `start` moves it to `running`;
+    * `finish` closes it with the engine's outcome and a bounded evidence summary
+      (the full graph is NOT stored here -- only a digest-sized summary; the
+      complete record stays in the Evidence Plane when a run is fed there);
+    * `fail` closes it with the stated reason.
+
+    Lifecycle follows `REA_JOB_FROM`; terminal rows are never re-opened. Every
+    row is self-contained (no ForeignKeys) and carries no permission: an
+    investigation is evidence about an artifact, never authority (rows 741/746).
+    """
+
+    def __init__(self, session: Optional[Session] = None) -> None:
+        self._injected = session
+        self._session = session
+
+    @contextmanager
+    def _db(self):
+        if self._injected is not None:
+            yield self._injected
+            return
+        session = self._session or make_live_session()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    def request(self, *, command: str, target: str, requested_by: str = "",
+                note: str = "") -> Dict[str, Any]:
+        wanted_command = str(command or "").strip()
+        if not wanted_command:
+            raise ValueError("a REA job needs a command")
+        wanted_target = str(target or "").strip()
+        if not wanted_target:
+            raise ValueError("a REA job needs a target")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._db() as session:
+            row = ReaJobRecord(
+                job_id=uuid.uuid4().hex,
+                command=wanted_command,
+                target=wanted_target,
+                status="requested",
+                requested_by=str(requested_by or "").strip(),
+                note=str(note or "").strip(),
+                created_at=now,
+            )
+            session.add(row)
+            session.commit()
+            return _row_to_rea_job(row)
+
+    def get(self, job_id: str) -> Optional[Dict[str, Any]]:
+        with self._db() as session:
+            row = session.get(ReaJobRecord, str(job_id or ""))
+        return _row_to_rea_job(row) if row is not None else None
+
+    def list_all(self, *, status: str = "", command: str = "",
+                 limit: int = 10_000) -> List[Dict[str, Any]]:
+        with self._db() as session:
+            query = select(ReaJobRecord)
+            if status:
+                if status not in REA_JOB_STATUSES:
+                    raise ValueError("unknown REA job status filter")
+                query = query.where(ReaJobRecord.status == status)
+            if command:
+                query = query.where(ReaJobRecord.command == str(command).strip())
+            rows = session.execute(
+                query.order_by(ReaJobRecord.created_at.desc()).limit(limit)
+            ).scalars().all()
+        return [_row_to_rea_job(r) for r in rows]
+
+    def start(self, job_id: str) -> Dict[str, Any]:
+        return self._transition(job_id, "running")
+
+    def finish(self, job_id: str, *, outcome: str,
+               summary: Optional[Dict[str, Any]] = None,
+               progress: Optional[List[Any]] = None,
+               evidence_id: str = "", detail: str = "") -> Dict[str, Any]:
+        if not str(outcome or "").strip():
+            raise ValueError("a finished REA job names its outcome")
+        return self._transition(
+            job_id, "completed", outcome=str(outcome).strip(),
+            summary=summary, progress=progress,
+            evidence_id=evidence_id, detail=detail)
+
+    def fail(self, job_id: str, *, outcome: str = "engine_failed",
+             detail: str = "", progress: Optional[List[Any]] = None
+             ) -> Dict[str, Any]:
+        return self._transition(
+            job_id, "failed", outcome=str(outcome or "engine_failed").strip(),
+            detail=detail, progress=progress)
+
+    def _transition(self, job_id: str, to: str, *, outcome: str = "",
+                    summary: Optional[Dict[str, Any]] = None,
+                    progress: Optional[List[Any]] = None,
+                    evidence_id: str = "", detail: str = "") -> Dict[str, Any]:
+        if to not in REA_JOB_FROM:
+            raise ValueError(
+                f"unknown REA job status {to!r}; known statuses are "
+                f"{', '.join(REA_JOB_STATUSES)}")
+        with self._db() as session:
+            row = session.get(ReaJobRecord, str(job_id or ""))
+            if row is None:
+                raise ValueError(f"no REA job {job_id!r}")
+            if row.status in ("completed", "failed"):
+                raise ValueError(
+                    f"REA job is {row.status}; a terminal investigation is "
+                    "never re-opened")
+            if row.status not in REA_JOB_FROM[to]:
+                raise ValueError(
+                    f"illegal REA job transition {row.status} -> {to}; "
+                    f"allowed into {to}: {', '.join(REA_JOB_FROM[to])}")
+            now = datetime.now(timezone.utc).isoformat()
+            row.status = to
+            row.updated_at = now
+            if outcome:
+                row.outcome = outcome
+            if summary is not None:
+                row.summary_json = json.dumps(summary, sort_keys=True)
+            if progress is not None:
+                row.progress_json = json.dumps(progress)
+            if detail:
+                row.detail = str(detail)
+            if evidence_id:
+                row.evidence_id = str(evidence_id)
+            if to == "running":
+                row.started_at = now
+            if to in ("completed", "failed"):
+                row.finished_at = now
+            session.commit()
+            return _row_to_rea_job(row)
+
+    def summary(self) -> Dict[str, Any]:
+        rows = self.list_all()
+        per_status: Dict[str, int] = {s: 0 for s in REA_JOB_STATUSES}
+        per_outcome: Dict[str, int] = {}
+        for row in rows:
+            per_status[row["status"]] = per_status.get(row["status"], 0) + 1
+            if row["outcome"]:
+                per_outcome[row["outcome"]] = per_outcome.get(
+                    row["outcome"], 0) + 1
+        return {
+            "total": len(rows),
+            "per_status": per_status,
+            "per_outcome": per_outcome,
+            "open": per_status["requested"] + per_status["running"],
+            "known_statuses": list(REA_JOB_STATUSES),
         }

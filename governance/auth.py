@@ -158,6 +158,7 @@ SERVICE_TOKEN_SEGMENT_PATTERNS = (
     ("accounts", "*", "runtime"),
     ("accounts", "*", "runtime", "start"),
     ("accounts", "*", "runtime", "stop"),
+    ("rea", "investigate"),
 )
 
 # Global reference reads: data that belongs to no tenant (broker/provider

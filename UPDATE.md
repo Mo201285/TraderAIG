@@ -2015,6 +2015,26 @@ the ledger is deliberately EMPTY (`mockReaHealth`/`mockReaJobs`/`mockReaSummary`
 a mock that invented a completed reverse-engineering job would be exactly the
 fabrication the honesty guards exist to prevent.
 
+### The read-back: the linked Evidence item (S-REA-g, 2026-10-21)
+
+The job row keeps only a digest-sized summary -- the full engine graph is
+deliberately not copied onto it -- and a run is fed into the Evidence Plane only
+when `feed_evidence` was set, at trust 0 (`internal`). Row 819 closes the read
+loop: `GET /rea/jobs/{id}/evidence` resolves the linked plane item.
+
+* `ReaService.job_evidence(job_id)` returns `None` for an unknown job;
+  otherwise an envelope whose `linked` is True only when the job carries a linked
+  plane `evidence_id` that still resolves to a row the plane holds.
+* An unfed run reads `linked: False, reason: not_fed`; a fed run whose item is
+  gone reads `reason: linked_evidence_missing`. Never a fabricated item, never
+  the raw graph -- a read that resolves or states its absence.
+* The route is `200` (or `404 unknown_job`). Any GET is already
+  service-token-permitted, so no auth change was needed.
+* The dashboard (`ReaPage`) shows a "view" affordance on a linked row and the
+  linked item -- evidence id, source kind, topic, trust ladder, headline -- or
+  the honest not-fed reason, in a panel.
+
+
 
 
 

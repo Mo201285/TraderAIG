@@ -2314,21 +2314,23 @@ prevent. Now:
 ### 4. The live restart caught what the fakes hid
 
 Restarting the API to load the slice produced `"account_id": ""` in
-`/mt5/engine/status`. The adapter called `AccountRegistry.by_identity`, but the
-real method is `get_by_identity`; the `except Exception: resolved = ""` guard --
-there so a missing registry cannot break trading -- swallowed the
-`AttributeError`. The bridge tests all injected identity with
-`monkeypatch.setattr(adapter, "account_id", ...)`, so no test had ever exercised
-the lookup against the real method name.
+`/mt5/engine/status`. The adapter called `AccountRegistry.by_identity`, which does
+not exist; the `except Exception: resolved = ""` guard -- there so a missing
+registry cannot break trading -- swallowed the `AttributeError`. The bridge tests
+all injected identity with `monkeypatch.setattr(adapter, "account_id", ...)`, so
+no test had ever exercised the lookup against the real method name.
 
-Fixed in `execution/mt5_adapter.py` (commit `e9637e3`), with
-`test_adapter_resolves_its_account_from_the_registry`: a fake registry exposes
-**only** `get_by_identity`, asserts the `("mt5", "1400167",
+The first correction (`e9637e3`) called `get_by_identity`, which is the
+**repository's** method, not the registry's; a live probe showed the guard
+swallowing that one too. The registry a caller actually holds exposes
+`for_login(venue, login, server)`. Fixed in `execution/mt5_adapter.py` (commit
+`a86bf0e`), with `test_adapter_resolves_its_account_from_the_registry`: a fake
+registry exposes **only** `for_login`, asserts the `("mt5", "1400167",
 "FTTrading-Server")` key, and the adapter must return the id and cache it. An
 unknown identity still returns `""`, which keeps the documented legacy
-behaviour. This is also the argument for the identity being read from live
-state at least once, not only from a fake: an optional-metadata guard is exactly
-where a wrong method name survives.
+behaviour. This is also the argument for reading identity from live state at
+least once, not only from a fake: an optional-metadata guard is exactly where a
+wrong method name survives -- twice, in this case.
 
 ### 5. What this slice does not do
 
@@ -2347,7 +2349,8 @@ not trade; no fallback on rejection; account-scoped remote sync; account-scoped
 adapter sync; registry identity resolution; token derivation; endpoint liveness.
 
 Run: 15 bridge + 32 supervisor/bridge + 42 adapter/live-engine/bridge-paths/
-ownership + 18 api-lab + 2 hygiene. Ruff clean. Commits `fec6744`, `e9637e3`.
+ownership + 18 api-lab + 2 hygiene. Ruff clean. Commits `fec6744`, `e9637e3`,
+`a86bf0e`.
 
 
 

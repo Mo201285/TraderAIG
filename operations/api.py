@@ -5818,8 +5818,15 @@ def lab_revalidate(payload: Dict) -> Dict:
     - governed (default): lab opens the gate, governance holds the cap.
     - lab_veto: strict lab cap, governance cannot override.
     - gov_approve: lab closes; governance may override to approve.
+
+    ``promote=false`` re-scores the stored observations and attaches the new
+    report without moving any stage. It exists so an operator can reconcile
+    evidence on an already-promoted strategy without that act escalating it
+    (a passing report would otherwise promote one step, e.g. paper ->
+    production).
     """
     _guard(Entitlement.CAN_MANAGE_RISK)
+    promote = bool(payload.get("promote", True))
     from research.strategy_lab.contracts import DrawdownMode, DrawdownPolicy
     if not _lab_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="another run is active")
@@ -5853,7 +5860,7 @@ def lab_revalidate(payload: Dict) -> Dict:
                                   drawdown=policy)
             reports.append(report)
             registry.attach_validation(entry.strategy_id, report)
-            if report.passed:
+            if report.passed and promote:
                 result = _lab_apply_guarded(
                     "promote", entry.strategy_id, "lab_revalidate")
                 if (not result["applied"]
@@ -5890,6 +5897,7 @@ def lab_revalidate(payload: Dict) -> Dict:
                         if e.validation is not None and e.validation.passed)
         return {"ok": True,
                 "policy": policy.as_dict(),
+                "promoted": promote,
                 "evaluated": len(reports),
                 "validated": validated,
                 "deferred": deferred,

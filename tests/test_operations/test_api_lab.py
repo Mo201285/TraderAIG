@@ -202,6 +202,26 @@ def test_revalidate_governed_cap_approves_and_promotes(lab_env):
                for r in data["ranking"])
 
 
+def test_revalidate_without_promote_attaches_evidence_only(lab_env):
+    """Reconciliation must be possible without that act escalating a stage.
+
+    With the engine stopped, a passing governed revalidation would promote
+    `paper` -> `production`. An operator reconciling evidence on an already
+    promoted strategy must be able to attach the new report and leave the stage
+    exactly where governance put it.
+    """
+    _seed_drawdown_candidate(lab_env)
+    res = api.lab_revalidate({"mode": "governed", "gov_cap_r": 12.0,
+                              "promote": False})
+    assert res["ok"] is True
+    assert res["promoted"] is False
+    entry = next(x for x in api.lab_strategies()
+                 if x["strategy_id"] == "btcusd:ob_mitigation:v2")
+    assert entry["stage"] == "candidate"          # unchanged
+    assert entry["validation"]["passed"] is True  # evidence did refresh
+    assert entry["validation"]["gates"]["drawdown"] is True
+
+
 def test_revalidate_governed_cap_still_blocks_big_drawdown(lab_env):
     _seed_drawdown_candidate(lab_env)
     api.lab_revalidate({"mode": "governed", "gov_cap_r": 5.0})

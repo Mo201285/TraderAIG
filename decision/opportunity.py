@@ -352,7 +352,6 @@ def _parse_ts(value: Optional[str]) -> Optional[float]:
         return None
 
 
-@dataclass
 class OpportunityEngine:
     """Packages a governed RiskDecision into an evidenced Opportunity.
 
@@ -365,13 +364,17 @@ class OpportunityEngine:
 
     The board is resolved from the module singleton at call time so operators,
     endpoints and tests can point the engine at any durable board instance.
+    An account desk can also inject its own board once at construction.
     """
+
+    def __init__(self, board: Optional[OpportunityBoard] = None) -> None:
+        self._board = board
 
     def screen(self, candidate: TradeCandidate, decision: RiskDecision,
                *, source: str = "pipeline",
                live_eligible: bool = True,
                live_eligibility_reason: str = "live allowed by pipeline stage") -> Opportunity:
-        board = opportunity_board
+        board = self._board or opportunity_board
         risk_ok = decision.kind == RiskDecisionKind.APPROVED
         allocation_ok, allocation_reason = self._allocation_evidence(decision)
         if not risk_ok:

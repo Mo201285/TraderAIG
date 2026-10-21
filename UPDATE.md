@@ -2161,6 +2161,44 @@ runs once, an advanced bar must reach the pipeline -- the old guard fails it.
 Gate: ruff clean; 19 pipeline + live-engine tests, 56 cex/board/opportunity/
 hygiene tests pass. Commit `8f5d0a9`.
 
+## Appendix L - A failing revalidation cannot leave a live stage behind (2026-10-21)
+
+Once the starvation fix let the pipeline reach the governor, every live order
+was refused:
+
+> candidate carries no strategy linkage; live orders require a
+> promotion-cleared strategy, and this candidate resolved no live-stage prior
+
+The two gates were reading different truths:
+
+* `promotion_cleared_strategies()` -- the engine start gate -- reads **stage
+  only** (`paper`/`production`), and reported five BTCUSD strategies;
+* `PriorProvider` -- the order path behind `TradingLoop._resolve_prior` --
+  exposes a prior only when `validation.passed` is true, and exposed none.
+
+`research/strategy_lab/data/registry.json` showed all five at `stage=paper`
+with `validation.passed=false`. They failed **only** the drawdown gate under
+`gov_approve` mode: `max_drawdown_r=10.2` against the lab cap `3.0`. The
+governance cap is `12.0`, so a governed revalidation would pass. The promotions
+were legitimate; a later revalidation overwrote the passing report with a
+failing one and left the stage untouched.
+
+`StrategyRegistry.attach_validation` now refuses to store that contradiction: a
+failing report on a VALIDATED/PAPER/PRODUCTION entry demotes it to QUARANTINED
+in the same write, recording `quarantine#revalidation_failed`. A failing report
+on a RESEARCH/CANDIDATE entry changes nothing -- that just means "not promoted
+yet".
+
+The live engine was stopped first (`stopped=true`, `cycles=100`, `errors=[]`).
+The five existing entries were deliberately **not** auto-quarantined: whether
+they are revalidated under the governed `12R` cap or left below the strict `3R`
+cap is a governance decision, and the next revalidation will now either pass or
+quarantine instead of drifting.
+
+Gate: ruff clean; 68 registry/priors/arming/api-lab/assets/hygiene tests and 163
+strategy-lab/quality/autonomous/scripts tests pass. Commit `29af1a6`.
+
+
 
 
 

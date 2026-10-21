@@ -2353,6 +2353,78 @@ ownership + 18 api-lab + 2 hygiene. Ruff clean. Commits `fec6744`, `e9637e3`,
 `a86bf0e`.
 
 
+## Appendix O - The cutover, one stopped-out trade, and the market rail (2026-10-22)
+
+### 1. How the process was restarted
+
+The engine was stopped through `POST /mt5/engine/stop` (so no fill could race the
+kill), then **both** Python processes serving the API were stopped: the listener
+and its parent. Killing only the listener leaves a parent that can respawn an
+old-code child while the port is still bound; killing both and waiting for
+`:8000` to be free is what makes the next start deterministic.
+
+`scripts/ensure_backend.py --start-mt5-sync --wait 180` then launched the API.
+Two things surfaced:
+
+* A 90s wait was too short: startup rehydrates governance (18 users) and the
+  market bridge, ~35-55s on this machine, and a first attempt reported "not
+  healthy" while the server was still starting. 180s is the safe wait.
+* `--start-mt5-sync` starts the **rail/watcher**, not the decision engine.
+  `/mt5/engine/status` came back `running=false` after ensure reported the rail
+  OK. The live engine is started explicitly with
+  `POST /mt5/engine/start {"interval":30}`; its response is the confirmation,
+  not ensure's log line.
+
+After the explicit start: `running=true`, `connected=true`,
+`account_id=5bd99e44bced439389a27fe4c333717b`, `login=1400167`,
+`trade_allowed=true`. That id is the proof the F5c identity lookup now works in
+the live process, not only in the fake-registry test.
+
+### 2. The trade that closed during the sequence
+
+A new BTCUSD long (`54980676`, 0.1 @ 84584.6, SL 84494.3, TP 84751.5) opened
+between restarts. By the time the engine was verified, `/mt5/positions` was
+empty and the balance had moved from `100021.03` to `100011.34` (-`9.69`),
+consistent with the protective stop (0.1 x 90.3 plus costs). The stop is on the
+broker, so restarting the process did not and cannot remove it; the process being
+down means only that no new decision ran, not that the position was unprotected.
+This is the expected behaviour of the design and is recorded here so the loss is
+not later mistaken for a restart artefact.
+
+### 3. The market rail (F5d.1)
+
+`GET /worker/candles?symbol=&timeframe=&count=` and
+`GET /worker/quotes?symbols=` are read-only, bearer-protected, and bounded
+(count 1..5000, 50 symbols). Candles are the account's own window; quotes are
+whitelisted market fields. `regime` stays out: the worker is not an analysis
+surface. A worker that cannot see the market returns `ok=false` with the
+adapter's last error -- it does not return empty bars as if they were a flat
+market.
+
+`WorkerClient.candles()/quotes()` are the client half. Tests: the candle
+window and symbol/timeframe normalisation, the exact quote field set, a rejected
+count (400 through `WorkerError`), plus the existing 15 bridge tests.
+
+### 4. What is still missing (F5d.2)
+
+The rail solves transport. It does **not** give a second account its own
+decision loop. `core/pipeline.py` imports the process-global `state` and the
+global candidate/opportunity boards, and `risk_governor` resolves account
+context from that same process. Two loops deciding the same symbol would
+therefore share positions, candidates and vetoes -- the "two accounts, one
+truth" failure in the opposite direction from the reconciliation bug in
+Appendix N.
+
+F5d.2 is a state/board injection refactor: make `TradingLoop` take a
+`CanonicalState` and account-scoped boards (or an account-scoped desk object),
+then run one loop per routed account against the same plane. It changes decision
+semantics, so it should be its own slice with its own failure tests, not a
+route bolted onto this one.
+
+Gate for this slice: 17 bridge + 32 supervisor/bridge + 42 adapter/live-engine/
+bridge-paths/ownership + 18 api-lab + 2 hygiene; ruff clean. Commit `d8277e9`.
+
+
 
 
 

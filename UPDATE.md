@@ -2425,6 +2425,68 @@ Gate for this slice: 17 bridge + 32 supervisor/bridge + 42 adapter/live-engine/
 bridge-paths/ownership + 18 api-lab + 2 hygiene; ruff clean. Commit `d8277e9`.
 
 
+## Appendix P - Injecting a desk, before running two of them (2026-10-22)
+
+The market rail made transport per-account. The next blocker was not a route:
+`TradingLoop` read the process-global `state`, `candidate_board`,
+`opportunity_board`, `opportunity_engine`, `school_board`, `risk_governor` and
+`ledger` directly. Two loops on the same symbol would therefore share positions,
+candidates and vetoes -- isolation in name only.
+
+### 1. What is injectable now
+
+`TradingLoop.__init__` accepts `state_ref`, `candidate_board_ref`,
+`opportunity_board_ref`, `opportunity_engine_ref`, `school_board_ref`,
+`governor_ref`, `ledger_ref` and `account_id`. Each defaults to the existing
+module singleton, so the primary live engine, backtests and every existing test
+resolve exactly what they resolved before. `OpportunityEngine` gained a
+constructor-level `board` (falling back to the singleton), because `screen()`
+previously reached the global board even when the pipeline was handed another.
+
+`_decision_record` now reads the market snapshot from the desk's own state and,
+when `account_id` is set, records it in `metadata`. The reconciliation engine
+already accepted `state_ref`.
+
+### 2. What the tests pin
+
+`tests/test_core/test_desk_isolation.py` builds two desks for the same symbol
+with different spreads/prices and different boards, then asserts:
+
+* `_spread()`/`_volume()` read their own state (1.0/100 vs 2.0/200);
+* state, candidate board, opportunity board, school board, governor and ledger
+  are distinct objects;
+* `_decision_record` snapshots the right market and carries the right
+  `account_id`.
+
+The default path is covered by the existing pipeline/opportunity/live-engine
+suites; they pass unchanged.
+
+### 3. Deliberately not wired
+
+`LiveEngine` still creates its loops with defaults. Injecting a live second desk
+requires more than the constructor: a remote market feed (the worker's
+candles/quotes), an executor bound to that worker, an account-scoped
+`PositionManager`/reconciliation, a read surface that merges desks without
+claiming one canonical store, and a lifecycle that starts/stops one thread per
+desk. Shipping the constructor first keeps the running engine byte-for-byte on
+its old path while making the next slice a composition change rather than a
+rewrite of the decision pipeline.
+
+### 4. Next (F5d.2b)
+
+1. `RemoteMarketData` over `WorkerClient.candles()/quotes()` implementing the
+   adapter surface `TradingLoop` needs (`fetch_candles`, `sync_market`).
+2. Construct a desk with its own `CanonicalState`, boards, governor
+   (`RiskGovernor(state)`), `PositionManager` and a worker-bound executor.
+3. One thread per desk in a supervisor, with the same start/stop semantics and
+   an explicit account id in every log line and record.
+4. Read surface: account-scoped positions/opportunities; the current global
+   state remains the primary desk, not a merged lie.
+
+Gate: ruff clean; desk isolation 2, pipeline + desk 8, opportunity engine 29,
+live engine included in the 48-test adapter/live-engine run. Commit `07f1564`.
+
+
 
 
 

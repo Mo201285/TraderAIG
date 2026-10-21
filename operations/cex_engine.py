@@ -91,7 +91,7 @@ class CexLiveEngine:
             adapter=self._executor,
             paper=self._paper,
             ledger_path=str(settings.logging.directory / "position_manager_cex.json"))
-        self._last_len: Dict[str, int] = {}
+        self._last_bar_time: Dict[str, float] = {}
         self._htf_last_fetch: Dict[str, float] = {}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -150,8 +150,13 @@ class CexLiveEngine:
                         f"freshness={read.freshness})")
                     continue
                 latest[sym] = candles[-1]
-                if len(candles) > self._last_len.get(sym, 0):
-                    self._last_len[sym] = len(candles)
+                # A new bar is a NEW BAR TIME, not a longer buffer: the plane
+                # caps the window at 300 bars, so its length stops growing after
+                # warm-up and a length test would stop feeding the pipeline for
+                # ever while the loop kept reporting healthy.
+                bar_time = candles[-1].time
+                if bar_time > self._last_bar_time.get(sym, 0.0):
+                    self._last_bar_time[sym] = bar_time
                     if self._htf_timeframe and \
                             time.time() - self._htf_last_fetch.get(sym, 0) \
                             >= self._htf_refresh_seconds:
@@ -247,8 +252,13 @@ class CexLiveEngine:
                         f"freshness={read.freshness})")
                     continue
                 latest[sym] = candles[-1]
-                if len(candles) > self._last_len.get(sym, 0):
-                    self._last_len[sym] = len(candles)
+                # A new bar is a NEW BAR TIME, not a longer buffer: the plane
+                # caps the window at 300 bars, so its length stops growing after
+                # warm-up and a length test would stop feeding the pipeline for
+                # ever while the loop kept reporting healthy.
+                bar_time = candles[-1].time
+                if bar_time > self._last_bar_time.get(sym, 0.0):
+                    self._last_bar_time[sym] = bar_time
                     if self._htf_timeframe and \
                             time.time() - self._htf_last_fetch.get(sym, 0) \
                             >= self._htf_refresh_seconds:

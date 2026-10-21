@@ -103,16 +103,22 @@ class TradingLoop:
         self.use_school_board = use_school_board
         self.htf_timeframe = htf_timeframe
         self._htf: Optional[RegimeSnapshot] = None
-        self._htf_last_len: int = 0
+        self._htf_last_bar_time: float = 0.0
         self.regime = RegimeEngine(symbol, timeframe)
-        self._last_len: int = 0
+        self._last_bar_time: float = 0.0
 
     # -- Higher-timeframe feed ----------------------------------------
     def on_htf_candles(self, candles: Sequence[Candle]) -> None:
         """Feed a higher-timeframe candle buffer used as a selection filter."""
-        if not candles or len(candles) <= self._htf_last_len:
+        # Recompute only when the HTF bar itself advanced. The engine hands us a
+        # fixed-width slice, so a length test freezes the regime after the first
+        # feed -- the same capped-window trap as `on_new_candle`.
+        if not candles:
             return
-        self._htf_last_len = len(candles)
+        bar_time = candles[-1].time
+        if bar_time <= self._htf_last_bar_time:
+            return
+        self._htf_last_bar_time = bar_time
         self._htf = RegimeEngine(self.symbol, self.htf_timeframe).compute(candles)
 
     @property
@@ -124,10 +130,18 @@ class TradingLoop:
     def on_new_candle(self, candles: Sequence[Candle]) -> None:
         """Called when a new candle closes (or on each tick trigger)."""
 
-        # Tier guard: skip full recompute unless the candle buffer grew.
-        if len(candles) <= self._last_len:
+        # Tier guard: run once per closed bar. The caller hands us a WINDOW, not
+        # an ever-growing buffer -- the live engine reads a fixed 300-bar window
+        # and slices the last 120 -- so "the buffer grew" is false for ever once
+        # that window fills, and the pipeline would starve silently while every
+        # cycle still reported healthy. The bar's own open time is the honest
+        # signal: it advances exactly when a new candle closes.
+        if not candles:
             return
-        self._last_len = len(candles)
+        bar_time = candles[-1].time
+        if bar_time <= self._last_bar_time:
+            return
+        self._last_bar_time = bar_time
 
         # Always update cheap state (uses default tier threshold).
         context = context_classifier.classify(

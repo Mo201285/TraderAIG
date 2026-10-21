@@ -89,9 +89,13 @@ def test_htf_feed_is_cached_and_respected():
     assert loop._htf is not None
     assert classify_trend(htf_path) != "sideways"
 
-    # same-length buffer must not re-trigger a recompute
+    # The same closed bar must not re-trigger a recompute. (The engine hands in
+    # a fixed-width slice, so the guard tracks the bar's own time, not length:
+    # a length test would freeze the regime once the slice is full.)
+    first = loop._htf
     loop.on_htf_candles(htf_path)
-    assert loop._htf_last_len == len(htf_path)
+    assert loop._htf is first
+    assert loop._htf_last_bar_time == htf_path[-1].time
 
     # HTF context is passed into the (M5) school-board deliberation
     from core.state import MarketState

@@ -128,7 +128,7 @@ class LiveEngine:
                 executor=desk if paper else self._executor,
                 use_school_board=use_school_board,
                 htf_timeframe=htf_timeframe or "H1")
-        self._last_len: Dict[str, int] = {}
+        self._last_bar_time: Dict[str, float] = {}
         self._htf_last_fetch: Dict[str, float] = {}
         self._macro_last_refresh: float = 0.0
         self._stop = threading.Event()
@@ -180,8 +180,14 @@ class LiveEngine:
                         f"freshness={read.freshness})")
                     continue
                 latest[sym] = candles[-1]
-                if len(candles) > self._last_len.get(sym, 0):
-                    self._last_len[sym] = len(candles)
+                # A new bar is a NEW BAR TIME, not a longer buffer: the plane
+                # caps the window at 300 bars, so its length stops growing after
+                # warm-up. A length test would then stop feeding the pipeline for
+                # ever while `cycles` kept climbing and the engine kept reporting
+                # healthy -- the silent failure this guard exists to avoid.
+                bar_time = candles[-1].time
+                if bar_time > self._last_bar_time.get(sym, 0.0):
+                    self._last_bar_time[sym] = bar_time
                     loop = self._loops[sym]
                     # refresh HTF context occasionally (cycles, not ticks)
                     if self._htf_timeframe and \
@@ -231,8 +237,11 @@ class LiveEngine:
                     continue
                 latest[sym] = candles[-1]
                 loop = self._loops[sym]
-                if len(candles) > self._last_len.get(sym, 0):
-                    self._last_len[sym] = len(candles)
+                # Same new-bar test as the live cycle: the capped window means
+                # length is not a proxy for "a new candle closed".
+                bar_time = candles[-1].time
+                if bar_time > self._last_bar_time.get(sym, 0.0):
+                    self._last_bar_time[sym] = bar_time
                     if self._htf_timeframe and \
                             time.time() - self._htf_last_fetch.get(sym, 0) \
                             >= self._htf_refresh_seconds:

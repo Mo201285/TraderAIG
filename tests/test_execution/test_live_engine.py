@@ -168,6 +168,53 @@ def test_live_engine_cycle_feeds_pipeline():
     assert len(engine.status()["errors"]) == 0
 
 
+def test_live_engine_keeps_evaluating_after_the_bar_window_fills():
+    """New-bar detection must key on bar TIME, not buffer length.
+
+    The engine reads a fixed 300-bar window, so once warm the buffer length is
+    constant. A guard keyed on "the buffer grew" then fed the strategy pipeline
+    exactly once and went silent for ever -- while `cycles` kept climbing and
+    `errors` stayed empty. That is a healthy-looking engine that has stopped
+    deciding anything, which is worse than one that reports it is down.
+    """
+    from core.market_plane import MarketPlane, MarketRead
+    from operations.live_engine import LiveEngine
+
+    adapter = FakeAdapter(FakePos())
+    plane = MarketPlane(min_pull_interval=0.0)
+    engine = LiveEngine(symbols=["XAUUSD"], adapter=adapter, htf_timeframe=None,
+                        use_school_board=False, plane=plane, poll_seconds=0.0)
+
+    def window(last_time):
+        return [contracts.Candle(
+                    symbol="XAUUSD", timeframe="M15",
+                    time=last_time - 900.0 * (299 - i),
+                    open=4300.0, high=4301.0, low=4299.0, close=4300.5,
+                    volume=100.0, tick_volume=10)
+                for i in range(300)]
+
+    bars = {"last": 5_000_000.0}
+
+    class StubPlane:
+        def read(self, sym, tf, count=300, **_kw):
+            return MarketRead(symbol=sym, timeframe=tf,
+                              candles=window(bars["last"]), source="mt5",
+                              freshness="live")
+
+    engine._plane = StubPlane()
+
+    seen = []
+    engine._loops["XAUUSD"].on_new_candle = lambda c: seen.append(c[-1].time)
+
+    engine.cycle()                     # first bar of the window
+    assert len(seen) == 1
+    engine.cycle()                     # same bar still forming: no re-run
+    assert len(seen) == 1
+    bars["last"] += 900.0              # a new M15 bar closed
+    engine.cycle()
+    assert len(seen) == 2, "a new bar must reach the pipeline, not starve it"
+
+
 def test_live_engine_reconciles_positions():
     from operations.live_engine import LiveEngine
     from core.pipeline import recon_engine

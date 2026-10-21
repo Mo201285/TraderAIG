@@ -107,7 +107,12 @@ class LiveEngine:
         self._paper = paper
         self._paper_seeded = False
         self._paper_desks: Dict[str, PaperExecutor] = {}
-        self._executor = LiveMT5Executor(self._adapter)
+        try:
+            self._account_id = self._adapter.account_id()
+        except Exception:  # noqa: BLE001 - identity is optional metadata
+            self._account_id = ""
+        self._executor = LiveMT5Executor(self._adapter,
+                                         account_id=self._account_id or None)
         self._loops = {}
         # The engine is the wiring point for the live feed: the plane never
         # imports MetaTrader, it is *given* this terminal's candle fetcher, and
@@ -204,6 +209,7 @@ class LiveEngine:
 
         self._cycles += 1
         self._reconcile()
+        self._executor.sync_remote_accounts()
         self._pos_manager.tick(latest, attribution=school_board)
         if self._use_school_board and self._cycles % self._learn_every == 0:
             school_board.learn_from_ledger(ledger.all())
@@ -292,8 +298,14 @@ class LiveEngine:
         # Snapshot pre-sync so verify measures REAL divergence (an external
         # close or volume/entry tampering) instead of re-checking the state
         # sync_positions just rewrote to match the broker (E3 appendix B).
+        #
+        # Scoped to this terminal's account: positions mirrored from another
+        # account's worker are not "missing remotely" just because this login
+        # cannot see them, and each worker's own sync owns their closure.
+        acct = self._account_id
         before = {p.position_id: p.as_dict()
-                  for p in state.open_positions()}
+                  for p in state.open_positions()
+                  if not acct or not p.account_id or p.account_id == acct}
         remote = [p.as_dict() for p in self._adapter.sync_positions()]
         if before or remote:
             recon_engine.verify(remote, baseline=before)
@@ -378,6 +390,7 @@ class LiveEngine:
             "timeframe": self._timeframe,
             "htf_timeframe": self._htf_timeframe,
             "paper": self._paper,
+            "account_id": self._account_id,
             "errors": self._errors[-5:],
             "running": bool(self._thread and self._thread.is_alive()),
             "macro": macro_updater.status(),

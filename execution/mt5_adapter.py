@@ -121,6 +121,39 @@ class MT5Adapter:
     def attach_mode(self) -> bool:
         return self._attach_mode
 
+    def account_id(self) -> str:
+        """The registry id for this terminal's `(login, server)`, or "".
+
+        Identity is the pair: the same login on another server is another
+        account. Resolved once per process and cached, because `sync_positions`
+        tags every position with it and a per-cycle registry read would put a
+        database round-trip inside the reconciliation loop. A registry that
+        cannot be read is "unknown", not a guessed id -- an empty tag is treated
+        as "belongs to this adapter" by the scoped close logic, which is the
+        pre-existing single-account behaviour.
+        """
+        cached = getattr(self, "_account_id_cache", None)
+        if cached is not None:
+            return cached
+        login = int(getattr(settings.mt5, "login", 0) or 0)
+        server = str(getattr(settings.mt5, "server", "") or "")
+        resolved = ""
+        if login > 0:
+            try:
+                from accounts.registry import AccountRegistry
+
+                row = AccountRegistry().by_identity("mt5", str(login), server)
+                if row:
+                    resolved = str(row.get("account_id") or "")
+            except Exception:  # noqa: BLE001 - identity is optional metadata
+                resolved = ""
+        self._account_id_cache = resolved
+        return resolved
+
+    def forget_account_identity(self) -> None:
+        """Drop the cached id after a re-attach to a different login."""
+        self._account_id_cache = None
+
     def _terminal_running(self) -> bool:
         """True when a terminal64 process is alive (session attach candidate)."""
         try:
@@ -168,6 +201,8 @@ class MT5Adapter:
         self._attach_mode = mode == "session-attach"
         self._connected_at = time.time()
         self._sync_stats = {}
+        # A re-attach may have bound a different login; identity is per session.
+        self.forget_account_identity()
         log.info(f"MT5 connected (mode={mode})")
         return True
 
@@ -284,6 +319,7 @@ class MT5Adapter:
     def sync_positions(self) -> List[PositionState]:
         """Mirror broker positions into canonical store."""
         mt5 = _mt5()
+        acct = self.account_id()
         rows = mt5.positions_get()
         remote: Dict[str, PositionState] = {}
         for p in rows or []:
@@ -306,6 +342,9 @@ class MT5Adapter:
                 unrealized_pnl=p.profit,
                 realized_pnl=existing.realized_pnl if existing else 0.0,
                 swap=float(p.swap or 0.0),
+                account_id=acct,
+                venue="mt5",
+                venue_position_ref=str(p.ticket),
             )
             setattr(pos, "origin", origin_meta["origin"])
             setattr(pos, "origin_magic", origin_meta["magic"])
@@ -316,8 +355,14 @@ class MT5Adapter:
             remote[str(p.ticket)] = pos
             state.update_position(pos)
 
-        # Close canonically any position no longer present remotely.
+        # Close canonically any position no longer present remotely -- but only
+        # ones this terminal owns. A bridged position on another account is not
+        # missing from its own venue just because this login cannot see it;
+        # closing it here would report a live trade as closed. An untagged
+        # position is legacy single-account state and is treated as ours.
         for local in state.open_positions():
+            if local.account_id and acct and local.account_id != acct:
+                continue
             if local.position_id not in remote:
                 state.close_position(local.position_id, local.current_price)
 
@@ -863,6 +908,7 @@ class MT5Adapter:
             "login": settings.mt5.login,
             "session_login": self._session_login() or None,
             "server": settings.mt5.server,
+            "account_id": self.account_id(),
             "trade_allowed": self._trade_allowed(),
             "last_error": self._last_error,
             "connected_at": self._connected_at,
@@ -918,9 +964,43 @@ class LiveMT5Executor:
     # paper loops do not publish to the broker lane (see core/pipeline.py).
     BRIDGE_PUBLISH = True
 
-    def __init__(self, adapter: Optional[MT5Adapter] = None) -> None:
+    def __init__(self, adapter: Optional[MT5Adapter] = None,
+                 account_id: Optional[str] = None,
+                 endpoint_resolver: Optional[Any] = None) -> None:
         self._adapter = adapter or mt5_adapter
         self._tickets: Dict[str, Any] = {}
+        # The account this executor trades. When it has a recorded worker, orders
+        # go over that worker's loopback rail instead of this process's terminal,
+        # so two accounts can execute from one canonical process without the
+        # second login ever being attached here. `endpoint_resolver` is injectable
+        # for tests; the default is `execution.worker_client.endpoint_for`.
+        self._account_id = account_id
+        self._endpoint_resolver = endpoint_resolver
+        # account_id -> endpoint that last accepted an order, so their positions
+        # can be mirrored back into canonical state each cycle.
+        self._workers: Dict[str, Any] = {}
+
+    def account_id(self) -> str:
+        if self._account_id is None:
+            try:
+                self._account_id = self._adapter.account_id()
+            except Exception:  # noqa: BLE001 - identity is optional metadata
+                self._account_id = ""
+        return self._account_id or ""
+
+    def _resolve_worker(self) -> Optional[Any]:
+        """The live worker for this executor's account, or None for local."""
+        account_id = self.account_id()
+        if not account_id:
+            return None
+        resolver = self._endpoint_resolver
+        if resolver is None:
+            from execution.worker_client import endpoint_for as resolver
+        try:
+            return resolver(account_id)
+        except Exception:  # noqa: BLE001 - a broken lookup is "no worker"
+            log.warning("worker endpoint lookup failed; using the local terminal")
+            return None
 
     def execute(self, candidate: TradeCandidate,
                 decision: RiskDecision) -> Optional[Any]:
@@ -951,6 +1031,10 @@ class LiveMT5Executor:
             source="execution.mt5",
             payload={"order": order.as_dict(), "candidate": candidate.as_dict()},
         ))
+
+        endpoint = self._resolve_worker()
+        if endpoint is not None:
+            return self._execute_via_worker(endpoint, order, candidate)
 
         if not self._adapter._lazy_connect_if_possible():
             ticket = OrderTicket(str(uuid.uuid4()), order.order_id,
@@ -984,6 +1068,159 @@ class LiveMT5Executor:
                              note=f"filled at {pos.entry_price} (ticket={pos.position_id})")
         self._tickets[order.order_id] = ticket
         return ticket
+
+    def _execute_via_worker(self, endpoint: Any, order: Any,
+                            candidate: TradeCandidate) -> Optional[Any]:
+        """Send an already-approved candidate to the account's own worker.
+
+        The worker holds the terminal for `endpoint.account_id`; this process
+        never attaches that login. A failure is returned as ERROR/REJECTED and
+        is never retried on the local terminal -- that terminal is a different
+        account, so a fallback would fill the wrong one.
+        """
+        from execution.engine import ExecutionStatus, OrderTicket
+        from execution.worker_client import WorkerClient, WorkerError
+
+        try:
+            result = WorkerClient(endpoint).place_order(self._order_frame(candidate))
+        except WorkerError as exc:
+            ticket = OrderTicket(str(uuid.uuid4()), order.order_id,
+                                 ExecutionStatus.ERROR, note=str(exc))
+            self._finish(order, ticket, filled=False)
+            log.error(f"worker order failed for {candidate.symbol}: {exc}")
+            return ticket
+
+        if not result.get("ok"):
+            note = str(result.get("error") or "worker rejected the order")
+            ticket = OrderTicket(str(uuid.uuid4()), order.order_id,
+                                 ExecutionStatus.REJECTED, note=note)
+            self._finish(order, ticket, filled=False)
+            log.warning(f"worker rejected {candidate.candidate_id[:8]}: {note}")
+            return ticket
+
+        pos = self._position_from_row(result.get("position") or {},
+                                      candidate=candidate,
+                                      account_id=endpoint.account_id)
+        if not pos.position_id:
+            ticket = OrderTicket(str(uuid.uuid4()), order.order_id,
+                                 ExecutionStatus.ERROR,
+                                 note="worker reported a fill with no ticket")
+            self._finish(order, ticket, filled=False)
+            return ticket
+
+        existing = state.get_position(pos.position_id)
+        if existing is None:
+            state.add_position(pos)
+        else:
+            pos.realized_pnl = existing.realized_pnl
+            pos.swap = existing.swap
+            state.update_position(pos)
+        self._workers[endpoint.account_id] = endpoint
+
+        order.status = OrderStatus.FILLED
+        order.filled_price = pos.entry_price
+        state.update_order(order)
+        bus.emit(Event(
+            type=EventType.POSITION_OPENED,
+            source="execution.mt5.worker",
+            payload={"position": pos.as_dict(),
+                     "account_id": endpoint.account_id,
+                     "duplicate": bool(result.get("duplicate"))},
+        ))
+        ticket = OrderTicket(
+            str(uuid.uuid4()), order.order_id, ExecutionStatus.FILLED,
+            note=(f"filled at {pos.entry_price} (ticket={pos.position_id}, "
+                  f"worker={endpoint.account_id})"))
+        self._tickets[order.order_id] = ticket
+        return ticket
+
+    def _order_frame(self, candidate: TradeCandidate) -> Dict[str, Any]:
+        return {
+            "candidate_id": candidate.candidate_id,
+            "thesis_id": candidate.thesis_id,
+            "symbol": candidate.symbol,
+            "direction": candidate.direction.value,
+            "volume": float(candidate.size),
+            "entry": float(candidate.entry or 0.0),
+            "stop_loss": float(candidate.stop_loss or 0.0),
+            "take_profit": float(candidate.take_profit or 0.0),
+            "risk_reward": float(candidate.risk_reward or 0.0),
+            "confidence": float(candidate.confidence or 0.0),
+            "priority": int(candidate.priority or 0),
+            "strategy_id": candidate.strategy_id,
+            "account_id": self.account_id(),
+        }
+
+    def _position_from_row(self, row: Dict[str, Any], *,
+                           candidate: Optional[TradeCandidate] = None,
+                           account_id: str = "") -> PositionState:
+        """Build canonical PositionState from a worker's JSON row."""
+        direction_raw = str(row.get("direction")
+                            or (candidate.direction.value if candidate else "long"))
+        try:
+            direction = TradeDirection(direction_raw.split(".")[-1].lower())
+        except ValueError:
+            direction = TradeDirection.FLAT
+        entry = float(row.get("entry_price") or 0.0)
+        position_id = str(row.get("position_id") or "")
+        return PositionState(
+            position_id=position_id,
+            symbol=str(row.get("symbol") or (candidate.symbol if candidate else "")),
+            direction=direction,
+            volume=float(row.get("volume") or 0.0),
+            entry_price=entry,
+            current_price=float(row.get("current_price") or entry),
+            sl=(float(row["sl"]) if row.get("sl") else None),
+            tp=(float(row["tp"]) if row.get("tp") else None),
+            order_id=(candidate.candidate_id if candidate else row.get("order_id")),
+            strategy_id=(row.get("strategy_id")
+                         or (candidate.strategy_id if candidate else None)),
+            account_id=account_id,
+            venue="mt5",
+            venue_position_ref=position_id,
+        )
+
+    def sync_remote_accounts(self) -> List[Dict[str, Any]]:
+        """Mirror every worker-routed account's positions into canonical state.
+
+        Runs after the local terminal's own reconciliation. It is account-scoped
+        in both directions: a position this executor opened through a worker is
+        kept open until *that* worker stops reporting it, and only positions
+        tagged with that account can be closed by its sync.
+        """
+        from execution.worker_client import WorkerClient
+
+        mirrored: List[Dict[str, Any]] = []
+        for account_id, endpoint in list(self._workers.items()):
+            try:
+                payload = WorkerClient(endpoint).positions()
+            except Exception as exc:  # noqa: BLE001 - reported, loop continues
+                log.warning(f"worker positions failed for {account_id}: {exc}")
+                continue
+            if not payload.get("ok"):
+                log.warning(f"worker positions refused for {account_id}: "
+                            f"{payload.get('error')}")
+                continue
+            seen = set()
+            for row in payload.get("positions") or []:
+                pos = self._position_from_row(row, account_id=account_id)
+                if not pos.position_id:
+                    continue
+                seen.add(pos.position_id)
+                existing = state.get_position(pos.position_id)
+                if existing is None:
+                    state.add_position(pos)
+                else:
+                    pos.realized_pnl = existing.realized_pnl
+                    pos.swap = existing.swap
+                    state.update_position(pos)
+            for local in state.open_positions():
+                if local.account_id != account_id:
+                    continue
+                if local.position_id not in seen:
+                    state.close_position(local.position_id, local.current_price)
+            mirrored.append({"account_id": account_id, "positions": len(seen)})
+        return mirrored
 
     def _finish(self, order: OrderState, ticket: Any, filled: bool = False) -> None:
         order.status = OrderStatus.FILLED if filled else OrderStatus.REJECTED

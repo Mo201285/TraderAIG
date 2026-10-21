@@ -20,14 +20,19 @@ every fill it made was invisible to `/system/health` and the dashboard -- the
 "two canonical states" outcome rule 28.1 forbids.
 
 So this worker deliberately does NOT import the API app, does NOT build a market
-plane or an opportunity board, and does NOT open a trade route. It holds exactly
-one thing the main process cannot hold for several accounts at once: a bound MT5
-terminal session. It exposes a minimal surface so the main process (or an
-operator) can ask the account "are you attached?" and "run one reconciliation
-pass" -- nothing that would duplicate or contradict the canonical state.
+plane or an opportunity board, and does NOT decide anything about a trade. It
+holds exactly one thing the main process cannot hold for several accounts at
+once: a bound MT5 terminal session. It exposes a minimal surface so the main
+process (or an operator) can ask the account "are you attached?", "run one
+reconciliation pass", "what is open?" and "send this already-approved order".
 
-It also never trades: `place_position` and the order path are not reachable from
-here. The Risk Governor remains the only trade authority (`operations/live_engine.py`).
+The order route is execution-only, not authority: it accepts a candidate frame
+that the caller has already had approved by the Risk Governor, requires the
+worker bearer token when one is configured, and is idempotent by candidate id so
+a retried request cannot double-fill. It never sizes, vetoes or invents a trade,
+and it never writes canonical state -- the main process does that from the
+returned position. The Risk Governor remains the only trade authority
+(`operations/live_engine.py`).
 
 Exit codes:
   0  clean shutdown (Ctrl-C / a stop signal)
@@ -38,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import pathlib
 import signal
@@ -108,6 +114,82 @@ def apply_account_env(account_id: str) -> Dict[str, str]:
     return {"set": set_keys}
 
 
+def _number(value: Any, name: str, *, required: bool = False,
+            minimum: float = 0.0, exclusive: bool = False) -> float:
+    """Parse one numeric field, refusing NaN/inf and out-of-range values.
+
+    A frame is a transport contract, not a policy: the values must be usable by
+    the terminal, and nothing here decides whether they are *good*.
+    """
+    if value is None or value == "":
+        if required:
+            raise ValueError(f"{name} is required")
+        return 0.0
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number") from None
+    if not math.isfinite(num):
+        raise ValueError(f"{name} must be finite")
+    if exclusive and num <= minimum:
+        raise ValueError(f"{name} must be > {minimum}")
+    if not exclusive and num < minimum:
+        raise ValueError(f"{name} must be >= {minimum}")
+    return num
+
+
+def _validate_order_frame(payload: Any, account_id: str) -> Dict[str, Any]:
+    """Normalise an order frame, or raise ValueError with the first defect."""
+    if not isinstance(payload, dict):
+        raise ValueError("order frame must be a JSON object")
+
+    frame_account = str(payload.get("account_id") or "").strip()
+    if frame_account and account_id and frame_account != account_id:
+        raise ValueError(
+            f"account_id {frame_account!r} does not match this worker's "
+            f"account {account_id!r}")
+
+    candidate_id = str(payload.get("candidate_id") or "").strip()
+    if not candidate_id:
+        raise ValueError("candidate_id is required: it is the idempotency key")
+
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    if not symbol:
+        raise ValueError("symbol is required")
+
+    direction = str(payload.get("direction") or "").strip().lower()
+    if direction not in ("long", "short"):
+        raise ValueError("direction must be 'long' or 'short'")
+
+    volume = _number(payload.get("volume"), "volume", required=True,
+                     minimum=0.0, exclusive=True)
+    stop_loss = _number(payload.get("stop_loss"), "stop_loss")
+    take_profit = _number(payload.get("take_profit"), "take_profit")
+    entry = _number(payload.get("entry"), "entry")
+
+    priority = payload.get("priority", 0)
+    try:
+        priority = int(priority)
+    except (TypeError, ValueError):
+        raise ValueError("priority must be an integer") from None
+
+    return {
+        "candidate_id": candidate_id,
+        "thesis_id": str(payload.get("thesis_id") or candidate_id),
+        "symbol": symbol,
+        "direction": direction,
+        "volume": volume,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "entry": entry,
+        "risk_reward": _number(payload.get("risk_reward"), "risk_reward"),
+        "confidence": _number(payload.get("confidence"), "confidence"),
+        "priority": priority,
+        "strategy_id": (str(payload.get("strategy_id")).strip()
+                        if payload.get("strategy_id") else None),
+    }
+
+
 class WorkerState:
     """The one fact this worker holds: a bound terminal for one account.
 
@@ -124,6 +206,14 @@ class WorkerState:
         self.last_error: Optional[str] = None
         self._adapter: Any = None
         self._stop = threading.Event()
+        # Idempotency book: candidate_id -> the successful result. A duplicate
+        # request returns the same ticket instead of sending a second order.
+        # Failures are NOT recorded, so a genuine retry after a rejected send is
+        # still allowed.
+        self._orders: Dict[str, Dict[str, Any]] = {}
+        self._orders_lock = threading.Lock()
+        self.orders = 0
+        self.last_order_at: Optional[float] = None
 
     def attach(self, adapter: Any) -> bool:
         """Record the adapter and connect it. False on an attach failure."""
@@ -161,11 +251,102 @@ class WorkerState:
             "attach_mode": getattr(adapter, "attach_mode", None),
             "cycles": self.cycles,
             "last_cycle_at": self.last_cycle_at,
+            "orders": self.orders,
+            "last_order_at": self.last_order_at,
             "last_error": self.last_error,
             # The same explicit non-claim the rest of the account surface makes.
             "is_authorisation": False,
             "trade_authority": "risk/governor.py",
         }
+
+    def positions(self) -> Dict[str, Any]:
+        """The account's open positions, straight from its own terminal.
+
+        This is a read of the venue, not of the main process's canonical store:
+        the caller mirrors the result and owns reconciliation. `sync_positions`
+        also publishes into this process's state, which is scoped to this one
+        account and is never served as canonical truth.
+        """
+        if self._adapter is None:
+            return {"ok": False, "error": "no terminal attached"}
+        try:
+            rows = self._adapter.sync_positions()
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            self.last_error = str(exc)
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "account_id": self.account_id,
+            "positions": [p.as_dict() for p in rows],
+        }
+
+    def place(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute one pre-approved candidate on this account's terminal.
+
+        The caller (the account's execution router) has already obtained a Risk
+        Governor APPROVED decision; this object has no policy and cannot approve
+        anything. The only gate here is the transport contract: a well-formed
+        frame, the right account, an attached terminal, and idempotency by
+        `candidate_id`.
+        """
+        adapter = self._adapter
+        if adapter is None or not getattr(adapter, "connected", False):
+            return {"ok": False, "status": 503,
+                    "error": "no terminal attached", "duplicate": False}
+
+        try:
+            frame = _validate_order_frame(payload, self.account_id)
+        except ValueError as exc:
+            return {"ok": False, "status": 400, "error": str(exc),
+                    "duplicate": False}
+
+        candidate_id = frame["candidate_id"]
+        with self._orders_lock:
+            prior = self._orders.get(candidate_id)
+            if prior is not None:
+                return {**prior, "duplicate": True}
+
+            from core.contracts import TradeDirection
+            from decision.candidate import TradeCandidate
+            from risk.governor import RiskDecisionKind
+
+            candidate = TradeCandidate(
+                candidate_id=candidate_id,
+                thesis_id=frame["thesis_id"],
+                symbol=frame["symbol"],
+                direction=(TradeDirection.LONG if frame["direction"] == "long"
+                           else TradeDirection.SHORT),
+                entry=frame["entry"],
+                stop_loss=frame["stop_loss"],
+                take_profit=frame["take_profit"],
+                size=frame["volume"],
+                risk_reward=frame["risk_reward"],
+                confidence=frame["confidence"],
+                priority=frame["priority"],
+                strategy_id=frame["strategy_id"],
+            )
+            pos = adapter.place_position(candidate, RiskDecisionKind.APPROVED)
+            if pos is None:
+                err = (adapter.status() or {}).get("last_error") or "order rejected"
+                self.last_error = err
+                return {"ok": False, "status": 502, "error": err,
+                        "duplicate": False}
+
+            pos.account_id = self.account_id
+            pos.venue = "mt5"
+            pos.venue_position_ref = str(pos.position_id)
+            result = {
+                "ok": True,
+                "status": 200,
+                "duplicate": False,
+                "account_id": self.account_id,
+                "position": pos.as_dict(),
+            }
+            self._orders[candidate_id] = result
+            self.orders += 1
+            self.last_order_at = time.time()
+            self.last_error = None
+            return result
 
     def stop(self) -> None:
         self._stop.set()
@@ -174,8 +355,9 @@ class WorkerState:
 def build_handler(state: WorkerState, *, token: str = "") -> type:
     """A request handler bound to one `WorkerState`.
 
-    Two routes only, both GET/POST reads of liveness and a sync request -- there
-    is deliberately no trade route and no account-write route. An optional
+    Reads are health, open positions and a sync request. The one write is an
+    order frame that the caller has already had approved; there is deliberately
+    no account-write route, no sizing route and no policy route. An optional
     `token` (from `TRADERAIG_WORKER_TOKEN`) is checked as a bearer if set, so a
     worker on a shared host is not wide open; unset means loopback-only trust,
     which is the default because the supervisor launches it on 127.0.0.1.
@@ -204,24 +386,48 @@ def build_handler(state: WorkerState, *, token: str = "") -> type:
                 return self._send(401, {"ok": False, "error": "unauthorized"})
             if self.path.rstrip("/") in ("/worker/health", "/health"):
                 return self._send(200, state.health())
+            if self.path.rstrip("/") in ("/worker/positions", "/positions"):
+                result = state.positions()
+                return self._send(200 if result.get("ok") else 503, result)
             return self._send(404, {"ok": False, "error": "unknown route",
-                                    "routes": ["/worker/health", "/worker/sync"]})
+                                    "routes": ["/worker/health",
+                                               "/worker/positions",
+                                               "/worker/order",
+                                               "/worker/sync"]})
 
         def do_POST(self) -> None:  # noqa: N802 - http.server API
             if not self._authorized():
                 return self._send(401, {"ok": False, "error": "unauthorized"})
-            if self.path.rstrip("/") in ("/worker/sync", "/sync"):
-                length = int(self.headers.get("Content-Length", "0") or "0")
-                raw = self.rfile.read(length) if length else b"{}"
-                try:
-                    body = json.loads(raw or b"{}")
-                except ValueError:
-                    body = {}
+            path = self.path.rstrip("/")
+            if path in ("/worker/order", "/order"):
+                body = self._read_json()
+                if body is None:
+                    return
+                result = state.place(body)
+                return self._send(int(result.get("status") or 200), result)
+            if path in ("/worker/sync", "/sync"):
+                body = self._read_json() or {}
                 symbols = body.get("symbols") if isinstance(body, dict) else None
                 result = state.sync(symbols)
                 return self._send(200 if result.get("ok") else 503, result)
             return self._send(404, {"ok": False, "error": "unknown route",
-                                    "routes": ["/worker/health", "/worker/sync"]})
+                                    "routes": ["/worker/health",
+                                               "/worker/positions",
+                                               "/worker/order",
+                                               "/worker/sync"]})
+
+        def _read_json(self) -> Optional[Dict[str, Any]]:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                body = json.loads(raw or b"{}")
+            except ValueError:
+                self._send(400, {"ok": False, "error": "body is not JSON"})
+                return None
+            if not isinstance(body, dict):
+                self._send(400, {"ok": False, "error": "body must be a JSON object"})
+                return None
+            return body
 
     return _Handler
 

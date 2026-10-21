@@ -217,6 +217,16 @@ class AccountSupervisor:
             "MT5_PASSWORD": values.get("password", ""),
             "MT5_SERVER": values.get("server", ""),
         }
+        # The worker's order route is a machine rail. Gating it with a
+        # per-account derived bearer means a leaked token for one worker cannot
+        # drive another, without introducing a second secret store. Empty when
+        # no secret is resolvable, which leaves the documented loopback-only
+        # default in place.
+        from accounts.worker_auth import worker_token
+
+        token = worker_token(account_id)
+        if token:
+            env["TRADERAIG_WORKER_TOKEN"] = token
         return LaunchPlan(account_id=account_id, venue=venue, port=port,
                           instance=inst, command=command, env=env)
 

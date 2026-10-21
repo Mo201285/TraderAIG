@@ -365,7 +365,7 @@ def test_adapter_resolves_its_account_from_the_registry(monkeypatch):
     from accounts import registry as registry_module
 
     class Registry:
-        def get_by_identity(self, venue, login, server):
+        def for_login(self, venue, login, server):
             assert (venue, login, server) == (
                 "mt5", "1400167", "FTTrading-Server")
             return {"account_id": ACCOUNT_A}

@@ -1974,4 +1974,26 @@ service token via `SERVICE_TOKEN_SEGMENT_PATTERNS` (`("rea", "investigate")`,
 one segment) in `governance/auth.py`, with the negative cases pinned
 (`/rea` and `/rea/investigatx` are refused).
 
+### The edges: a bounded read, a declared roster, a registry-authoritative run (S-REA-e, 2026-10-21)
+
+Three thin spots the first slice left are closed (row 817), none of which changes
+what REA means:
+
+* **The ledger reads as a bounded page.** `GET /rea/jobs` accepts
+  `status`/`command`/`outcome` filters plus `limit`/`offset` and reports a true
+  `total` beside the page, so a page is never mistaken for the whole table
+  (28.15). An unknown status or outcome is a `400 invalid_filter`, not a silent
+  empty page. `ReaJobRepository.count()` answers the same filter without
+  materialising every row; the closed outcome vocabulary is pinned equal to the
+  adapter's `OUTCOMES` by a test.
+* **The declared roster has its own surface.** `GET /rea/capabilities` exposes
+  the full `ReaRegistry` roster (one entry per routed command) as a read-only,
+  non-leaking report. It was previously only a summary inside `/rea/health`.
+* **An undeclared command is refused by the registry, before a job exists.**
+  `ReaService.investigate` checks the declared registry first and raises on an
+  undeclared command (the route maps it to `400 invalid_request`); the adapter's
+  own `KNOWN_COMMANDS` check stays as the last line of defence. "Declared" now
+  means "enforced".
+
+
 

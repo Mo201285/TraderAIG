@@ -21,8 +21,11 @@ import type {
   OfferRow,
   AvailableOffersView,
   RedemptionsView,
+  ReaHealthView,
+  ReaCapabilitiesView,
+  ReaJobsView,
+  ReaSummaryView,
 } from "../types";
-
 // Isolated mock domain data. Pages never hardwire these inline; they come
 // through the service layer (src/lib/api.ts) with a real-API fallback path.
 
@@ -528,6 +531,62 @@ export const mockRedemptions: RedemptionsView = {
     },
   ],
   count: 1,
+  is_authorisation: false,
+  trade_authority: "risk/governor.py",
+};
+
+// The REA offline stand-in: the engine is not reachable and no investigation has
+// been recorded. It is deliberately EMPTY -- a mock that invented a completed
+// reverse-engineering job would be exactly the fabrication the honesty guards
+// exist to prevent. The registry summary names the two commands the roster
+// declares so the capabilities surface still has structure offline.
+export const mockReaHealth: ReaHealthView = {
+  available: false,
+  node_bin: "",
+  package_dir: "",
+  known_commands: [],
+  timeout_seconds: 600,
+  registry: {
+    count: 2,
+    commands: ["analyze-javascript-application", "inspect-binary-layout"],
+    needs_native_engine: [],
+    known_but_routed: ["analyze-javascript-application", "inspect-binary-layout"],
+    read_only: true,
+    is_authorisation: false,
+    trade_authority: "risk/governor.py",
+  },
+  read_only: true,
+  is_authorisation: false,
+  trade_authority: "risk/governor.py",
+};
+
+export const mockReaCapabilities: ReaCapabilitiesView = {
+  count: 0,
+  capabilities: [],
+  registry: mockReaHealth.registry,
+  read_only: true,
+  is_authorisation: false,
+  trade_authority: "risk/governor.py",
+};
+
+export const mockReaJobs: ReaJobsView = {
+  count: 0,
+  total: 0,
+  limit: 100,
+  offset: 0,
+  jobs: [],
+  read_only: true,
+  is_authorisation: false,
+  trade_authority: "risk/governor.py",
+};
+
+export const mockReaSummary: ReaSummaryView = {
+  total: 0,
+  per_status: { requested: 0, running: 0, completed: 0, failed: 0 },
+  per_outcome: {},
+  open: 0,
+  known_statuses: ["requested", "running", "completed", "failed"],
+  known_commands: [],
   is_authorisation: false,
   trade_authority: "risk/governor.py",
 };

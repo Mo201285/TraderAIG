@@ -22,6 +22,7 @@ import LiveOpsPage from "./pages/LiveOpsPage";
 import EconomyPage from "./pages/EconomyPage";
 import AccountsPage from "./pages/AccountsPage";
 import OffersPage from "./pages/OffersPage";
+import ReaPage from "./pages/ReaPage";
 
 interface Props {
   user: User;
@@ -30,7 +31,7 @@ interface Props {
   onLogout: () => void;
 }
 
-type Page = "dashboard" | "chart" | "research" | "intelligence" | "strategy-lab" | "builder" | "paper" | "risk" | "execution" | "learning" | "subscriber" | "governance" | "ops" | "system" | "developer" | "economy" | "accounts" | "offers";
+type Page = "dashboard" | "chart" | "research" | "intelligence" | "strategy-lab" | "builder" | "paper" | "risk" | "execution" | "learning" | "subscriber" | "governance" | "ops" | "system" | "developer" | "economy" | "accounts" | "offers" | "rea";
 
 const NAV_EN = [
   { id: "dashboard", label: "Command Center", icon: GridIcon },
@@ -46,6 +47,7 @@ const NAV_EN = [
   { id: "subscriber", label: "Subscriber", icon: StarIcon },
   { id: "accounts", label: "Accounts", icon: PlugIcon },
   { id: "offers", label: "Offers", icon: TagIcon },
+  { id: "rea", label: "Reverse Engineering", icon: BugIcon },
   { id: "economy", label: "XTAIG Economy", icon: CoinIcon },
   { id: "governance", label: "Governance Center", icon: LockIcon },
   { id: "ops", label: "Live Ops", icon: PulseIcon },
@@ -67,6 +69,7 @@ const NAV_AR = [
   { id: "subscriber", label: "المشترك" },
   { id: "accounts", label: "الحسابات" },
   { id: "offers", label: "العروض" },
+  { id: "rea", label: "الهندسة العكسية" },
   { id: "economy", label: "اقتصاد XTAIG" },
   { id: "governance", label: "مركز الحوكمة" },
   { id: "ops", label: "العمليات الحية" },
@@ -127,6 +130,9 @@ function TagIcon() {
 }
 function CoinIcon() {
   return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="7.5" r="6" stroke="currentColor" strokeWidth="1.2"/><path d="M7.5 4.2V10.8M9.4 5.6C9.4 4.9 8.6 4.5 7.5 4.5C6.4 4.5 5.6 4.9 5.6 5.7C5.6 7.9 9.4 7 9.4 9.3C9.4 10.1 8.6 10.5 7.5 10.5C6.4 10.5 5.6 10.1 5.6 9.4" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/></svg>;
+}
+function BugIcon() {
+  return <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="4.5" y="4.5" width="6" height="7" rx="3" stroke="currentColor" strokeWidth="1.2"/><path d="M4.5 6.5H2M4.5 8H1.5M4.5 9.5H2M10.5 6.5H13M10.5 8H13.5M10.5 9.5H13" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><path d="M5.5 4L4 2M9.5 4L11 2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>;
 }
 
 const PLAN_COLORS: Record<string, string> = {
@@ -441,6 +447,7 @@ export default function AppShell({ user, lang, onLangToggle, onLogout }: Props) 
           {page === "subscriber" && <SubscriberPage lang={lang} user={user} />}
           {page === "accounts" && <AccountsPage lang={lang} />}
           {page === "offers" && <OffersPage lang={lang} />}
+          {page === "rea" && <ReaPage lang={lang} />}
           {page === "economy" && <EconomyPage lang={lang} user={user} />}
           {page === "governance" && <GovernancePage lang={lang} />}
           {page === "ops" && <LiveOpsPage lang={lang} />}

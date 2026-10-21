@@ -90,6 +90,11 @@ import type {
   AvailableOffersView,
   RedemptionsView,
   RedeemResult,
+  ReaHealthView,
+  ReaCapabilitiesView,
+  ReaJobsView,
+  ReaSummaryView,
+  ReaInvestigateResult,
 } from "../types";
 import {
   mockAudit,
@@ -97,6 +102,10 @@ import {
   mockOffers,
   mockAvailableOffers,
   mockRedemptions,
+  mockReaHealth,
+  mockReaCapabilities,
+  mockReaJobs,
+  mockReaSummary,
   mockChangeRequests,
   mockCopyFollower,
   mockExperiences,
@@ -1725,6 +1734,95 @@ export const api = {
     } catch (e) {
       return { ok: false, data: null as unknown as RedemptionsView, source: "mock", error: String(e) };
     }
+  },
+
+  // -- Reverse Engineering Agent (research/rea) ----------------------------
+  // REA is an investigation seat. These reads/writes only ever touch the
+  // registered /rea/* routes; the one mutation (`investigateRea`) opens a job
+  // the backend records, and every payload says `is_authorisation: false`.
+  // Offline the ledger is EMPTY -- a mock never fabricates a completed
+  // investigation.
+  async getReaHealth(): Promise<Envelope<ReaHealthView>> {
+    if (!health.live) return { ok: true, data: mockReaHealth, source: "mock" };
+    try {
+      const res = await authorizedFetch("/rea/health");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { rea?: ReaHealthView };
+      if (!body.rea) throw new Error("malformed /rea/health payload");
+      return { ok: true, data: body.rea, source: "live" };
+    } catch (e) {
+      return { ok: false, data: mockReaHealth, source: "mock", error: String(e) };
+    }
+  },
+  async getReaCapabilities(): Promise<Envelope<ReaCapabilitiesView>> {
+    if (!health.live) return { ok: true, data: mockReaCapabilities, source: "mock" };
+    try {
+      const res = await authorizedFetch("/rea/capabilities");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { rea?: ReaCapabilitiesView };
+      if (!body.rea) throw new Error("malformed /rea/capabilities payload");
+      return { ok: true, data: body.rea, source: "live" };
+    } catch (e) {
+      return { ok: false, data: mockReaCapabilities, source: "mock", error: String(e) };
+    }
+  },
+  async getReaJobs(opts?: {
+    status?: string;
+    command?: string;
+    outcome?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<Envelope<ReaJobsView>> {
+    if (!health.live) return { ok: true, data: mockReaJobs, source: "mock" };
+    const params = new URLSearchParams();
+    if (opts?.status) params.set("status", opts.status);
+    if (opts?.command) params.set("command", opts.command);
+    if (opts?.outcome) params.set("outcome", opts.outcome);
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    if (opts?.offset != null) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    const path = qs ? "/rea/jobs?" + qs : "/rea/jobs";
+    try {
+      const res = await authorizedFetch(path);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: (await res.json()) as ReaJobsView, source: "live" };
+    } catch (e) {
+      return { ok: false, data: mockReaJobs, source: "mock", error: String(e) };
+    }
+  },
+  async getReaSummary(): Promise<Envelope<ReaSummaryView>> {
+    if (!health.live) return { ok: true, data: mockReaSummary, source: "mock" };
+    try {
+      const res = await authorizedFetch("/rea/jobs/summary");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { rea?: ReaSummaryView };
+      if (!body.rea) throw new Error("malformed /rea/jobs/summary payload");
+      return { ok: true, data: body.rea, source: "live" };
+    } catch (e) {
+      return { ok: false, data: mockReaSummary, source: "mock", error: String(e) };
+    }
+  },
+  async getReaJob(jobId: string): Promise<Envelope<unknown>> {
+    if (!health.live) return { ok: false, data: null, source: "mock", error: "backend not reachable" };
+    try {
+      const res = await authorizedFetch(`/rea/jobs/${encodeURIComponent(jobId)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { ok: true, data: await res.json(), source: "live" };
+    } catch (e) {
+      return { ok: false, data: null, source: "mock", error: String(e) };
+    }
+  },
+  async investigateRea(input: {
+    command: string;
+    target: string;
+    note?: string;
+    feed_evidence?: boolean;
+  }): Promise<Envelope<ReaInvestigateResult>> {
+    return postJson<ReaInvestigateResult>("/rea/investigate", {
+      note: "",
+      feed_evidence: false,
+      ...input,
+    });
   },
 };
 

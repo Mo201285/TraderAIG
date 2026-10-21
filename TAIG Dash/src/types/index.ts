@@ -2013,3 +2013,111 @@ export interface RedeemResult {
   trade_authority: string;
 }
 
+// ─── Reverse Engineering Agent (research/rea, /rea/*) ────────────────────────
+// REA runs an external engine over a shipped artifact and records the run as a
+// job. Every payload carries `is_authorisation: false` and the Risk Governor as
+// the only trade authority: an investigation proposes findings, never authority.
+
+export interface ReaCapability {
+  command: string;
+  title: string;
+  target_kind: string;
+  needs_native_engine: boolean;
+  mission: string;
+  proposes_never_executes: boolean;
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+
+export interface ReaRegistrySummary {
+  count: number;
+  commands: string[];
+  needs_native_engine: string[];
+  known_but_routed: string[];
+  read_only: boolean;
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+
+export interface ReaHealthView {
+  available: boolean;
+  node_bin: string;
+  package_dir: string;
+  known_commands: string[];
+  timeout_seconds: number;
+  registry: ReaRegistrySummary;
+  read_only: boolean;
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+
+export interface ReaCapabilitiesView {
+  count: number;
+  capabilities: ReaCapability[];
+  registry: ReaRegistrySummary;
+  read_only: boolean;
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+
+export interface ReaJobSummary {
+  evidence_id?: string;
+  operation?: string;
+  provider?: string;
+  subject?: string;
+  stdout_bytes?: number;
+  limitations?: string[];
+  unknowns?: string[];
+}
+
+export interface ReaJob {
+  job_id: string;
+  command: string;
+  target: string;
+  status: string;
+  outcome: string;
+  requested_by: string;
+  evidence_id: string;
+  summary: ReaJobSummary;
+  progress: Array<Record<string, unknown>>;
+  detail: string;
+  note: string;
+  created_at?: string;
+  updated_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+
+export interface ReaJobsView {
+  count: number;
+  total: number;
+  limit: number;
+  offset: number;
+  jobs: ReaJob[];
+  read_only: boolean;
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+
+export interface ReaSummaryView {
+  total: number;
+  per_status: Record<string, number>;
+  per_outcome: Record<string, number>;
+  open: number;
+  known_statuses: string[];
+  known_commands: string[];
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+
+export interface ReaInvestigateResult {
+  ok: boolean;
+  job: ReaJob;
+  action: string;
+  reason?: string;
+  is_authorisation: boolean;
+  trade_authority: string;
+}
+

@@ -1126,6 +1126,46 @@ def test_an_unreadable_friday_close_closes_the_symbol():
     assert "could not be read from MT5" in why
 
 
+def test_the_unreadable_close_names_which_fault_it_was():
+    """The three ways a close goes missing are told apart in the reason.
+
+    Every one of them is fail-closed, so the verdict does not change -- but the
+    action does: an empty feed is a deployment-wide publisher problem, an absent
+    symbol is a per-symbol gap, and a close days from its reading is a clock or
+    data fault. A message that says only "could not be read" hides that, and the
+    live case behind this test was exactly an empty feed (the EA had never
+    published), which read like a XAUUSD-specific fault.
+    """
+    policy = _full_policy(weekend_close_lead_minutes=120.0)
+
+    # (1) no schedule published at all -- affects every symbol
+    _, why_empty = weekend.in_close_window(policy, FRIDAY_CLOSE_UTC,
+                                           "XAUUSD", {})
+    assert "no session schedule has been published" in why_empty
+
+    # (2) a populated schedule that lacks this symbol -- per-symbol gap
+    _, why_absent = weekend.in_close_window(
+        policy, FRIDAY_CLOSE_UTC, "XAUUSD",
+        _weekend_schedules(["EURUSD"]))
+    assert "absent from the published session schedule" in why_absent
+
+    # (3) a close too far from its own reading -- clock or data fault
+    far = weekend.SymbolSchedule("XAUUSD",
+                                 FRIDAY_CLOSE_UTC + 30 * 86400.0,
+                                 FRIDAY_CLOSE_UTC)
+    _, why_fault = weekend.in_close_window(policy, FRIDAY_CLOSE_UTC,
+                                           "XAUUSD", {"XAUUSD": far})
+    assert "too far to be a weekend boundary" in why_fault
+
+
+def test_the_reduced_risk_path_names_the_same_fault():
+    """Crypto's fail-closed reason carries the same cause, not a bare phrase."""
+    policy = _full_policy(weekend_risk_multiplier=0.5)
+    mult, why = weekend.risk_multiplier(policy, FRIDAY_CLOSE_UTC, "BTCUSD", {})
+    assert mult == 0.5
+    assert "no session schedule has been published" in why
+
+
 def test_an_unknown_asset_class_closes_the_symbol():
     """Not knowing the class means not knowing whether it may be traded at all."""
     policy = _full_policy(weekend_close_lead_minutes=120.0)

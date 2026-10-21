@@ -147,6 +147,34 @@ def _observed_close(schedules: Dict[str, SymbolSchedule],
     return entry
 
 
+def _close_unreadable_note(schedules: Dict[str, SymbolSchedule],
+                           symbol: str) -> str:
+    """WHY this symbol's close could not be placed, in one short clause.
+
+    `_observed_close` returns the same None for three different faults, and the
+    action each calls for is not the same: an empty mapping means the terminal
+    never published the schedule at all (fix the EA / the shared-files path -- it
+    affects every symbol, not this one), whereas a populated mapping that lacks
+    the symbol is a per-symbol gap, and a close too far from its reading is a
+    clock or data fault. An operator reading only "could not be read" cannot tell
+    a deployment-wide feed failure from one symbol the EA did not cover, so this
+    names the cause without changing the fail-closed verdict.
+    """
+    if not schedules:
+        return ("no session schedule has been published by the terminal, so no "
+                "Friday close is available for any symbol")
+    entry = schedules.get(symbol.upper())
+    if entry is None or entry.observed_close <= 0.0:
+        return ("the symbol is absent from the published session schedule (the "
+                "terminal reported no usable Friday session for it)")
+    span = abs(entry.observed_close - entry.observed_at)
+    if span > _MAX_BOUNDARY_SPAN:
+        return (f"the published close sits {span / 86400.0:.1f} days from its "
+                f"reading, too far to be a weekend boundary (a clock or data "
+                f"fault, not a schedule)")
+    return "the Friday close could not be established"
+
+
 def _server_epoch(epoch: float, offset_hours: float) -> float:
     """Shift an epoch into the broker's frame, for weekday arithmetic only.
 
@@ -180,7 +208,8 @@ def in_close_window(policy, epoch: float, symbol: str,
     entry = _observed_close(schedules, symbol)
     if entry is None:
         return True, (f"{symbol}: its Friday close could not be read from MT5, "
-                      f"so the close window cannot be placed; closed")
+                      f"so the close window cannot be placed; closed "
+                      f"({_close_unreadable_note(schedules, symbol)})")
 
     offset = float(getattr(policy, "server_utc_offset_hours", 0.0) or 0.0)
     now_server = _server_epoch(epoch, offset)
@@ -264,7 +293,8 @@ def risk_multiplier(policy, epoch: float, symbol: str,
         # Fail closed: a symbol we cannot place inside or outside a window is not
         # one to trade at full size through a weekend gap.
         return multiplier, (f"{symbol}: Friday close unreadable, so the window "
-                            f"cannot be placed; reduced to the restricted size")
+                            f"cannot be placed; reduced to the restricted size "
+                            f"({_close_unreadable_note(schedules, symbol)})")
     offset = float(getattr(policy, "server_utc_offset_hours", 0.0) or 0.0)
     now_server = _server_epoch(epoch, offset)
     close_server = _server_epoch(entry.observed_close, offset)

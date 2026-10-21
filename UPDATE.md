@@ -2245,6 +2245,92 @@ the pilot policy: `min(1.97 * 0.50, 0.10)` -- the `0.10` being
 Gate: ruff clean; 20 api-lab/hygiene tests pass. Commit `6e62d29`.
 
 
+## Appendix N - The worker executes, and accounts stop sharing one truth (2026-10-22)
+
+Phase F built the account registry, the per-account supervisor and a worker that
+hosts one account's terminal. Its docstring said, correctly, that the worker does
+not trade. That was always a statement about **authority**, not capability: the
+Risk Governor is the only approver. Row 826 adds the missing execution seam so a
+second account's terminal can receive an approved order from the one canonical
+process, and hardens reconciliation so two accounts can never overwrite each
+other's truth.
+
+### 1. The worker's two new routes
+
+`scripts/account_worker.py`:
+
+* `POST /worker/order` -- accepts one candidate frame. The caller has already
+  obtained an `APPROVED` decision; the worker has no policy and cannot approve,
+  size or veto. It validates the transport contract only: a well-formed frame, a
+  positive finite volume, `direction` in `long|short`, and an `account_id` that
+  matches (or omits) its own. `candidate_id` is the idempotency key: a duplicate
+  returns the original ticket, and only successful sends are cached, so a genuine
+  retry after a rejection is still allowed. The returned position is stamped with
+  `account_id`, `venue="mt5"` and `venue_position_ref=ticket`.
+* `GET /worker/positions` -- the terminal's open positions, straight from the
+  venue. The main process mirrors them; the worker's own state is never served as
+  canonical truth.
+
+Both are behind the existing optional bearer. `accounts/worker_auth.py` derives
+that bearer per account as `HMAC-SHA256(secret, "worker:<account_id>")`, keyed by
+`TRADERAIG_WORKER_SECRET` when set, otherwise the vault's `auth.service_token`.
+The supervisor's `plan()` puts it in the child environment and the API process
+derives the same value -- no new secret store, no token row in the database, and
+one account's token cannot drive another. When no secret is resolvable the token
+is empty and the worker keeps its documented loopback-only default.
+
+### 2. Routing (and why there is no fallback)
+
+`execution/worker_client.py` resolves an account's recorded runtime to an
+endpoint. It routes only to `starting|connected|degraded` rows with a live pid.
+A 5xx with a structured body is the worker reporting a venue outcome (terminal
+refused the fill, no money) and is returned so the executor can report
+`REJECTED`; a 4xx (bad frame, bad token) raises, because silently turning an auth
+failure into "rejected" would hide a misconfigured rail.
+
+`LiveMT5Executor` sends the approved candidate to that endpoint when one is
+recorded. On any failure it returns `ERROR`/`REJECTED` and **never** falls back to
+the local terminal: that terminal is a different login, so a fallback would fill
+the wrong account.
+
+### 3. Account-scoped reconciliation
+
+This is the part that would have broken silently. `MT5Adapter.sync_positions`
+closed every canonical position absent from *its* terminal. A bridged position on
+account B would therefore be reported closed on the next account-A cycle -- a
+"healthy-looking" lie of exactly the kind the reconciliation code exists to
+prevent. Now:
+
+* `MT5Adapter.account_id()` resolves `(login, server)` to the registry id once per
+  session, and `sync_positions` tags every position with it.
+* Its close-missing loop skips positions owned by another account (an untagged
+  position is legacy single-account state and still behaves as before).
+* `LiveMT5Executor.sync_remote_accounts()` mirrors each routed worker's positions
+  and closes only positions tagged with **that** account.
+* `LiveEngine._reconcile` scopes its pre-sync baseline to its own account, so the
+  global reconciliation ledger does not call another account's positions
+  "missing_remote".
+
+### 4. What this slice does not do
+
+Two accounts still cannot *generate decisions* simultaneously: the market feed,
+the opportunity board and the pipeline loop remain one-per-process. This slice is
+the execution and reconciliation half they will use. The next slice (F5d) is the
+per-account candle/quote rail plus per-account loops; until then the honest
+statement is "the bridge is ready, the multi-account engine is not".
+
+### 5. Gate
+
+`tests/test_worker_bridge.py` (14): frame validation including wrong account,
+NaN and zero volume; idempotent placement; a retryable 502 versus a raising 401;
+HTTP order and positions routes; worker routing with a local terminal that must
+not trade; no fallback on rejection; account-scoped remote sync; account-scoped
+adapter sync; token derivation; endpoint liveness.
+
+Run: 14 bridge + 32 supervisor/bridge + 42 adapter/live-engine/bridge-paths/
+ownership + 18 api-lab + 2 hygiene. Ruff clean. Commit `fec6744`.
+
+
 
 
 

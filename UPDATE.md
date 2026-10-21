@@ -1995,5 +1995,26 @@ what REA means:
   own `KNOWN_COMMANDS` check stays as the last line of defence. "Declared" now
   means "enforced".
 
+### The face: the Reverse Engineering seat in the dashboard (S-REA-f, 2026-10-21)
+
+Rows 816/817 built and hardened the REA rail; row 818 gives it an operator face
+(`TAIG Dash/src/components/pages/ReaPage.tsx`), and the honest boundary is the
+same one the API enforces -- REA proposes and records, it never trades and never
+grants authority. The page reads only through the service layer
+(`getReaHealth`/`getReaCapabilities`/`getReaJobs`/`getReaSummary`/`getReaJob`)
+plus the single mutation `investigateRea` (`POST /rea/investigate`), so every
+route it touches is a registered `/rea/*` route and the row-757 honesty guard
+covers it automatically. It shows engine readiness, the declared capability
+roster, and a **bounded** ledger (`PAGE_SIZE=25`, a real `total`, status filter,
+prev/next) -- a page is never mistaken for the whole history. The one mutation
+reports the honest outcome: `completed` reads as completed, any other outcome is
+named, and a refusal (undeclared command, unreachable engine) renders as an
+error, never a success. `is_authorisation: False` and
+`trade_authority: risk/governor.py` are carried forward, not overridden. Offline
+the ledger is deliberately EMPTY (`mockReaHealth`/`mockReaJobs`/`mockReaSummary`):
+a mock that invented a completed reverse-engineering job would be exactly the
+fabrication the honesty guards exist to prevent.
+
+
 
 

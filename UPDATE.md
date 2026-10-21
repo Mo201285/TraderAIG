@@ -2062,6 +2062,33 @@ an honest detector. Tests pin a two-character secret as encrypted-and-not-a-leak
 and a value-in-a-plain-field as a real leak.
 
 
+## Appendix I - The weekend close fails closed, and now says why (2026-10-21)
+
+`challenge/weekend.py` decides two weekend rules -- a **close window** (forex,
+metal, index stop two hours before their own Friday close) and a **reduced-risk
+window** (crypto trades at half risk). Both are anchored to a per-symbol Friday
+close read from the terminal, and both **fail closed** when that close cannot be
+established: "cannot read the close" is treated as "the close has already
+happened". That verdict was always correct.
+
+What was not was the *reason*. It read only "its Friday close could not be read
+from MT5", which put three different faults behind one sentence:
+
+* **no schedule published at all** -- the terminal feed is absent; affects every
+  symbol, and the fix is the EA / shared-files path, not the symbol;
+* **a populated schedule that lacks this symbol** -- a per-symbol gap;
+* **a close too far from its own reading** -- a clock or data fault.
+
+A live pass made the ambiguity concrete: the EA had never published
+`...\Terminal\Common\Files\sessions\sessions.json`, so `load_schedules` returned
+`{}`, **every** symbol was closed, and the message read like a XAUUSD-specific
+fault. `_close_unreadable_note(schedules, symbol)` now names the cause in one
+clause, and both `in_close_window` and `risk_multiplier` append it. The verdicts
+are unchanged -- the reason is only now actionable, which is the whole point of a
+fail-closed rule whose value depends on the operator knowing what to fix.
+
+
+
 
 
 

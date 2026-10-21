@@ -2088,6 +2088,48 @@ are unchanged -- the reason is only now actionable, which is the whole point of 
 fail-closed rule whose value depends on the operator knowing what to fix.
 
 
+## Appendix J - Live MT5 trading started on the challenge account (2026-10-21)
+
+The live engine is running on the existing challenge account `1400167` (For
+Traders `challenge`, $100,000). Activation was gated on a full read of the chain
+first, at the operator's instruction:
+
+* MT5 connected, `trade_allowed=true`;
+* the EA market publisher live -- the bridge reports `active` with `rejections:[]`
+  and both symbols return `fresh` quotes at `age 0.0s`;
+* the engine `would_start=true` with `refusals:[]` and five promotion-cleared
+  strategies;
+* the operator principal holds `CAN_TRADE`;
+* the governing policy `For Traders:challenge:oct-2026-v4` is fully resolved and
+  its `instruments.allowed_symbols` are `[EURUSD, XAUUSD, BTCUSD]`, with the window
+  open and headroom `allow`.
+
+`POST /mt5/engine/start` (interval 30s) then returned `running=true`, and within
+about four minutes the loop advanced `cycles` 0 -> 8 and `candles_fetched`
+2100 -> 6600 with `errors: []`.
+
+**The proof it is really trading** is not the `started:true` response but a real
+XAUUSD candidate that reached the governor and was vetoed:
+
+> challenge policy halt: XAUUSD: its Friday close could not be read from MT5, so
+> the close window cannot be placed; closed
+
+i.e. the decision pipeline is producing live MT5 candidates for real, and the
+weekend rule is correctly failing closed on gold because the EA has published no
+`sessions.json` (`InpPublishSessions` is off on the attached build). That veto is
+the *intended* behaviour, not a fault to suppress: gold must not be held at full
+size into an unpriceable weekend gap. BTCUSD is crypto and has no Friday close, so
+it is not gated by that rule and can trade. The message still shows the wording
+from before this session's `0d6c69a` fix (the running API process predates it);
+after the next API restart the same veto will name the cause -- "no session
+schedule has been published by the terminal".
+
+**Operator action to unblock gold:** open the EA's properties on the BTCUSD
+chart, set `InpPublishSessions = true` (and `InpSessionsSubDir = "sessions"`), and
+OK. Within five minutes `<common>\Files\sessions\sessions.json` appears and the
+XAUUSD weekend window can be placed. No code change is required either way.
+
+
 
 
 

@@ -2035,6 +2035,34 @@ loop: `GET /rea/jobs/{id}/evidence` resolves the linked plane item.
   the honest not-fed reason, in a panel.
 
 
+## Appendix H - Secrets vault: the plaintext check (28.18, 2026-10-21)
+
+An invigilation pass reported `secrets_leak: True` for three
+`mt5.<account>.password` slots, which reads as plaintext secrets on disk. The
+storage was opened and the opposite was true: the vault is **fully encrypted**.
+All 24 entries are DPAPI ciphers -- every blob begins with the `01000000` header
+-- and the three flagged passwords are **two characters long**. A value that
+short appears somewhere in ten kilobytes of base64/JSON by pure chance, and the
+old `secrets_leak()` asked only "is this decrypted value a substring of the
+file". The vault was honest; the detector was not.
+
+A false alarm on a security boundary is its own defect -- it teaches an operator
+to ignore the real one -- so `secrets_leak()` now reports a leak only on evidence
+of plaintext:
+
+* an entry carries a string field other than its `cipher` blob and its `set_at`
+  timestamp (a plaintext write, however it was shaped), or
+* a decryptable value appears in the file as a quoted JSON string **and** is at
+  least `_LEAK_MIN_LEN` (6) characters, so a chance substring match cannot trip
+  it.
+
+Both legs still catch a genuine leak; neither fires on a short secret that is in
+fact encrypted. **No live secret was moved**: the vault needed no migration, only
+an honest detector. Tests pin a two-character secret as encrypted-and-not-a-leak
+and a value-in-a-plain-field as a real leak.
+
+
+
 
 
 

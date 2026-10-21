@@ -1914,3 +1914,64 @@ clicks); the signing secret is not here -- it lives in the vault. Both columns a
 additive/nullable (`_required_schema()`), so a database created before them keeps
 its rows.
 
+## Appendix G - The REA unit: gated reverse-engineering investigation (2026-10-21)
+
+This appendix documents **REA**, a new research unit (row 816) that asks a
+reverse-engineering engine a question about an artefact and records the answer as
+a job. REA is an investigation rail: it *proposes* an evidence-shaped reading and
+records it. It never executes anything -- every payload carries
+`is_authorisation: False` and `trade_authority: risk/governor.py`, and only the
+Risk Governor acts (MAST 34.18).
+
+### The engine is pinned locally, run through a bounded subprocess (S-REA-a)
+
+REA wraps the `rea-agents` engine -- a Node package pinned under the gitignored
+`_runtime/rea`, next to the pinned Node under `_runtime/node`. `ReaAdapter`
+discovers both (`REA_NODE_BIN` / `REA_RUNTIME_DIR` override when a deployment
+wants to move them) and calls the CLI through a **shell-free, bounded
+subprocess**: no `npx`, no MCP, no network. The healthy path was confirmed live at
+`rea-agents@6.5.0`: `analyze-javascript-application <path> --json` returns one
+Evidence JSON on stdout plus `{"rea_progress": ...}` steps on stderr. The run is
+time-bounded (`DEFAULT_TIMEOUT_SECONDS`) and output-bounded
+(`DEFAULT_MAX_OUTPUT_BYTES`), and the outcome is a closed vocabulary:
+`completed | timeout | engine_failed | invalid_output | unavailable |
+invalid_request`.
+
+### The capabilities are a declared contract, not a discovery (S-REA-b)
+
+`research/rea/registry.py` declares eleven static, offline capabilities, each
+with `needs_native_engine: False`. The surface is fixed and inspectable -- the
+same deterministic shape as `research/missions/crew.py`, with no LLM and no
+hidden tool. `ReaService.health()` reports the engine's presence and the registry
+so an operator reads the contract rather than guessing it.
+
+### A failed run is recorded; only a completed run feeds the plane (S-REA-c)
+
+`ReaService.investigate` opens a job, runs the engine, and records the outcome. A
+run the engine could **not** answer is a recorded failure with a named outcome
+and is **never** fed to the Evidence Plane; a `completed` run may feed it
+(`REA_EVIDENCE_SOURCE_KIND = "internal"`, trust 0, de-duped by content hash). REA
+therefore adds signal to the plane as *our own* analysis -- never as external
+truth -- and never advances trust. An automated reading earns nothing by itself.
+
+### Durability and the routes (S-REA-d)
+
+Jobs live in a new `rea_jobs` table (`ReaJobRecord`, string PKs like every other
+table) with `ReaJobRepository` (`request`/`start`/`finish`/`fail`/`get`/
+`list_all`/`summary`) enforcing a terminal-state lifecycle. The routes
+(`operations/api.py`) are gated like every research route, behind the acting
+principal (`_guard_factory(_acting_actor())`):
+
+* `GET /rea/health` -- engine presence + registry.
+* `POST /rea/investigate` -- `400 invalid_request` on an unrouted command or an
+  empty target; `502` with the engine's named reason when the engine cannot
+  answer; `200` with the recorded job on success.
+* `GET /rea/jobs`, `GET /rea/jobs/summary`, `GET /rea/jobs/{job_id}`
+  (`404 unknown_job`).
+
+The one mutation rail, `POST /rea/investigate`, is also reachable with the
+service token via `SERVICE_TOKEN_SEGMENT_PATTERNS` (`("rea", "investigate")`,
+one segment) in `governance/auth.py`, with the negative cases pinned
+(`/rea` and `/rea/investigatx` are refused).
+
+

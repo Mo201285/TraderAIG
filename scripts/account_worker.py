@@ -24,7 +24,10 @@ plane or an opportunity board, and does NOT decide anything about a trade. It
 holds exactly one thing the main process cannot hold for several accounts at
 once: a bound MT5 terminal session. It exposes a minimal surface so the main
 process (or an operator) can ask the account "are you attached?", "run one
-reconciliation pass", "what is open?" and "send this already-approved order".
+reconciliation pass", "what is open?", "give me your candles/ticks" and "send
+this already-approved order". The market routes are the account's own terminal
+read out loud -- the main process still owns the plane, the analysis and the
+decision.
 
 The order route is execution-only, not authority: it accepts a candidate frame
 that the caller has already had approved by the Risk Governor, requires the
@@ -50,8 +53,10 @@ import signal
 import sys
 import threading
 import time
+from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
+from urllib.parse import parse_qs, urlparse
 
 # Put the project root on sys.path before any project import, and resolve it from
 # this file's own location: a scheduled task or a detached launcher can run with
@@ -280,6 +285,77 @@ class WorkerState:
             "positions": [p.as_dict() for p in rows],
         }
 
+    def candles(self, symbol: str, timeframe: str = "M15",
+                count: int = 300) -> Dict[str, Any]:
+        """This account's own candle window, for a caller that is not attached.
+
+        The worker fetches from its terminal; it does not interpret, cache or
+        decide. An empty window is reported as such, with the adapter's last
+        error when it has one, rather than fabricated bars.
+        """
+        if self._adapter is None:
+            return {"ok": False, "error": "no terminal attached"}
+        symbol = str(symbol or "").strip().upper()
+        if not symbol:
+            return {"ok": False, "status": 400, "error": "symbol is required"}
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            return {"ok": False, "status": 400, "error": "count must be an integer"}
+        if not 1 <= count <= 5000:
+            return {"ok": False, "status": 400,
+                    "error": "count must be between 1 and 5000"}
+        try:
+            rows = self._adapter.fetch_candles(symbol, timeframe, count)
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            self.last_error = str(exc)
+            return {"ok": False, "error": str(exc)}
+        if not rows:
+            return {"ok": False,
+                    "error": getattr(self._adapter, "_last_error", None)
+                    or f"no candles for {symbol} {timeframe}"}
+        return {
+            "ok": True,
+            "account_id": self.account_id,
+            "symbol": symbol,
+            "timeframe": str(rows[0].timeframe or timeframe),
+            "candles": [asdict(c) for c in rows],
+        }
+
+    def quotes(self, symbols: list) -> Dict[str, Any]:
+        """Current ticks for this account's terminal, one row per symbol.
+
+        Only market fields are returned: `MarketState.regime` is an analyzed
+        object owned by the decision plane, not a tick, and serialising it would
+        smuggle a second analysis surface into the rail.
+        """
+        if self._adapter is None:
+            return {"ok": False, "error": "no terminal attached"}
+        wanted = [str(s).strip().upper() for s in symbols if str(s).strip()]
+        wanted = list(dict.fromkeys(wanted))
+        if not wanted:
+            return {"ok": False, "status": 400, "error": "symbols is required"}
+        if len(wanted) > 50:
+            return {"ok": False, "status": 400,
+                    "error": "at most 50 symbols per request"}
+        fields = ("symbol", "bid", "ask", "spread", "last_price",
+                  "last_tick_time", "tick_size", "tick_value", "contract_size",
+                  "volume_min", "volume_step", "volume_max")
+        try:
+            rows = self._adapter.sync_market_all(wanted)
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            self.last_error = str(exc)
+            return {"ok": False, "error": str(exc)}
+        if not rows:
+            return {"ok": False,
+                    "error": getattr(self._adapter, "_last_error", None)
+                    or "no quotes available"}
+        return {
+            "ok": True,
+            "account_id": self.account_id,
+            "quotes": [{k: getattr(m, k, None) for k in fields} for m in rows],
+        }
+
     def place(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Execute one pre-approved candidate on this account's terminal.
 
@@ -384,14 +460,31 @@ def build_handler(state: WorkerState, *, token: str = "") -> type:
         def do_GET(self) -> None:  # noqa: N802 - http.server API
             if not self._authorized():
                 return self._send(401, {"ok": False, "error": "unauthorized"})
-            if self.path.rstrip("/") in ("/worker/health", "/health"):
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/")
+            query = parse_qs(parsed.query)
+            if path in ("/worker/health", "/health"):
                 return self._send(200, state.health())
-            if self.path.rstrip("/") in ("/worker/positions", "/positions"):
+            if path in ("/worker/positions", "/positions"):
                 result = state.positions()
                 return self._send(200 if result.get("ok") else 503, result)
+            if path in ("/worker/candles", "/candles"):
+                result = state.candles(
+                    (query.get("symbol") or [""])[0],
+                    (query.get("timeframe") or ["M15"])[0],
+                    (query.get("count") or [300])[0])
+                return self._send(int(result.get("status") or
+                                      (200 if result.get("ok") else 503)), result)
+            if path in ("/worker/quotes", "/quotes"):
+                raw = (query.get("symbols") or [""])[0]
+                result = state.quotes([s for s in raw.split(",") if s.strip()])
+                return self._send(int(result.get("status") or
+                                      (200 if result.get("ok") else 503)), result)
             return self._send(404, {"ok": False, "error": "unknown route",
                                     "routes": ["/worker/health",
                                                "/worker/positions",
+                                               "/worker/candles",
+                                               "/worker/quotes",
                                                "/worker/order",
                                                "/worker/sync"]})
 

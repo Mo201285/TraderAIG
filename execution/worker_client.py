@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlencode
 
 from accounts.worker_auth import worker_token
 
@@ -131,6 +132,16 @@ class WorkerClient:
 
     def positions(self) -> Dict[str, Any]:
         return self._request("GET", "/worker/positions")
+
+    def candles(self, symbol: str, timeframe: str = "M15",
+                count: int = 300) -> Dict[str, Any]:
+        query = urlencode({"symbol": symbol, "timeframe": timeframe,
+                           "count": int(count)})
+        return self._request("GET", f"/worker/candles?{query}")
+
+    def quotes(self, symbols: list) -> Dict[str, Any]:
+        query = urlencode({"symbols": ",".join(symbols)})
+        return self._request("GET", f"/worker/quotes?{query}")
 
     def place_order(self, frame: Dict[str, Any]) -> Dict[str, Any]:
         return self._request("POST", "/worker/order", frame)

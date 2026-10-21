@@ -19,8 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import execution.mt5_adapter as mt5_module  # noqa: E402
 from accounts.worker_auth import worker_token  # noqa: E402
-from core.contracts import TradeDirection  # noqa: E402
-from core.state import CanonicalState, PositionState  # noqa: E402
+from core.contracts import Candle, TradeDirection  # noqa: E402
+from core.state import CanonicalState, MarketState, PositionState  # noqa: E402
 from decision.candidate import TradeCandidate  # noqa: E402
 from execution.engine import ExecutionStatus  # noqa: E402
 from execution.mt5_adapter import LiveMT5Executor, MT5Adapter  # noqa: E402
@@ -48,6 +48,8 @@ class FakeAdapter:
 
     def __init__(self, *, fail: bool = False) -> None:
         self.calls = []
+        self.candle_calls = []
+        self.quote_calls = []
         self.fail = fail
         self.positions_ = []
         self._last_error = None
@@ -78,6 +80,20 @@ class FakeAdapter:
 
     def sync_positions(self):
         return list(self.positions_)
+
+    def fetch_candles(self, symbol, timeframe="M15", count=300):
+        self.candle_calls.append((symbol, timeframe, count))
+        return [Candle(symbol=symbol, timeframe=timeframe, time=1000.0 + i,
+                       open=100.0 + i, high=101.0 + i, low=99.0 + i,
+                       close=100.5 + i, volume=10.0, tick_volume=5.0)
+                for i in range(2)]
+
+    def sync_market_all(self, symbols):
+        self.quote_calls.append(list(symbols))
+        return [MarketState(symbol=s, bid=100.0, ask=100.1, spread=0.1,
+                            last_price=100.0, last_tick_time=1000.0,
+                            contract_size=1.0)
+                for s in symbols]
 
 
 def _frame(**overrides):
@@ -250,6 +266,42 @@ def test_http_positions_route_returns_the_terminal_rows(worker_server):
     payload = WorkerClient(WorkerEndpoint(ACCOUNT_A, port)).positions()
     assert payload["ok"] is True
     assert [p["position_id"] for p in payload["positions"]] == ["777"]
+
+
+def test_http_candles_route_returns_the_workers_own_window(worker_server):
+    adapter = FakeAdapter()
+    state = WorkerState(ACCOUNT_A)
+    state.attach(adapter)
+    port = worker_server(state)
+    client = WorkerClient(WorkerEndpoint(ACCOUNT_A, port), timeout=5)
+
+    payload = client.candles("btcusd", "M15", 2)
+    assert payload["ok"] is True
+    assert payload["account_id"] == ACCOUNT_A
+    assert payload["symbol"] == "BTCUSD"
+    assert [c["close"] for c in payload["candles"]] == [100.5, 101.5]
+    assert adapter.candle_calls == [("BTCUSD", "M15", 2)]
+
+    with pytest.raises(WorkerError) as exc:
+        client.candles("BTCUSD", "M15", 0)
+    assert exc.value.status == 400
+
+
+def test_http_quotes_route_returns_only_the_market_fields(worker_server):
+    adapter = FakeAdapter()
+    state = WorkerState(ACCOUNT_A)
+    state.attach(adapter)
+    port = worker_server(state)
+    client = WorkerClient(WorkerEndpoint(ACCOUNT_A, port), timeout=5)
+
+    payload = client.quotes(["btcusd", "XAUUSD"])
+    assert payload["ok"] is True
+    assert [q["symbol"] for q in payload["quotes"]] == ["BTCUSD", "XAUUSD"]
+    assert set(payload["quotes"][0]) == {
+        "symbol", "bid", "ask", "spread", "last_price", "last_tick_time",
+        "tick_size", "tick_value", "contract_size", "volume_min",
+        "volume_step", "volume_max"}
+    assert adapter.quote_calls == [["BTCUSD", "XAUUSD"]]
 
 
 # -- routing --------------------------------------------------------------

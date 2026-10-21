@@ -2129,6 +2129,39 @@ chart, set `InpPublishSessions = true` (and `InpSessionsSubDir = "sessions"`), a
 OK. Within five minutes `<common>\Files\sessions\sessions.json` appears and the
 XAUUSD weekend window can be placed. No code change is required either way.
 
+## Appendix K - The live engine stops starving (2026-10-21)
+
+With live trading on, the loop advanced `cycles` and `candles_fetched` with
+`errors: []`, yet no new opportunity appeared after 06:41. It looked healthy. It
+was doing nothing.
+
+The engine reads a fixed 300-bar window from the market plane
+(`read(..., 300)`) and hands the loop the last 120 bars, so the buffer length is
+**capped**. New-bar detection was keyed on that length:
+
+* `operations/live_engine.py` -- `len(candles) > self._last_len.get(sym, 0)`;
+* `core/pipeline.py::TradingLoop.on_new_candle` -- `len(candles) <= self._last_len`.
+
+Once the window filled, the engine's test was never true again, so
+`on_new_candle` ran exactly **once** and then never. A four-cycle harness proved
+it (`calls=1`, `engine._last_len=300`, `loop._last_len=120`). The same trap froze
+the higher-timeframe filter (`on_htf_candles`, fed `[-200:]`) and sat in
+`operations/cex_engine.py` in both its cycles.
+
+All four sites now compare the last candle's **`time`** against a stored
+`_last_bar_time` (per-symbol in the engines), recomputing only when the bar
+advances. Callers that pass a growing buffer (`main.py`, `backtest.py`) are
+unchanged in behaviour, because their last bar time still advances. Trading
+semantics are identical: one run per closed bar, never twice on the same one.
+
+The regression test drives three cycles over a full 300-bar window: the same bar
+runs once, an advanced bar must reach the pipeline -- the old guard fails it.
+`test_htf_feed_is_cached_and_respected` now follows the same bar-time contract.
+
+Gate: ruff clean; 19 pipeline + live-engine tests, 56 cex/board/opportunity/
+hygiene tests pass. Commit `8f5d0a9`.
+
+
 
 
 

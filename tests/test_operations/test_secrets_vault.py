@@ -101,6 +101,38 @@ def test_vault_unknown_slot_rejected(tmp_path):
         v.set("no/such/slot", "x")
 
 
+@pytest.mark.skipif(os.name != "nt", reason="DPAPI backend requires Windows")
+def test_short_secret_is_encrypted_and_not_a_false_leak(tmp_path):
+    """A two-character password must not be read as a plaintext leak.
+
+    A naive `value in raw` substring check reports a leak for the short value
+    purely because two characters turn up somewhere in the file. The vault is
+    fully encrypted here, and the detector must say so -- a false alarm on a
+    security boundary is its own defect (invigilation: three live MT5 passwords
+    were flagged this way while every entry was DPAPI ciphertext).
+    """
+    v = sv.SecretsVault(data_dir=tmp_path)
+    v.set("mt5.a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4.password", "12")
+    assert v.read("mt5.a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4.password") == "12"
+    # the cipher is a binary blob, never the plaintext as a JSON string
+    assert v.secrets_leak() is False
+
+
+def test_secrets_leak_detects_a_plaintext_field(tmp_path):
+    """A value stored outside the cipher blob is a real leak and is reported.
+
+    The detector cannot rely on a backend: this writes an entry whose value sits
+    in a plain field, which is exactly what a plaintext fallback would produce.
+    """
+    import json as _json
+    v = sv.SecretsVault(data_dir=tmp_path)
+    v._entries["cex.okx.api_key"] = {"set_at": 0.0, "value": "PLAINTEXT-LEAK-AAAAAA"}
+    v.data_dir.mkdir(parents=True, exist_ok=True)
+    v.path.write_text(_json.dumps({"version": 1, "backend": "plain",
+                                   "entries": v._entries}), encoding="utf-8")
+    assert v.secrets_leak() is True
+
+
 # -- per-account derived slots (Phase F, decision D6) -----------------------
 
 

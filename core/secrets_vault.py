@@ -379,13 +379,48 @@ class SecretsVault:
         }
 
     def secrets_leak(self) -> bool:
-        """Test helper: True if the on-disk file contains any plaintext value."""
-        values = [self.read(s) for s in self._entries]
+        """Test helper: True if the on-disk file contains any plaintext value.
+
+        Naive substring matching is not enough and, used alone, is wrong in one
+        direction that matters: a *short* secret (a two-character MT5 password,
+        say) turns up somewhere in ten kilobytes of base64/JSON purely by chance,
+        so a plaintext check that only asks "is this value a substring of the
+        file" reports a leak for a vault that is in fact fully encrypted. That is
+        a false alarm on a security boundary, which teaches an operator to ignore
+        the real one.
+
+        So a value is treated as leaked only when there is *evidence* of
+        plaintext:
+
+        * an entry carries a string field other than its ``cipher`` blob and its
+          ``set_at`` timestamp (a plaintext write, however it was shaped), or
+        * a value the vault can decrypt appears in the file as a quoted JSON
+          string *and* is long enough that a chance match is not credible (a
+          floor of ``_LEAK_MIN_LEN`` characters).
+
+        The DPAPI cipher is always base64 of a binary blob, so a stored secret is
+        never itself JSON-quoted and never shorter than its plaintext; both legs
+        stay honest for a genuine leak while the short-value coincidence above no
+        longer trips it.
+        """
+        _LEAK_MIN_LEN = 6
+        _META_FIELDS = {"cipher", "set_at"}
+        raw = ""
         try:
             raw = self.path.read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
             return False
-        return any(v and v in raw for v in values)
+        for slot, entry in self._entries.items():
+            if isinstance(entry, dict):
+                for field, stored in entry.items():
+                    if field in _META_FIELDS:
+                        continue
+                    if isinstance(stored, str) and stored:
+                        return True
+            value = self.read(slot)
+            if value and len(value) >= _LEAK_MIN_LEN and json.dumps(value) in raw:
+                return True
+        return False
 
 
 vault = SecretsVault()

@@ -270,6 +270,32 @@ def test_history_feeds_experience_ledger(monkeypatch, adapter):
     assert win.actual_result["source"] == "mt5"
 
 
+def test_replaying_the_same_history_window_adds_nothing(monkeypatch, adapter):
+    """The watcher re-reads the same deals every few seconds; a replay must not
+    append a second copy to the ledger, nor keep the experience counter
+    climbing with no new trades."""
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    fake.history_deals_get = lambda f, t: [
+        SimpleNamespace(deal=9901, time=1000, symbol="XAUUSD", volume=0.1,
+                        price=2000.0, type=0, entry=0, profit=0.0,
+                        commission=0.0, swap=0.0),
+        SimpleNamespace(deal=9902, time=1001, symbol="XAUUSD", volume=0.1,
+                        price=2010.0, type=1, entry=1, profit=5.0,
+                        commission=0.0, swap=0.0),
+    ]
+
+    adapter.sync_history(days=7)
+    first_count = len(ledger.all())
+    first_experienced = adapter._sync_stats["experienced"]
+
+    adapter.sync_history(days=7)
+    assert len(ledger.all()) == first_count
+    assert adapter._sync_stats["experienced"] == first_experienced
+    assert len([r for r in ledger.all() if r.record_id == "mt5:9902"]) == 1
+
+
 def test_record_execution_stamps_strategy_id(monkeypatch):
     """E1 (appendix B): exec: attempts carry strategy provenance."""
     adapter = MT5Adapter()

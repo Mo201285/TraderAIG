@@ -107,6 +107,12 @@ class MT5Adapter:
         self._watcher_active = False
         self._attach_mode = False
         self._recent_closed_ids: List[int] = []
+        # Deal ids already replayed into the ledger. `sync_history` runs every
+        # few seconds and the terminal returns the same closed deals each time;
+        # the ledger is idempotent by record_id, but re-persisting every deal
+        # on every cycle is pointless write pressure on the live database and
+        # would keep the "experienced" stat climbing without new trades.
+        self._seen_deals: set = set()
         # position ticket -> strategy_id: closes/deals replayed from history
         # have no candidate attached, so this bridge stamps provenance onto
         # the real mt5:* experience records (E1 appendix B).
@@ -696,8 +702,13 @@ class MT5Adapter:
 
         records: List[Dict[str, Any]] = []
         for d in deals:
+            deal_id = getattr(d, "deal", None) or getattr(d, "ticket", None)
+            if deal_id is not None and deal_id in self._seen_deals:
+                continue
             # Only actual deal closes (not entry/balance ops worth recording).
             if d.entry in (0, 1) and d.type in (0, 1):  # market entries & exits
+                if deal_id is not None:
+                    self._seen_deals.add(deal_id)
                 records.append(self._deal_to_record(d))
 
         # Position-keyed lookup ignores the calendar entirely and returns a
@@ -710,9 +721,11 @@ class MT5Adapter:
                 if extra is None:
                     continue
                 for d in extra:
+                    did = getattr(d, "deal", 0)
                     if d.entry in (0, 1) and d.type in (0, 1) \
-                            and getattr(d, "deal", 0) not in seen:
-                        seen.add(getattr(d, "deal", 0))
+                            and did not in seen and did not in self._seen_deals:
+                        seen.add(did)
+                        self._seen_deals.add(did)
                         records.append(self._deal_to_record(d))
             self._recent_closed_ids = []
 
@@ -837,8 +850,9 @@ class MT5Adapter:
         record.error_classification = (
             ErrorType.EXPECTED_LOSS if pnl < 0 else None
         )
-        ledger.record(record)
-        self._sync_stats["experienced"] = self._sync_stats.get("experienced", 0) + 1
+        if ledger.record(record):
+            self._sync_stats["experienced"] = (
+                self._sync_stats.get("experienced", 0) + 1)
         return record.as_dict()
 
     def _order_to_record(self, o: Any) -> Dict[str, Any]:
@@ -871,8 +885,9 @@ class MT5Adapter:
             fees=0.0,
             metadata=metadata,
         )
-        ledger.record(record)
-        self._sync_stats["experienced"] = self._sync_stats.get("experienced", 0) + 1
+        if ledger.record(record):
+            self._sync_stats["experienced"] = (
+                self._sync_stats.get("experienced", 0) + 1)
         return record.as_dict()
 
     # ------------------------------------------------------------------

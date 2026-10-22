@@ -163,22 +163,50 @@ def _default_owner() -> Optional[str]:
 
 
 class ExperienceLedger:
-    """Append-only store of ExperienceRecords."""
+    """Append-only store of ExperienceRecords, keyed by `record_id`.
+
+    Records are never deleted, but they are not duplicated either: a record_id
+    identifies one fact, so re-recording it updates the entry instead of
+    appending a copy. The MT5 history sync re-reads the same closed deals every
+    cycle, and without this rule the in-memory ledger grew a copy of every deal
+    per cycle while the database (which upserts by the same id) stayed clean --
+    invisible in storage, and loud only in the surfaces that read memory:
+    /mt5/history showed 27k rows for 47 deals, and execution "closes / realized
+    PnL" summed the same fill hundreds of times.
+    """
 
     def __init__(self) -> None:
         self._records: List[ExperienceRecord] = []
         self._by_owner: Dict[str, List[ExperienceRecord]] = {}
+        self._by_id: Dict[str, ExperienceRecord] = {}
 
-    def record(self, record: ExperienceRecord) -> None:
+    def record(self, record: ExperienceRecord) -> bool:
+        """Store one record; True when it is new, False when it updated one.
+
+        Replay is normal (history re-reads, retried writes), so the caller can
+        use the return value to count *new* experiences rather than re-counting
+        the whole window on every sync cycle.
+        """
         if not (getattr(record, "owner_user_id", "") or ""):
             record.owner_user_id = _current_owner() or _default_owner() or ""
+        prior = self._by_id.get(record.record_id)
+        if prior is not None:
+            # Update in place: owner buckets and `all()` snapshots hold this
+            # same object, so they must see the newer fact rather than a stale
+            # twin nobody will read.
+            prior.__dict__.update(record.__dict__)
+            self._persist(prior)
+            return False
         self._records.append(record)
+        self._by_id[record.record_id] = record
         owner = str(record.owner_user_id or "")
         if owner and owner in self._by_owner:
             self._by_owner[owner].append(record)
         self._persist(record)
         log.debug(f"Experience recorded: {record.record_id[:8]} "
                   f"({record.error_classification.value if record.error_classification else 'pending'})")
+        return True
+
 
     def _matches(self, record: ExperienceRecord, owner: str) -> bool:
         held = str(getattr(record, "owner_user_id", "") or "")
@@ -232,15 +260,20 @@ class ExperienceLedger:
             if owner is None:
                 rows = repo.list(limit)
                 self._records = rows
+                self._by_id = {r.record_id: r for r in rows}
             elif owner == _default_owner():
                 # The default tenant also owns every unowned row, and the repo
                 # cannot express "mine or unowned" without that rule leaking
                 # upward. Read the table as before and select here instead.
                 rows = [r for r in repo.list(limit) if self._matches(r, owner)]
                 self._by_owner[owner] = rows
+                for r in rows:
+                    self._by_id.setdefault(r.record_id, r)
             else:
                 rows = repo.list(limit, owner_user_id=owner)
                 self._by_owner[owner] = rows
+                for r in rows:
+                    self._by_id.setdefault(r.record_id, r)
             return len(rows)
         except Exception:  # noqa: BLE001
             # Not the same as "nothing to load": this means the DURABLE ledger

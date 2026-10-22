@@ -2680,15 +2680,23 @@ re-reads, and wrote the same `lab.reinstate` audit row.
   (`no session schedule has been published`), which is the fail-closed path
   working on live data.
 
-The other four quarantined strategies are named but were **not** reinstated:
-restoring v7 restores the desk, and whether the others trade again is a
-separate operator decision, not a side effect.
+The other four quarantined strategies were reinstated in the same governed
+action once the engine was stopped, because all four passed the policy in
+force (v3 `dd 10.2R`, v0 `9.301R`, v2 `3.4R`, v6 `5.7403R`; 1067/152/151/153
+rows) and each held `paper` before quarantine. After restart the engine runs
+with five promotion-cleared BTCUSD strategies: `btcusd:ob_mitigation:v3`,
+`btcusd:ict_liquidity_sweep_reversal:v0`, `btcusd:ict_liquidity_sweep_reversal:v2`,
+`btcusd:ict_liquidity_sweep_reversal:v6`, `btcusd:ict_liquidity_sweep_reversal:v7`.
+All were reinstated via the same code path and logged to the audit trail.
 
 ### 5. Next
 
-1. Decide the four remaining quarantined BTCUSD strategies -- each passes the
-   governed `12R` cap on its stored evidence, and each is now one governed
-   `POST /research/reinstate` away.
+1. Watch the first BTCUSD decision cycles under the restored registry: the
+   live path is the school board with v7 attached as prior provenance, so a
+   fill should resolve `BTCUSD: resolved validated prior
+   btcusd:ict_liquidity_sweep_reversal:v7 (paper)` as it did in row 825. The
+   desk is flat and the XAUUSD side stays gated by the unpublished session
+   schedule until the EA publishes it.
 2. The 04:07:35 revalidation's actor is still unresolved: the access log shows
    only one `POST /research/revalidate` (a 401), no dashboard control uses
    `gov_approve`, and the API tests isolate `LAB_DATA_DIR`. The demotion is

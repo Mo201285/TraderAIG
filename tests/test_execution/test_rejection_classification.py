@@ -213,6 +213,21 @@ def test_venue_refusal_is_filed_as_a_venue_error_in_the_ledger(monkeypatch):
     assert adapter.status()["last_rejection"]["class"] == "venue_send"
 
 
+def test_each_attempt_of_the_same_candidate_gets_its_own_record():
+    """A retry is a second event, not an overwrite of the first refusal."""
+    adapter = adapter_mod.MT5Adapter()
+    candidate = _candidate()
+
+    adapter._record_execution(candidate, error="Market closed")
+    adapter._record_execution(candidate, error="Market closed")
+
+    mine = [r for r in ledger.all()
+            if r.candidate_id == candidate.candidate_id
+            and str(r.record_id).startswith("exec:")]
+    assert len(mine) >= 2
+    assert len({r.record_id for r in mine}) == len(mine)
+
+
 # -- pipeline --------------------------------------------------------------
 
 

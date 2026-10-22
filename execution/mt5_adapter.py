@@ -797,10 +797,15 @@ class MT5Adapter:
         rejection = self._last_rejection
         if error and rejection is None:
             rejection = RejectionReason.from_error(str(error))
+        # Every attempt is its own event: the same candidate may be attempted
+        # more than once (retry after a refusal, a second signal), and the
+        # ledger is keyed by record_id. A candidate-only id made the second
+        # attempt overwrite the first one's evidence.
+        ts = time.time()
         record = ExperienceRecord(
-            record_id=f"exec:{candidate.candidate_id}",
+            record_id=f"exec:{candidate.candidate_id}:{int(ts * 1000)}",
             decision_id=candidate.candidate_id,
-            timestamp=time.time(),
+            timestamp=ts,
             candidate_id=candidate.candidate_id,
             thesis_id=candidate.thesis_id,
             actual_result={

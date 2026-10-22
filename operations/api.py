@@ -8674,10 +8674,14 @@ def execution_truth() -> Dict:
         login = ""
 
     def real_block(rows: List[Any]) -> Dict[str, Any]:
-        attributed = attributed_to_account(rows, login)
+        # A close is a deal (`mt5:<ticket>`), not an execution attempt
+        # (`exec:<candidate>:<ms>`), which carries pnl 0 at order time.
+        deals = [r for r in rows if str(r.record_id).startswith("mt5:")]
+        attributed = attributed_to_account(deals, login)
         block = execution_learning(attributed, source="mt5")
+        block["basis"] = block["basis"] + "; one row per closed MT5 deal"
         block["attributed_to_account"] = login or None
-        block["unattributed_records"] = len(rows) - len(attributed)
+        block["unattributed_records"] = len(deals) - len(attributed)
         return block
 
     try:

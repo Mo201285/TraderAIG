@@ -9,7 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import pytest
 
 from learning.experience import ExperienceRecord
-from learning.learning_split import execution_learning, research_learning, split
+from learning.learning_split import (
+    attributed_to_account,
+    execution_learning,
+    research_learning,
+    split,
+)
 from research.strategy_lab.contracts import (
     ExitReason,
     OosSplit,
@@ -108,6 +113,27 @@ def test_execution_learning_tolerates_an_unknown_pnl():
     rep = execution_learning([record])
     assert rep["count"] == 1
     assert rep["net_pnl"] == 0.0
+
+
+def test_attribution_keeps_only_rows_stamped_with_the_connected_account():
+    """The ledger outlives a session; another account's rows are not ours."""
+    mine = _real_record()
+    mine.metadata = {"account": "TEST-ACCT-1"}
+    theirs = _real_record(pnl=9.0)
+    theirs.record_id = "mt5:theirs"
+    theirs.metadata = {"account": "TEST-ACCT-2"}
+    legacy = _real_record(pnl=7.0)
+    legacy.record_id = "mt5:legacy"
+    legacy.metadata = {}
+
+    rows = attributed_to_account([mine, theirs, legacy], "TEST-ACCT-1")
+    assert [r.record_id for r in rows] == [mine.record_id]
+
+
+def test_attribution_is_a_no_op_without_a_connected_account():
+    rows = [_real_record(), _record()]
+    assert attributed_to_account(rows, 0) == rows
+    assert attributed_to_account(rows, "") == rows
 
 
 def test_research_learning_aggregates_per_strategy():

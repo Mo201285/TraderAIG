@@ -113,6 +113,10 @@ class MT5Adapter:
         # on every cycle is pointless write pressure on the live database and
         # would keep the "experienced" stat climbing without new trades.
         self._seen_deals: set = set()
+        # Login of the account this session is attached to. Stamped onto every
+        # deal we ingest so the truth plane can tell this account's fills from
+        # rows written by a different account or terminal session.
+        self._account_ref: str = ""
         # position ticket -> strategy_id: closes/deals replayed from history
         # have no candidate attached, so this bridge stamps provenance onto
         # the real mt5:* experience records (E1 appendix B).
@@ -266,6 +270,7 @@ class MT5Adapter:
             status="connected",
         )
         state.set_account(account)
+        self._account_ref = str(ai.login)
         self._sync_stats["account_syncs"] = self._sync_stats.get("account_syncs", 0) + 1
         if ai.equity > state.risk.peak_equity:
             state.risk.peak_equity = ai.equity
@@ -829,6 +834,9 @@ class MT5Adapter:
         sid = self._strategy_of_position(d)
         if sid:
             metadata["strategy_id"] = sid
+        account_ref = self._account_ref or self._session_login() or ""
+        if account_ref:
+            metadata["account"] = str(account_ref)
         record = ExperienceRecord(
             record_id=f"mt5:{deal_id}",
             decision_id=f"mt5-deal:{deal_id}",
@@ -867,6 +875,9 @@ class MT5Adapter:
         sid = self._strategy_of_position(o)
         if sid:
             metadata["strategy_id"] = sid
+        account_ref = self._account_ref or self._session_login() or ""
+        if account_ref:
+            metadata["account"] = str(account_ref)
         record = ExperienceRecord(
             record_id=f"mt5o:{o.ticket}",
             decision_id=f"mt5-order:{o.ticket}",

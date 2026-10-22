@@ -326,6 +326,23 @@ def test_deal_to_record_stamps_strategy_from_position_map(monkeypatch):
     assert seen[-1].metadata["strategy_id"] == "s:prod"
 
 
+def test_deal_records_carry_the_attached_account(monkeypatch):
+    """The truth plane can only call a fill "real" if it names the account."""
+    adapter = MT5Adapter()
+    adapter._account_ref = "TEST-ACCT-777"
+    seen = []
+    monkeypatch.setattr("learning.experience.ledger.record",
+                        lambda rec: seen.append(rec), raising=False)
+    deal = SimpleNamespace(
+        deal=78, ticket=78, time=1500, symbol="XAUUSD", volume=0.1,
+        price=4000.0, type=1, entry=1, profit=20.0, commission=0.0, swap=0.0,
+        magic=123456, comment="TraderAIG:xyz", position=99,
+    )
+    adapter._deal_to_record(deal)
+    assert seen
+    assert seen[-1].metadata["account"] == "TEST-ACCT-777"
+
+
 def test_sync_preserves_partial_realized_and_keeps_swap_separate(monkeypatch, adapter):
     """E4 (appendix B): a broker sync must NOT mislabel swap as realized PnL
     nor wipe the realized accumulation from our own partial closes."""

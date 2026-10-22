@@ -180,6 +180,10 @@ def test_the_truth_surface_separates_the_real_rail_from_all_sources(client):
     assert all_sources["source_filter"] is None
     assert "window" in all_sources
 
+    # No account is bound in this test, so attribution is a no-op, not a wipe.
+    assert learning["attributed_to_account"] is None
+    assert learning["unattributed_records"] == 0
+
     lc = truth["lifecycle"]
     assert lc["positions_closed"] == (learning["count"] or None)
     assert lc["positions_closed_all_sources"] == (all_sources["count"] or None)

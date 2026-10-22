@@ -8659,25 +8659,38 @@ def execution_truth() -> Dict:
         float(p.get("unrealized_pnl") or 0.0) for p in positions)
 
     # The Execution Truth learning surface. Two scopes, never conflated:
-    #   - `learning`: REAL MT5 fills only (actual_result.source == "mt5"),
-    #     read from the complete persisted history rather than the recent
-    #     in-memory window. Paper/CEX fills have no `source` and used to
-    #     default into the "live" bucket, so simulated results were reported
-    #     here as real profit.
+    #   - `learning`: REAL fills on the connected account -- MT5-source AND
+    #     attributed to its login. Paper/CEX fills have no `source` and used to
+    #     default into the "live" bucket; ledger rows written while another
+    #     account was attached are not evidence about this one. Read from the
+    #     complete persisted history, not the recent in-memory window.
     #   - `learning_all_sources`: the wider ledger for audit, labeled with the
     #     window it actually covers. A missing/unreadable ledger is null,
     #     never a zero -- an empty store is visible.
     learning: Optional[Dict[str, Any]] = None
     learning_all: Optional[Dict[str, Any]] = None
+    login = str(account.get("login") or "")
+    if login == "0":
+        login = ""
+
+    def real_block(rows: List[Any]) -> Dict[str, Any]:
+        attributed = attributed_to_account(rows, login)
+        block = execution_learning(attributed, source="mt5")
+        block["attributed_to_account"] = login or None
+        block["unattributed_records"] = len(rows) - len(attributed)
+        return block
+
     try:
         ledger.load_from_db()  # lazy: refill from persistence after a restart
-        from learning.learning_split import execution_learning  # noqa: PLC0415
+        from learning.learning_split import (  # noqa: PLC0415
+            attributed_to_account, execution_learning)
 
         memory = list(ledger.all())
         learning_all = execution_learning(memory)
         learning_all["window"] = (
             "in-memory ledger window (most recent persisted rows)")
-        learning = execution_learning(memory, source="mt5")
+        learning = real_block([
+            r for r in memory if (r.actual_result or {}).get("source") == "mt5"])
         try:
             from persistence.db import (  # noqa: PLC0415
                 make_live_session, persistence_enabled)
@@ -8687,7 +8700,7 @@ def execution_truth() -> Dict:
                 rows = ExperienceRepository(
                     make_live_session()).list_by_actual_source("mt5")
                 if rows:
-                    learning = execution_learning(rows, source="mt5")
+                    learning = real_block(rows)
         except Exception:  # noqa: BLE001
             pass  # the memory view stands in; it is labeled as that window
     except Exception:  # noqa: BLE001

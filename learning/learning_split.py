@@ -88,6 +88,22 @@ def execution_learning(records: Sequence[ExperienceRecord],
     }
 
 
+def attributed_to_account(records: Sequence[ExperienceRecord],
+                          account_login: Any) -> list:
+    """Records whose metadata names `account_login`.
+
+    The ledger outlives any one terminal session, so a row written while a
+    different account was attached is not evidence about *this* account. A
+    falsy login (disconnected) is a no-op: with no account to attribute to,
+    the caller keeps whatever it had rather than silently dropping history.
+    """
+    login = str(account_login or "").strip()
+    if not login or login == "0":
+        return list(records)
+    return [r for r in records
+            if str((r.metadata or {}).get("account") or "") == login]
+
+
 def research_learning(observations) -> Dict[str, Any]:
     """Research-side learning stats over lab observations (TradeObservation)."""
     from research.strategy_lab.validation import aggregate_observations

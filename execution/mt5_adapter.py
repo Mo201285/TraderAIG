@@ -494,12 +494,20 @@ class MT5Adapter:
             payload={"candidate": candidate.as_dict(),
                      "ticket": result.order, "price": result.price},
         ))
-        log.info(f"MT5 FILLED {candidate.symbol} {candidate.direction.value} "
-                 f"vol={candidate.size} @ {result.price} (ticket={result.order})")
-
-        # Fetch and store the resulting position from the broker.
+        # Fetch and store the resulting position from the broker. Its entry
+        # price is what the terminal actually booked: `result.price` is 0.0
+        # for market sends on this build, and an audit line that says the
+        # trade filled at 0.0 is worse than no line at all.
         time.sleep(0.2)
-        return self._find_position_by_ticket(result.order)
+        position = self._find_position_by_ticket(result.order)
+        fill_price = (
+            getattr(position, "entry_price", None)
+            or float(getattr(result, "price", 0.0) or 0.0)
+            or float(request.get("price") or 0.0)
+        )
+        log.info(f"MT5 FILLED {candidate.symbol} {candidate.direction.value} "
+                 f"vol={candidate.size} @ {fill_price} (ticket={result.order})")
+        return position
 
     def _dispatch(self, request: Dict[str, Any]) -> Any:
         """Send an order/close request, walking the filling-mode chain

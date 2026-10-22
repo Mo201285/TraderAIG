@@ -479,6 +479,40 @@ def test_place_position_fills_when_approved_and_connected(monkeypatch, adapter):
     assert state.get_position("777") is not None
 
 
+def test_the_fill_log_reports_the_booked_price_not_zero(monkeypatch, adapter,
+                                                        caplog):
+    """`OrderSendResult.price` reads 0.0 for market sends on this build, so the
+    audit line said every live trade filled at 0.0. Log the price the terminal
+    actually booked on the position instead."""
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    adapter._initialized = True
+    fake.symbol_info = lambda sym: SimpleNamespace(name=sym)
+    fake.symbol_info_tick = lambda sym: SimpleNamespace(bid=1999.9, ask=2000.1,
+                                                        last=2000.0, time=1000)
+
+    from core.state import AccountState
+    state.set_account(AccountState(login=123, balance=10_000.0,
+                                   equity=10_000.0, leverage=100))
+    state.risk.daily_pnl = 0.0
+
+    fake.order_send = lambda req: SimpleNamespace(
+        retcode=10009, order=778, price=0.0, comment="done")
+    fake.positions_get = lambda: [SimpleNamespace(
+        ticket=778, symbol="XAUUSD", type=0, volume=0.1,
+        price_open=2000.7, price_current=2001.0, sl=1990.0, tp=2020.0,
+        time=1000, profit=0.0, swap=0.0)]
+
+    with caplog.at_level("INFO", logger="execution.mt5"):
+        adapter.place_position(_candidate(strategy_id="xauusd:loop:v1",
+                                          strategy_stage="production"),
+                               RiskDecisionKind.APPROVED)
+
+    assert "@ 2000.7" in caplog.text
+    assert "@ 0.0" not in caplog.text
+
+
 def test_place_position_falls_back_across_filling_modes(monkeypatch, adapter):
     """Some brokers advertise one filling mode but accept another; the
     adapter must walk the chain (e.g. FOK for XAUUSD on FTTrading)."""

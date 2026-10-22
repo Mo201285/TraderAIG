@@ -2488,6 +2488,118 @@ live engine included in the 48-test adapter/live-engine run. Commit `07f1564`.
 
 
 
+## Appendix Q - Who refused, and why the bridge stayed quiet (2026-10-22)
+
+### 1. What the last session actually produced
+
+Two real BTCUSD trades, and two opportunities that never became trades. They
+were being read as one story. They are not:
+
+* `54968324` -- long 0.1 @ `84532.2`, closed by TP at `84742.5`; broker profit
+  `+21.03` (`+18.08` after costs in the position manager's ledger).
+* `54980676` -- long 0.1 @ `84584.6`, stopped out at `84487.7`; `-9.69`.
+* `OPP-922DF3C9-CEC` -- entry `84442.4`, `SL 84439.94`, `TP 84511.95`. The risk
+  layer **approved** it, and the broker refused the order: `Invalid stops`.
+* `OPP-D4A4A822-379` -- entry `84376.6`, `SL 84375.94`, `TP 84538.5`. Also
+  approved, also refused: `Market closed`.
+
+Both refusals were filed as a generic operational error, both opportunities
+stayed `qualified`, and -- the part that mattered -- the pipeline still wrote
+the order to `TraderAIG_bridge.json`. That file is an *instruction to the EA*,
+not a log. A refused order in it is a live order waiting to be picked up, and
+one was still sitting there, unconsumed, at `84376.6`.
+
+The generator was also misremembered: `v7` does not emit live signals. It is a
+promotion-cleared prior attached as candidate provenance; the live path is the
+school board (`schools:institutional`, `vacuum_raid long`), and the only
+duplicate guard was `_last_bar_time` -- one signal per bar, and nothing else.
+No episode, no fingerprint, no attempt count.
+
+### 2. Three classes, one fine code
+
+`core/rejection.py` now names the only three possible sources of a refusal:
+
+| class | meaning | the system may |
+|---|---|---|
+| `governance` | the risk layer, the policy or the local hard gate said no | re-evaluate the idea, change the risk |
+| `venue_send` | the broker answered and refused (`Invalid stops`, `Market closed`, `Not enough money`, `Requote`, ...) | fix the *order* (shape, volume, stops) or wait for the market |
+| `transport` | nothing was ever tried (terminal or worker unreachable, no tick, unknown symbol) | retry, because nothing was sent |
+
+The class is coarse on purpose: it decides what happens next. The venue *code*
+is fine on purpose: it says what has to change before a retry is even
+meaningful. Transport wording wins over venue wording when a message contains
+both -- "not connected" means nothing was tried, while "market closed" means the
+broker answered.
+
+### 3. What carries the class
+
+* `OrderState` -- `rejection_class`, `rejection_code`, `rejection_reason`,
+  `rejection_details`, applied by `apply_rejection()`.
+* `OrderTicket` -- `rejection_class` / `rejection_code`, so the pipeline can
+  speak about the attempt without re-reading the adapter.
+* `Opportunity` -- `evidence["rejection_class"]` and a `REJECTED` status with
+  the reason, instead of a stranded `qualified` that looks re-runnable.
+* `ExperienceLedger` -- `ErrorType.VENUE_REJECTION` plus
+  `actual_result.rejection_class` / `rejection_code` / `filled:false`.
+* `MT5Adapter.status()` -- `last_rejection`, so the operator surface can say
+  what the broker said.
+
+The adapter resets `_last_rejection` at the start of every attempt, so a
+refusal from an earlier attempt can never be attached to a later fill.
+
+### 4. The bridge writes only on a fill
+
+All three execution sites (`_execute_approved_opportunities`, `_run_school_board`,
+`_run_full_pipeline`) now publish to the bridge only when the ticket says the
+order was filled. A refused order instead marks the opportunity rejected with
+its class and reason, updates the board, and records the attempt.
+
+**Not resolved here:** the native path and the bridge are still two ways to
+execute. If the EA is attached to the same account that the native path trades,
+a fill is written to the bridge and the EA can execute it again. The fix is a
+single-authority decision (native *or* bridge per account), and it is a
+separate change with its own evidence -- it is not something this slice may
+quietly decide. Until then, the stale `TraderAIG_bridge.json` must be
+quarantined before any EA is attached to a live account.
+
+### 5. The verification gate was cancelling itself
+
+The CI backend job had a 30-minute ceiling while the canonical full run
+measures 1:07-2:05 on the dev box. Every push was killed mid-suite and
+reported as **Cancelled** -- which is not a verdict. The ceiling is now 120
+minutes; the suite itself is unchanged, because trimming it to fit a clock
+would hide the failures the gate exists to find.
+
+Two test-isolation leaks were closed in the same pass:
+
+* `test_app_lifespan_starts_the_market_bridge` started the *global* poller
+  against the operator's real bridge directory, so the operator's live market
+  frames were published into the global market plane and a later health test
+  counted them as its own quotes. The poller now reads an empty temporary
+  directory.
+* A worker-bridge fixture still carried a real MT5 login as test data; it now
+  uses a fake one.
+
+### 6. Next
+
+1. Quarantine the stale bridge command, then decide the single-authority
+   question before any EA touches the live account.
+2. `Strategy Episode Memory` -- now that attempts are countable and
+   classifiable, an episode can be defined as (idea, symbol, direction, setup
+   window) with attempt count, last class and last venue code, so "the same
+   idea again" is a fact rather than a guess. It belongs in the pipeline /
+   opportunity layer, never inside a strategy genome.
+3. F5d.2b -- the second live desk -- stays blocked on a second account and a
+   running worker.
+
+Gate: ruff clean repo-wide; 8 new rejection tests, 54 adapter/pipeline/opportunity,
+42 live-engine/bridge-paths/ownership/worker/desk, 19 hygiene+worker, and 2372
+in the full run. The one non-passing marker is the documented uvicorn-boot
+`test_challenge_durability.py`, which hangs identically on a clean HEAD
+worktree (the .env-driven live host, not this slice). Commit `238eb01`.
+
+
+
 
 
 

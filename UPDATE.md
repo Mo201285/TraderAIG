@@ -2697,11 +2697,14 @@ All were reinstated via the same code path and logged to the audit trail.
    btcusd:ict_liquidity_sweep_reversal:v7 (paper)` as it did in row 825. The
    desk is flat and the XAUUSD side stays gated by the unpublished session
    schedule until the EA publishes it.
-2. The 04:07:35 revalidation's actor is still unresolved: the access log shows
-   only one `POST /research/revalidate` (a 401), no dashboard control uses
-   `gov_approve`, and the API tests isolate `LAB_DATA_DIR`. The demotion is
-   audited from this commit on, so the next one cannot be silent -- but the
-   first one cannot be reconstructed.
+2. The 04:07:35 revalidation's actor is still unresolved, but the audit trail
+   now places it precisely: a `lab.policy_change -> gov_approve` row is stamped
+   `2026-10-22T04:07:35Z`, the same second `registry.json` and `results.json`
+   were written, while the access log holds no successful `POST
+   /research/revalidate` (only a 401). So the revalidation did not arrive
+   through an authenticated route -- it was a direct in-process invocation.
+   The demotion is audited from this commit on, so the next one cannot be
+   silent; the first one still cannot be attributed to a person.
 3. The service-token scope question stays open on purpose: the lab routes are
    human-session surfaces, and a box with no session is a deployment problem,
    not a reason to widen the machine token.

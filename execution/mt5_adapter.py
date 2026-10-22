@@ -681,6 +681,13 @@ class MT5Adapter:
         slack = int(4 * 3600)
         from_date = int(now - days * 86400 - slack)
 
+        # A fresh process replays the window from scratch. Hydrate the ledger
+        # first so its id index already holds the deals persistence knows
+        # about: otherwise every restart re-counts the same fills as new
+        # experience and re-teaches the schools lessons they already learned.
+        from learning.experience import ledger
+        ledger.load_from_db()
+
         def _deals_of_from_window() -> Any:
             return mt5.history_deals_get(from_date, int(now + slack))
 

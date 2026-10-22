@@ -296,6 +296,24 @@ def test_replaying_the_same_history_window_adds_nothing(monkeypatch, adapter):
     assert len([r for r in ledger.all() if r.record_id == "mt5:9902"]) == 1
 
 
+def test_sync_history_hydrates_the_ledger_before_replaying(monkeypatch, adapter):
+    """A restart replays the persisted window, so the ledger has to know those
+    ids before the deals arrive -- otherwise the replay counts as new
+    experience again and re-teaches lessons that were already learned."""
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    fake.history_deals_get = lambda f, t: []
+
+    calls = []
+    monkeypatch.setattr(
+        ledger, "load_from_db", lambda *a, **k: calls.append((a, k)) or 0)
+
+    adapter.sync_history(days=7)
+
+    assert calls, "sync_history must hydrate the ledger before replaying deals"
+
+
 def test_record_execution_stamps_strategy_id(monkeypatch):
     """E1 (appendix B): exec: attempts carry strategy provenance."""
     adapter = MT5Adapter()

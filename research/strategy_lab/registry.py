@@ -95,6 +95,46 @@ class StrategyRegistry:
         self._save()
         return True
 
+    def reinstate(self, strategy_id: str,
+                  validation: Optional[ValidationReport] = None) -> bool:
+        """Restore a quarantined strategy to the stage it actually held.
+
+        QUARANTINED has no automatic exit, and that is deliberate: a failing
+        report must never sit next to a live stage. But a sink with no exit is
+        a one-way door -- a revalidation run under a stricter drawdown cap can
+        pull a live strategy out of the market, and then nothing in the system
+        can bring it back, so the desk stays silent with no governed way out.
+
+        The reinstatement is therefore explicit and evidence-bound: the caller
+        supplies a passing report (scored under the policy in force now), and
+        the restored stage is the last stage this strategy was actually
+        promoted into -- read from its own history, never invented.
+        """
+        entry = self._entries.get(strategy_id)
+        if entry is None or entry.stage is not PromotionStage.QUARANTINED:
+            return False
+        if validation is None or not validation.passed:
+            return False
+        target = self._last_promoted_stage(entry)
+        if target is None:
+            return False
+        entry.stage = target
+        entry.validation = validation
+        entry.history.append(f"reinstate#{target.value}")
+        self._save()
+        return True
+
+    @staticmethod
+    def _last_promoted_stage(entry: "StrategyRegistryEntry") -> Optional[PromotionStage]:
+        """The last stage this strategy was promoted into, from its history."""
+        for tag in reversed(entry.history):
+            if tag.startswith("promote#"):
+                try:
+                    return PromotionStage(tag.split("#", 1)[1])
+                except ValueError:
+                    continue
+        return None
+
     def attach_validation(self, strategy_id: str,
                           validation: ValidationReport) -> bool:
         entry = self._entries.get(strategy_id)

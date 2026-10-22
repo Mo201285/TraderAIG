@@ -75,6 +75,37 @@ def promotion_cleared_strategies() -> List[str]:
         return []
 
 
+def quarantined_strategies() -> List[Dict[str, str]]:
+    """Strategies sitting in the governed quarantine sink, with the reason.
+
+    The live start gate refuses with "no promotion-cleared strategy". That
+    sentence is true and useless on its own: the operator has to see WHICH
+    strategy was pulled out of the market and WHY, or the desk stays silent
+    for hours with the only explanation living in a registry file.
+    """
+    try:
+        from research.strategy_lab.priors import registry_path_for
+
+        path = registry_path_for()
+        if not path or not os.path.exists(path):
+            return []
+        with open(path, encoding="utf-8") as fh:
+            entries = json.load(fh)
+        out: List[Dict[str, str]] = []
+        for entry in entries if isinstance(entries, list) else []:
+            sid = str(entry.get("strategy_id") or "").strip()
+            stage = str(entry.get("stage") or "").strip().lower()
+            if not sid or stage != "quarantined":
+                continue
+            reason = ""
+            for tag in reversed(list(entry.get("history") or [])):
+                if isinstance(tag, str) and tag.startswith("quarantine#"):
+                    reason = tag.split("#", 1)[1]
+                    break
+            out.append({"strategy_id": sid, "reason": reason or "unknown"})
+        return out
+    except Exception:  # noqa: BLE001
+        return []
 
 class LiveEngine:
     """Owns the live connection and the per-symbol decision loops.
@@ -336,11 +367,18 @@ class LiveEngine:
                 return False
             cleared = promotion_cleared_strategies()
             if not cleared:
+                # Name the quarantined strategies and their reasons: a desk
+                # that refuses to start must say what is holding it back.
+                quarantined = quarantined_strategies()
+                names = ", ".join(
+                    f"{q['strategy_id']} ({q['reason']})" for q in quarantined)
                 log.error("LiveEngine live start refused: no strategy is at the "
                           "`paper` or `production` stage, so nothing is "
                           "promotion-cleared and the governor would veto every "
-                          "candidate anyway")
-                self._errors.append("live start refused: no promotion-cleared strategy")
+                          f"candidate anyway; quarantined: {names or 'none'}")
+                self._errors.append(
+                    "live start refused: no promotion-cleared strategy"
+                    + (f"; quarantined: {names}" if names else ""))
                 return False
             log.info(f"LiveEngine LIVE start: {len(cleared)} promotion-cleared "
                      f"strategies {cleared}")

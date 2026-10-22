@@ -36,6 +36,25 @@ def cleared(monkeypatch):
     return _set
 
 
+@pytest.fixture(autouse=True)
+def _no_live_registry_leak(monkeypatch):
+    """The route reads the real strategy registry; tests must not inherit it.
+
+    Otherwise the live registry's quarantined strategies leak into the
+    assertions of every test in this file.
+    """
+    monkeypatch.setattr("operations.live_engine.quarantined_strategies", lambda: [])
+
+
+@pytest.fixture()
+def quarantined(monkeypatch):
+    """Set the quarantined strategies the route will report."""
+    def _set(entries):
+        monkeypatch.setattr("operations.live_engine.quarantined_strategies",
+                            lambda: list(entries))
+    return _set
+
+
 @pytest.fixture()
 def stub_live_start(monkeypatch):
     """Never let a route test reach MT5 or spawn the loop."""
@@ -116,6 +135,27 @@ def test_status_reports_both_gates_separately(client, cleared, monkeypatch):
     body = client.get("/mt5/engine").json()
     assert body["would_start"] is True
     assert body["refusals"] == []
+
+
+def test_the_status_names_the_quarantined_strategies_and_their_reason(
+        client, cleared, quarantined, monkeypatch):
+    """A refusal the operator cannot act on is a desk that stays silent.
+
+    "no strategy is at the paper/production stage" is true but not
+    actionable: the operator needs the strategy id and the reason it was
+    pulled out of the market.
+    """
+    monkeypatch.setenv("MT5_LIVE_TRADING", "1")
+    cleared([])
+    quarantined([{"strategy_id": "btcusd:ict_liquidity_sweep_reversal:v7",
+                  "reason": "revalidation_failed"}])
+    body = client.get("/mt5/engine").json()
+    assert body["would_start"] is False
+    assert body["quarantined"][0]["strategy_id"] == (
+        "btcusd:ict_liquidity_sweep_reversal:v7")
+    assert body["quarantined"][0]["reason"] == "revalidation_failed"
+    assert ("quarantined: btcusd:ict_liquidity_sweep_reversal:v7 "
+            "(revalidation_failed)") in body["refusals"]
 
 
 # -- the refusals ---------------------------------------------------------

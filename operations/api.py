@@ -5191,20 +5191,25 @@ def mt5_engine_status() -> Dict:
     """
     from operations.live_engine import (ORDER_ELIGIBLE_STAGES, live_engine,
                                         mt5_live_armed,
-                                        promotion_cleared_strategies)
+                                        promotion_cleared_strategies,
+                                        quarantined_strategies)
     cleared = promotion_cleared_strategies()
+    quarantined = quarantined_strategies()
     armed = mt5_live_armed()
     return {
         "armed": armed,
         "arm_flag": "MT5_LIVE_TRADING",
         "promotion_cleared": cleared,
         "promotion_cleared_count": len(cleared),
+        "quarantined": quarantined,
         "eligible_stages": list(ORDER_ELIGIBLE_STAGES),
         "would_start": bool(armed and cleared),
         "refusals": ([] if armed else
                      ["MT5_LIVE_TRADING is not enabled"]) + (
                          [] if cleared else
-                         ["no strategy is at the paper/production stage"]),
+                         ["no strategy is at the paper/production stage"] + [
+                             f"quarantined: {q['strategy_id']} ({q['reason']})"
+                             for q in quarantined]),
         "status": live_engine.status(),
     }
 
@@ -5859,7 +5864,20 @@ def lab_revalidate(payload: Dict) -> Dict:
             report = lab.evaluate(entry.strategy_id, entry.asset, rows,
                                   drawdown=policy)
             reports.append(report)
+            stage_before = entry.stage.value
             registry.attach_validation(entry.strategy_id, report)
+            if entry.stage.value != stage_before:
+                # A demotion here pulls a strategy out of the market. It must
+                # never be silent: the audit trail is where "who refused, and
+                # why" is answered later, and the engine's start gate only
+                # says that nothing is promotion-cleared.
+                identity.record_audit(
+                    "lab", "lab.quarantine", "strategy", entry.strategy_id,
+                    details={"from": stage_before, "to": entry.stage.value,
+                             "policy": policy.as_dict(),
+                             "reason": "revalidation_failed",
+                             "samples": report.samples,
+                             "max_drawdown": report.max_drawdown})
             if report.passed and promote:
                 result = _lab_apply_guarded(
                     "promote", entry.strategy_id, "lab_revalidate")
@@ -5984,6 +6002,69 @@ def lab_quarantine(payload: Dict) -> Dict:
         raise HTTPException(status_code=409, detail="already quarantined")
     return {"ok": True, "strategy_id": strategy_id,
             "from": before, "to": result["to_stage"], "reason": reason,
+            "history": result.get("history", entry.history)}
+
+
+@app.post("/research/reinstate")
+def lab_reinstate(payload: Dict) -> Dict:
+    """Restore a quarantined strategy on a report that passes the live policy.
+
+    `/research/quarantine` is a sink with no automatic exit, so a revalidation
+    run under a stricter drawdown cap could pull a live strategy out of the
+    market with no governed way back -- and the desk then stays silent for
+    hours with the reason living only in a registry file. This is that way
+    back, and it is evidence-bound: the stored observations are re-scored
+    under the policy in force NOW, and only a passing report can restore the
+    stage the strategy actually held (read from its own history, not invented).
+    """
+    _guard(Entitlement.CAN_MANAGE_RISK)
+    strategy_id = str(payload.get("strategy_id", "") or "").strip()
+    if not strategy_id:
+        raise HTTPException(status_code=400, detail="strategy_id is required")
+    from research.strategy_lab.contracts import PromotionStage
+    registry = _lab_registry()
+    entry = registry.get(strategy_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="strategy not registered")
+    if entry.stage is not PromotionStage.QUARANTINED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"strategy is at {entry.stage.value}, not quarantined")
+    from governance.identity import drawdown_policy as gov_policy
+    with _lab_lock:
+        policy = gov_policy()
+        rows = _lab_recorder().all(strategy_id=strategy_id)
+        report = None
+        if rows:
+            from research.strategy_lab.validation import ValidationLab
+            report = ValidationLab().evaluate(strategy_id, entry.asset, rows,
+                                               drawdown=policy)
+        if report is None:
+            report = entry.validation
+        if report is None or not report.passed:
+            raise HTTPException(
+                status_code=409,
+                detail="the strategy does not pass under the policy in force "
+                       f"({policy.mode.value}); reinstatement refused")
+        registry.attach_validation(strategy_id, report)
+        before = entry.stage.value
+        result = _lab_apply_guarded("reinstate", strategy_id,
+                                    payload.get("reason", "lab_reinstate"))
+    if result["reason"] == "engine_running":
+        raise HTTPException(status_code=409,
+                            detail=result.get("detail") or "engine running")
+    if not result["applied"]:
+        raise HTTPException(status_code=409,
+                            detail="reinstatement not allowed by the registry")
+    from governance.identity import identity
+    identity.record_audit(
+        "lab", "lab.reinstate", "strategy", strategy_id,
+        details={"from": before, "to": result["to_stage"],
+                 "policy": policy.as_dict(),
+                 "reason": payload.get("reason", "lab_reinstate"),
+                 "samples": report.samples})
+    return {"ok": True, "strategy_id": strategy_id, "from": before,
+            "to": result["to_stage"], "policy": policy.as_dict(),
             "history": result.get("history", entry.history)}
 
 

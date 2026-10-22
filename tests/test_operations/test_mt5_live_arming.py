@@ -73,6 +73,46 @@ def test_a_quarantined_strategy_stops_being_cleared_immediately(registry):
     assert le.promotion_cleared_strategies() == []
 
 
+# -- the reason a strategy is gone -----------------------------------------
+
+def test_the_quarantined_strategies_are_named_with_their_reason(registry):
+    """A refusal that cannot be explained is a refusal the operator cannot act on.
+
+    "No promotion-cleared strategy" is true and useless on its own: the desk
+    has to say WHICH strategy was pulled out and WHY, or the reason lives only
+    in a registry file nobody reads.
+    """
+    _write(registry, [
+        {"strategy_id": "a", "stage": "quarantined",
+         "history": ["promote#paper", "quarantine#revalidation_failed"]},
+        {"strategy_id": "b", "stage": "quarantined", "history": []},
+        {"strategy_id": "c", "stage": "paper", "history": []},
+    ])
+    assert le.quarantined_strategies() == [
+        {"strategy_id": "a", "reason": "revalidation_failed"},
+        {"strategy_id": "b", "reason": "unknown"},
+    ]
+
+
+def test_no_registry_reads_as_nothing_quarantined(registry):
+    assert le.quarantined_strategies() == []
+
+
+def test_the_refusal_names_the_quarantined_strategy(registry, monkeypatch):
+    """The refusal the operator reads must carry the reason with it."""
+    monkeypatch.setenv("MT5_LIVE_TRADING", "1")
+    _write(registry, [
+        {"strategy_id": "btcusd:ict_liquidity_sweep_reversal:v7",
+         "stage": "quarantined",
+         "history": ["promote#paper", "quarantine#revalidation_failed"]},
+    ])
+    engine = le.LiveEngine(symbols=["BTCUSD"], paper=False)
+    assert engine.start() is False
+    assert "no promotion-cleared strategy" in engine._errors[-1]
+    assert "btcusd:ict_liquidity_sweep_reversal:v7" in engine._errors[-1]
+    assert "revalidation_failed" in engine._errors[-1]
+
+
 # -- the refusals ---------------------------------------------------------
 
 class _StubEngine:

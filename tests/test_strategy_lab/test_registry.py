@@ -145,3 +145,65 @@ def test_a_failing_report_does_not_quarantine_a_non_live_stage():
     reg.promote("r1")                              # -> CANDIDATE
     reg.attach_validation("r1", replace(_passing_report("r1"), passed=False))
     assert reg.get("r1").stage is PromotionStage.CANDIDATE
+
+
+# -- reinstatement ----------------------------------------------------------
+
+def _promoted_to_paper(reg, strategy_id="s1"):
+    """A strategy that reached the stage a live order needs."""
+    passing = _passing_report(strategy_id)
+    reg.register(strategy_id, "h", StrategyFamily.OB_MITIGATION, "XAUUSD")
+    reg.attach_validation(strategy_id, passing)
+    reg.promote(strategy_id)                       # -> CANDIDATE
+    reg.promote(strategy_id, validation=passing)   # -> VALIDATED
+    reg.promote(strategy_id)                       # -> PAPER
+    return passing
+
+
+def test_quarantine_is_not_a_one_way_door():
+    """A failed revalidation must not strand a live strategy forever.
+
+    Quarantine is a sink with no automatic exit, so without an explicit
+    reinstatement a stricter revalidation would pull a strategy out of the
+    market and the desk would never come back.
+    """
+    reg = StrategyRegistry()
+    passing = _promoted_to_paper(reg)
+    reg.attach_validation("s1", replace(passing, passed=False))
+    assert reg.get("s1").stage is PromotionStage.QUARANTINED
+
+    assert reg.reinstate("s1", validation=passing) is True
+    entry = reg.get("s1")
+    assert entry.stage is PromotionStage.PAPER
+    assert entry.history[-1] == "reinstate#paper"
+
+
+def test_reinstatement_needs_a_passing_report():
+    reg = StrategyRegistry()
+    passing = _promoted_to_paper(reg)
+    reg.attach_validation("s1", replace(passing, passed=False))
+    assert reg.reinstate("s1", validation=replace(passing, passed=False)) is False
+    assert reg.reinstate("s1", validation=None) is False
+    assert reg.get("s1").stage is PromotionStage.QUARANTINED
+
+
+def test_only_a_quarantined_strategy_can_be_reinstated():
+    reg = StrategyRegistry()
+    passing = _promoted_to_paper(reg)
+    assert reg.reinstate("s1", validation=passing) is False
+    assert reg.get("s1").stage is PromotionStage.PAPER
+
+
+def test_reinstatement_restores_the_stage_the_strategy_actually_held():
+    """The stage comes from the strategy's own history, never from the caller."""
+    reg = StrategyRegistry()
+    passing = _passing_report("s1")
+    reg.register("s1", "h", StrategyFamily.OB_MITIGATION, "XAUUSD")
+    reg.attach_validation("s1", passing)
+    reg.promote("s1")                              # -> CANDIDATE
+    reg.promote("s1", validation=passing)          # -> VALIDATED
+    reg.demote("s1", reason="manual_review")
+    assert reg.get("s1").stage is PromotionStage.QUARANTINED
+
+    assert reg.reinstate("s1", validation=passing) is True
+    assert reg.get("s1").stage is PromotionStage.VALIDATED

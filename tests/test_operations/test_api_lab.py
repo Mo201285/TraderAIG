@@ -321,3 +321,84 @@ def test_revalidate_defers_promotion_while_engine_running(lab_env, monkeypatch):
                for d in res["deferred"])
     rows = {e["strategy_id"]: e for e in api.lab_strategies()}
     assert rows["btcusd:ob_mitigation:v2"]["stage"] == "candidate"
+
+
+# -- reinstatement ----------------------------------------------------------
+
+def _quarantined_paper_strategy(lab_env):
+    """A strategy that reached `paper`, then was quarantined."""
+    from research.strategy_lab.contracts import DrawdownMode, DrawdownPolicy
+    sid = "btcusd:ob_mitigation:v2"
+    rows = _seed_drawdown_candidate(lab_env)
+    passing = ValidationLab().evaluate(
+        sid, "BTCUSD", rows,
+        drawdown=DrawdownPolicy(DrawdownMode.GOVERNED, gov_cap_r=12.0))
+    assert passing.passed
+    registry = StrategyRegistry(str(lab_env / "registry.json"))
+    registry.load()
+    registry.attach_validation(sid, passing)
+    api.lab_promote({"strategy_id": sid})     # candidate -> validated
+    api.lab_promote({"strategy_id": sid})     # validated -> paper
+    api.lab_quarantine({"strategy_id": sid, "reason": "revalidation_failed"})
+    return sid
+
+
+def test_reinstate_restores_a_quarantined_strategy(lab_env, monkeypatch):
+    """Quarantine must not be a one-way door.
+
+    A revalidation run under a stricter drawdown cap quarantines a live
+    strategy; without an explicit way back, the desk stays silent with no
+    governed way to trade again.
+    """
+    from research.strategy_lab.contracts import DrawdownMode, DrawdownPolicy
+
+    monkeypatch.setattr("governance.identity.drawdown_policy",
+                        lambda: DrawdownPolicy(mode=DrawdownMode.GOVERNED,
+                                               lab_cap_r=3.0, gov_cap_r=12.0))
+    sid = _quarantined_paper_strategy(lab_env)
+    res = api.lab_reinstate({"strategy_id": sid})
+    assert res["ok"] is True
+    assert res["from"] == "quarantined"
+    assert res["to"] == "paper"
+    entry = next(e for e in api.lab_strategies() if e["strategy_id"] == sid)
+    assert entry["stage"] == "paper"
+    assert entry["history"][-1] == "reinstate#paper"
+
+
+def test_reinstate_is_refused_when_the_policy_in_force_still_fails(lab_env,
+                                                                    monkeypatch):
+    """Evidence-bound: a report that fails the live policy cannot reinstate."""
+    from research.strategy_lab.contracts import DrawdownMode, DrawdownPolicy
+
+    monkeypatch.setattr("governance.identity.drawdown_policy",
+                        lambda: DrawdownPolicy(mode=DrawdownMode.LAB_VETO,
+                                               lab_cap_r=2.0))
+    sid = _quarantined_paper_strategy(lab_env)
+    with pytest.raises(Exception) as exc:
+        api.lab_reinstate({"strategy_id": sid})
+    assert exc.value.status_code == 409
+    entry = next(e for e in api.lab_strategies() if e["strategy_id"] == sid)
+    assert entry["stage"] == "quarantined"
+
+
+def test_reinstate_refuses_a_strategy_that_is_not_quarantined(lab_env):
+    with pytest.raises(Exception) as exc:
+        api.lab_reinstate({"strategy_id":
+                           "xauusd:ict_liquidity_sweep_reversal:v0"})
+    assert exc.value.status_code == 409
+
+
+def test_reinstate_is_audited(lab_env, monkeypatch):
+    import governance.identity as identity_mod
+    from research.strategy_lab.contracts import DrawdownMode, DrawdownPolicy
+
+    monkeypatch.setattr("governance.identity.drawdown_policy",
+                        lambda: DrawdownPolicy(mode=DrawdownMode.GOVERNED,
+                                               lab_cap_r=3.0, gov_cap_r=12.0))
+    sid = _quarantined_paper_strategy(lab_env)
+    api.lab_reinstate({"strategy_id": sid, "reason": "unit_test"})
+    latest = identity_mod.identity.audit_log(1)[0]
+    assert latest.action == "lab.reinstate"
+    assert latest.object_id == sid
+    assert latest.details["to"] == "paper"
+

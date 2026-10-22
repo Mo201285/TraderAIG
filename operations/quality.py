@@ -283,6 +283,13 @@ class ReviewLoop:
             ok = self._registry.demote(strategy_id, reason=reason or "review_loop")
         elif kind == "promote":
             ok = self._registry.promote(strategy_id, validation=entry.validation)
+        elif kind == "reinstate":
+            # The counterpart of quarantine: a strategy that was quarantined
+            # because its report failed may come back, but only on a passing
+            # report the caller already attached, and never while the engine
+            # is executing that asset.
+            ok = self._registry.reinstate(strategy_id,
+                                          validation=entry.validation)
         else:
             return {"applied": False, "reason": "unknown_action",
                     "strategy_id": strategy_id, "kind": kind}

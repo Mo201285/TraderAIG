@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from typing import Generator
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -55,6 +55,38 @@ engine = create_engine(
     poolclass=None if _engine_url().startswith("sqlite") else None,
     connect_args={"check_same_thread": False} if _engine_url().startswith("sqlite") else {},
 )
+
+
+if (engine.url.get_backend_name() == "sqlite"
+        and engine.url.database not in (None, "", ":memory:")):
+
+    @event.listens_for(engine, "connect")
+    def _sqlite_connection_pragmas(dbapi_connection, connection_record):
+        """WAL plus a busy timeout on every file-backed connection.
+
+        The rollback journal is single-writer *and* writer-blocks-readers: one
+        commit waiting for a reader to drain leaves every new reader unable to
+        take a SHARED lock, so reads fail with `database is locked` too. That
+        was not theoretical -- the learning ledger dropped 66 experience rows
+        in 26 minutes on the live desk, each `SELECT ... WHERE record_id = ?`
+        giving up after the default five-second wait.
+
+        WAL lets readers run against the last committed snapshot while one
+        writer commits, which is exactly the shape of this workload (three
+        engines writing experiences and audits, the API reading throughout).
+        The timeout is explicit rather than inherited from pysqlite's default
+        so the wait is visible here, next to the mode that makes it useful.
+
+        `operations/dr.py` checkpoints the WAL before it byte-copies `.data`,
+        because a copy of the main file alone is a database missing its most
+        recent commits.
+        """
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+        finally:
+            cursor.close()
 
 # SQLite in-memory pooling for tests.
 _test_engine = create_engine(

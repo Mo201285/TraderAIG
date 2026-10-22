@@ -83,6 +83,36 @@ def test_backup_skips_missing_sources(fake_root, tmp_path):
     assert out["count"] == 1
 
 
+def test_backup_checkpoints_wal_before_copying(fake_root, tmp_path):
+    """A commit still sitting in `-wal` must be in the archived main file.
+
+    The writer connection stays open through the backup, the way a live
+    backend's pooled connections do. Archived sidecars would be a stale race;
+    an un-checkpointed main file would be a clean restore that is silently
+    older than the state it claims.
+    """
+    db = fake_root / ".data" / "traderaig.db"
+    live = sqlite3.connect(db)
+    live.execute("PRAGMA journal_mode=WAL")
+    live.execute("INSERT INTO experiences VALUES ('exp-3', '{}')")
+    live.commit()
+    assert (db.parent / "traderaig.db-wal").exists()
+    try:
+        out = backup(tmp_path / "bk", root=fake_root)
+    finally:
+        live.close()
+
+    with zipfile.ZipFile(out["archive"]) as zf:
+        names = set(zf.namelist())
+        assert out["count"] == 5
+        assert not any(n.endswith(("-wal", "-shm")) for n in names)
+        restored = tmp_path / "restored.db"
+        restored.write_bytes(zf.read(".data/traderaig.db"))
+
+    assert _db_rows(restored) == 3
+    assert verify(Path(out["archive"]))["ok"] is True
+
+
 def test_verify_detects_tamper(fake_root, tmp_path):
     out = backup(tmp_path / "bk", root=fake_root)
     arc = Path(out["archive"])

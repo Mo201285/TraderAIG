@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import time
 import zipfile
 from pathlib import Path
@@ -28,6 +29,41 @@ DEFAULT_SOURCES: Sequence[str] = (
     ".proofs",
     "ai/dspy/registry/data",
 )
+
+# `persistence/db.py` runs SQLite in WAL mode. The `-wal` sidecar holds commits
+# that have not yet been folded into the main file, and `-shm` is an ephemeral
+# index another process rebuilds -- neither is durable state, and copying them
+# next to a checkpointed main file would only archive a stale race.
+_SQLITE_SIDECARS = ("-wal", "-shm")
+
+
+def _checkpoint_sqlite(root: Path) -> None:
+    """Fold the WAL into the database file so a byte copy is a whole database.
+
+    `backup()` archives files by reading their bytes. In WAL mode the main file
+    is not the whole database: recent commits live in `-wal` until a
+    checkpoint. A copy that skips them is not corrupt, which is worse -- it
+    restores cleanly and is silently older than the state it claims.
+
+    Best-effort on purpose: this must be importable and runnable on a box where
+    the backend was just lost (the reason DR exists), so a missing database or
+    a lock we cannot take must not turn a backup into an exception. A database
+    still in rollback mode answers the checkpoint as a no-op.
+    """
+    db = Path(root) / ".data" / "traderaig.db"
+    if not db.exists():
+        return
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=rw", uri=True, timeout=5)
+    except sqlite3.Error:
+        return
+    try:
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.Error:
+        pass
+    finally:
+        con.close()
+
 
 
 def _root() -> Path:
@@ -47,7 +83,7 @@ def _collect(root: Path, sources: Sequence[str]) -> Dict[str, Path]:
             continue
         if src.is_dir():
             for p in sorted(src.rglob("*")):
-                if p.is_file():
+                if p.is_file() and not p.name.endswith(_SQLITE_SIDECARS):
                     arkey.setdefault(str(p.relative_to(root)).replace("\\", "/"), p)
         else:
             arkey.setdefault(rel.replace("\\", "/"), src)
@@ -64,6 +100,7 @@ def backup(out_dir: Path, root: Optional[Path] = None,
     ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now or time.time()))
     archive = out_dir / f"traderaig-backup-{ts}.zip"
 
+    _checkpoint_sqlite(root)
     files = _collect(root, sources or DEFAULT_SOURCES)
     entries = sorted(
         ({"path": path, "size": p.stat().st_size,

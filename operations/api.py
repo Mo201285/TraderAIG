@@ -5703,7 +5703,26 @@ def mt5_positions() -> List[Dict]:
 
 @app.get("/mt5/history")
 def mt5_history() -> List[Dict]:
-    return [r.as_dict() for r in ledger.all()]
+    """MT5 deal history only -- the ledger's real account fills.
+
+    The route is named for the MT5 rail, so it must not serve paper/CEX rows
+    that share the same ledger, and it reads the complete persisted MT5 history
+    rather than the 500-row hydration window.
+    """
+    try:
+        from persistence.db import (  # noqa: PLC0415
+            make_live_session, persistence_enabled)
+        from persistence.repositories import ExperienceRepository  # noqa: PLC0415
+        if persistence_enabled():
+            rows = ExperienceRepository(
+                make_live_session()).list_by_actual_source("mt5")
+            if rows:
+                return [r.as_dict() for r in rows]
+    except Exception:  # noqa: BLE001
+        pass
+    ledger.load_from_db()
+    return [r.as_dict() for r in ledger.all()
+            if (r.actual_result or {}).get("source") == "mt5"]
 
 
 # ---------------------------------------------------------------------------
@@ -8639,29 +8658,55 @@ def execution_truth() -> Dict:
     open_unrealized = sum(
         float(p.get("unrealized_pnl") or 0.0) for p in positions)
 
-    # The Execution Truth learning surface: the experience ledger's *filled*
-    # records (slippage, latency, fees, fill quality, realized PnL). A missing
-    # or unreadable ledger is null, never a zero -- an empty store is visible.
+    # The Execution Truth learning surface. Two scopes, never conflated:
+    #   - `learning`: REAL MT5 fills only (actual_result.source == "mt5"),
+    #     read from the complete persisted history rather than the recent
+    #     in-memory window. Paper/CEX fills have no `source` and used to
+    #     default into the "live" bucket, so simulated results were reported
+    #     here as real profit.
+    #   - `learning_all_sources`: the wider ledger for audit, labeled with the
+    #     window it actually covers. A missing/unreadable ledger is null,
+    #     never a zero -- an empty store is visible.
     learning: Optional[Dict[str, Any]] = None
+    learning_all: Optional[Dict[str, Any]] = None
     try:
         ledger.load_from_db()  # lazy: refill from persistence after a restart
         from learning.learning_split import execution_learning  # noqa: PLC0415
-        learning = execution_learning(list(ledger.all()))
-    except Exception:  # noqa: BLE001
-        learning = None
 
-    lc = learning or {}
+        memory = list(ledger.all())
+        learning_all = execution_learning(memory)
+        learning_all["window"] = (
+            "in-memory ledger window (most recent persisted rows)")
+        learning = execution_learning(memory, source="mt5")
+        try:
+            from persistence.db import (  # noqa: PLC0415
+                make_live_session, persistence_enabled)
+            from persistence.repositories import (  # noqa: PLC0415
+                ExperienceRepository)
+            if persistence_enabled():
+                rows = ExperienceRepository(
+                    make_live_session()).list_by_actual_source("mt5")
+                if rows:
+                    learning = execution_learning(rows, source="mt5")
+        except Exception:  # noqa: BLE001
+            pass  # the memory view stands in; it is labeled as that window
+    except Exception:  # noqa: BLE001
+        learning = learning_all = None
+
+    lc = learning_all or {}
     lc_count = int(lc.get("count") or 0)
+    real = learning or {}
+    real_count = int(real.get("count") or 0)
     metrics = {
         "avg_slippage": (round(sum(slippages) / len(slippages), 4)
                          if slippages
-                         else (float(lc.get("avg_slippage") or 0.0)
-                               if lc_count else None)),
-        "avg_latency_ms": (float(lc.get("avg_delay_ms") or 0.0)
-                           if lc_count else None),
-        "fees": (float(lc.get("avg_fees") or 0.0) if lc_count else None),
-        "realized_pnl": (float(lc.get("net_pnl") or 0.0)
-                         if lc_count else None),
+                         else (float(real.get("avg_slippage") or 0.0)
+                               if real_count else None)),
+        "avg_latency_ms": (float(real.get("avg_delay_ms") or 0.0)
+                           if real_count else None),
+        "fees": (float(real.get("avg_fees") or 0.0) if real_count else None),
+        "realized_pnl": (float(real.get("net_pnl") or 0.0)
+                         if real_count else None),
         "unrealized_pnl": round(open_unrealized, 4),
         "total_volume": round(total_volume, 4),
     }
@@ -8677,7 +8722,8 @@ def execution_truth() -> Dict:
         "fill_ratio": round(fill_ratio, 4),
         "rejections": rejected,
         "positions_open": len(positions),
-        "positions_closed": (None if not lc_count else lc_count),
+        "positions_closed": (None if not real_count else real_count),
+        "positions_closed_all_sources": (None if not lc_count else lc_count),
         "open_realized_pnl": round(open_realized, 4),
     }
 
@@ -8693,6 +8739,7 @@ def execution_truth() -> Dict:
         "lifecycle": lifecycle,
         "metrics": metrics,
         "learning": learning,
+        "learning_all_sources": learning_all,
     }
 
 

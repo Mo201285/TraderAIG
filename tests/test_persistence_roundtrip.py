@@ -105,6 +105,26 @@ def test_experience_repository_round_trip_preserves_structured_fields():
     assert loaded.lessons == ["keep"]
 
 
+def test_experience_repository_filters_by_actual_source():
+    """The truth plane's real-rail query must not return paper rows."""
+    session = bind_test_session()
+    repo = ExperienceRepository(session)
+
+    repo.save(ExperienceRecord(
+        record_id="src-mt5-1", decision_id="d-1", timestamp=1.0,
+        actual_result={"filled": True, "pnl": 1.0, "source": "mt5"}))
+    repo.save(ExperienceRecord(
+        record_id="src-paper-1", decision_id="d-2", timestamp=2.0,
+        actual_result={"filled": True, "pnl": 2.0}))
+    repo.save(ExperienceRecord(
+        record_id="src-orders-1", decision_id="d-3", timestamp=3.0,
+        actual_result={"filled": True, "pnl": None, "source": "mt5-orders"}))
+
+    rows = repo.list_by_actual_source("mt5")
+    assert [r.record_id for r in rows] == ["src-mt5-1"]
+    assert rows[0].actual_result["pnl"] == 1.0
+
+
 def test_veto_repository_round_trip_and_merge_idempotency():
     session = bind_test_session()
     repo = RiskVetoRepository(session)

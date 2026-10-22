@@ -224,11 +224,21 @@ class ExperienceRepository:
         if owner_user_id:
             q = q.where(ExperienceRecordDB.owner_user_id == str(owner_user_id))
         rows = self._session.execute(q.limit(limit)).scalars().all()
-        q = select(ExperienceRecordDB).order_by(
-            ExperienceRecordDB.timestamp.desc())
-        if owner_user_id:
-            q = q.where(ExperienceRecordDB.owner_user_id == str(owner_user_id))
-        rows = self._session.execute(q.limit(limit)).scalars().all()
+        return [self._row_to_record(r) for r in rows]
+
+    def list_by_actual_source(self, source: str) -> List[ExperienceRecord]:
+        """Every row whose `actual_result.source` equals `source`.
+
+        The truth plane needs the *complete* MT5 close history, while `list()`
+        hydrates only the most recent window for the general ledger. Filtering
+        in SQL (JSON1, not a text scan) answers that question without loading
+        the other ~48k rows into memory.
+        """
+        q = (select(ExperienceRecordDB)
+             .where(func.json_extract(ExperienceRecordDB.actual_result_json,
+                                      "$.source") == str(source))
+             .order_by(ExperienceRecordDB.timestamp.desc()))
+        rows = self._session.execute(q).scalars().all()
         return [self._row_to_record(r) for r in rows]
 
     @staticmethod

@@ -162,6 +162,33 @@ def test_the_lifecycle_equals_a_fresh_derivation_of_the_canonical_reads(
     assert positions[0]["venue_position_ref"] == "TKT-002"
 
 
+def test_the_truth_surface_separates_the_real_rail_from_all_sources(client):
+    """`learning`/`positions_closed`/`realized_pnl` must be real MT5 fills.
+
+    Paper and simulated records share the ledger and lack a `source`, so they
+    used to default into the live bucket and were rendered as "real profit".
+    """
+    truth = client.get("/execution/truth").json()
+
+    learning = truth["learning"]
+    assert learning is not None
+    assert learning["source_filter"] == "mt5"
+    assert "mt5" in learning["basis"]
+
+    all_sources = truth["learning_all_sources"]
+    assert all_sources is not None
+    assert all_sources["source_filter"] is None
+    assert "window" in all_sources
+
+    lc = truth["lifecycle"]
+    assert lc["positions_closed"] == (learning["count"] or None)
+    assert lc["positions_closed_all_sources"] == (all_sources["count"] or None)
+
+    mt = truth["metrics"]
+    expected = learning["net_pnl"] if learning["count"] else None
+    assert mt["realized_pnl"] == expected
+
+
 def test_an_empty_canonical_store_reports_empty_rows_and_null_metrics(
         client, test_state):
     """The route never invents orders, positions or fills for an empty store."""

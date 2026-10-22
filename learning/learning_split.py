@@ -25,14 +25,30 @@ from learning.experience import ExperienceRecord, ledger
 log = get_logger("learning.split")
 
 
-def execution_learning(records: Sequence[ExperienceRecord]) -> Dict[str, Any]:
-    """Execution-side learning stats over filled system records."""
+def execution_learning(records: Sequence[ExperienceRecord],
+                       *, source: Optional[str] = None) -> Dict[str, Any]:
+    """Execution-side learning stats over filled system records.
+
+    With `source` set, only records whose `actual_result["source"]` matches are
+    counted. The Execution Truth plane passes `"mt5"` so its "realized" figures
+    are real account fills, not paper/simulated ones that merely lack a source
+    (an absent source used to default into the live bucket).
+    """
     filled = [
         r for r in records
         if (r.actual_result or {}).get("filled") is True
         and (r.actual_result or {}).get("origin", "system") == "system"
+        and (source is None
+             or (r.actual_result or {}).get("source") == source)
     ]
-    pnls = [float((r.actual_result or {}).get("pnl", 0.0)) for r in filled]
+
+    def pnl_of(r: ExperienceRecord) -> float:
+        value = (r.actual_result or {}).get("pnl")
+        # `mt5o:` fallback records carry pnl None (profit unknown); that is not
+        # a breakeven trade and must not crash the surface that reads them.
+        return float(value) if value is not None else 0.0
+
+    pnls = [pnl_of(r) for r in filled]
     wins = sum(1 for p in pnls if p > 0)
     losses = sum(1 for p in pnls if p < 0)
 
@@ -64,6 +80,10 @@ def execution_learning(records: Sequence[ExperienceRecord]) -> Dict[str, Any]:
         "avg_fees": round(avg("fees"), 4),
         "error_counts": errors,
         "fill_count": sum(1 for f in fill_ticks if f),
+        "source_filter": source,
+        "basis": (f"fills recorded with actual_result.source == {source!r}"
+                  if source else
+                  "all filled system records (paper and live together)"),
         "storage": "experience_ledger (persistence DB)",
     }
 

@@ -74,6 +74,42 @@ def test_execution_learning_excludes_unfilled():
     assert rep["count"] == 0
 
 
+def _real_record(pnl=4.0):
+    return ExperienceRecord(
+        record_id=f"mt5:{pnl}",
+        decision_id="deal",
+        timestamp=0.0,
+        actual_result={"filled": True, "pnl": pnl, "origin": "system",
+                       "source": "mt5"},
+    )
+
+
+def test_execution_learning_source_filter_keeps_only_the_real_rail():
+    """Paper fills have no `source`; they must not pass as live execution."""
+    real = _real_record(pnl=4.0)
+    paper = _record(pnl=99.0)
+
+    both = execution_learning([real, paper])
+    assert both["count"] == 2
+    assert both["source_filter"] is None
+    assert "paper and live" in both["basis"]
+
+    only_real = execution_learning([real, paper], source="mt5")
+    assert only_real["count"] == 1
+    assert only_real["net_pnl"] == 4.0
+    assert only_real["source_filter"] == "mt5"
+    assert "mt5" in only_real["basis"]
+
+
+def test_execution_learning_tolerates_an_unknown_pnl():
+    """`mt5o:` fallback rows carry pnl None (profit unknown), not a number."""
+    record = _record()
+    record.actual_result["pnl"] = None
+    rep = execution_learning([record])
+    assert rep["count"] == 1
+    assert rep["net_pnl"] == 0.0
+
+
 def test_research_learning_aggregates_per_strategy():
     rows = _observations(n=6, strategy_id="sA", r=0.5) + \
         _observations(n=4, strategy_id="sB", r=-0.2, regime="sideways/medium",

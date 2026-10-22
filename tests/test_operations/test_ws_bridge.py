@@ -510,18 +510,25 @@ def test_market_bridge_is_off_by_default(monkeypatch):
     assert MarketBridge.enabled_by_env() is True
 
 
-def test_app_lifespan_starts_the_market_bridge(monkeypatch):
+def test_app_lifespan_starts_the_market_bridge(monkeypatch, tmp_path):
     """The app that serves `/bridge/market` must also run its ingest.
 
     Regression: the poller only started in `main.py`, so booting the API the
     documented way (`uvicorn operations.api:app`, which is what the live smoke
     test does) reported `enabled_by_env: true, active: false` forever — the
     terminal market-file channel silently never ran.
+
+    The poller is pointed at an empty temporary directory: the default bridge
+    directory holds the *operator's* real market frames, and a test that ingests
+    them publishes live prices into the global market plane for every later
+    test to trip over.
     """
     from operations.market_bridge import MARKET_BRIDGE_ENV, market_bridge
 
     monkeypatch.setenv(MARKET_BRIDGE_ENV, "1")
     monkeypatch.setenv("MARKET_BRIDGE_INTERVAL", "0.5")
+    monkeypatch.setattr(market_bridge, "_bridge",
+                        MT5Bridge(directory=str(tmp_path)))
     try:
         with TestClient(api.app):
             assert market_bridge.status()["active"] is True

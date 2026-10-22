@@ -19,6 +19,8 @@ from .contracts import (
 )
 from .logging import get_logger
 
+from core.rejection import RejectionClass, RejectionReason
+
 
 log = get_logger("core.state")
 
@@ -74,9 +76,25 @@ class OrderState:
     venue: str = ""
     venue_order_ref: str = ""
     risk_decision_id: str = ""
+    # Why the order ended the way it did. `rejection_class` separates a
+    # governance veto from a venue refusal ("Invalid stops", "Market closed")
+    # and from a transport failure, so an execution problem is never read as
+    # a broken strategy. Both are empty for an order that was never refused.
+    rejection_class: str = RejectionClass.NONE.value
+    rejection_code: str = ""
+    rejection_reason: str = ""
+    rejection_details: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in self.__dict__.items()}
+
+    def apply_rejection(self, rejection: "RejectionReason") -> None:
+        """Record a refusal on this order, keeping the class and the reason."""
+        self.rejection_class = rejection.rejection_class.value
+        self.rejection_code = rejection.code
+        self.rejection_reason = rejection.reason
+        self.rejection_details = dict(rejection.details)
+        self.updated_at = time.time()
 
 
 @dataclass

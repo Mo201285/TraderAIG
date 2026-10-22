@@ -40,6 +40,12 @@ class OrderTicket:
     status: ExecutionStatus
     note: str = ""
     timestamp: float = field(default_factory=time.time)
+    # Who refused, and how. Trailing and defaulted so every existing
+    # construction site keeps working. The pipeline needs the class (not a
+    # free-text note) to decide whether a refusal is a governance decision,
+    # a broker refusal, or a transport failure.
+    rejection_class: str = "none"
+    rejection_code: str = ""
 
 
 class ExecutionEngine:

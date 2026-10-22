@@ -27,6 +27,8 @@ from core.contracts import (
 from core.events import Event, EventType, bus
 from core.logging import get_logger
 from core.market_plane import canonical_symbol, canonical_timeframe, market_plane
+from core.rejection import (RejectionClass, RejectionReason,
+                            classify_venue_error)
 from core.state import (
     AccountState,
     MarketState,
@@ -67,6 +69,21 @@ _TF_SECONDS = {
 }
 
 
+def _error_type_for(rejection: Optional[RejectionReason]):
+    """Map a rejection class onto the learning ledger's error taxonomy."""
+    from learning.experience import ErrorType
+
+    if rejection is None:
+        return ErrorType.UNKNOWN
+    if rejection.rejection_class == RejectionClass.GOVERNANCE:
+        return ErrorType.RISK_ERROR
+    if rejection.rejection_class == RejectionClass.VENUE_SEND:
+        return ErrorType.VENUE_REJECTION
+    if rejection.rejection_class == RejectionClass.TRANSPORT:
+        return ErrorType.OPERATIONAL_ERROR
+    return ErrorType.UNKNOWN
+
+
 class MT5Adapter:
     """Single facade over the live MT5 terminal.
 
@@ -80,6 +97,10 @@ class MT5Adapter:
     def __init__(self) -> None:
         self._initialized = False
         self._last_error: str = ""
+        # The last refusal, with its class. The pipeline needs to know
+        # *who* refused (governance / venue / transport) so an execution
+        # problem is never recorded as a broken idea.
+        self._last_rejection: Optional[RejectionReason] = None
         self._connected_at: Optional[float] = None
         self._sync_stats: Dict[str, int] = {}
         self._stop = threading.Event()
@@ -377,21 +398,34 @@ class MT5Adapter:
                        policy: Optional[RiskPolicy] = None) -> Optional[PositionState]:
         """Execute an approved candidate on the live terminal."""
         mt5 = _mt5()
+        # Each attempt speaks for itself: a refusal from an earlier attempt
+        # must never be attached to this one (a later fill is not a refusal).
+        self._last_rejection = None
         if decision_kind != RiskDecisionKind.APPROVED:
             log.warning(f"refusing unapproved candidate {candidate.candidate_id[:8]}")
+            self._last_rejection = RejectionReason.governance(
+                "candidate was not approved by the risk gate",
+                code="not_approved")
             return None
 
         if not self.connected:
             log.warning("place_position skipped: MT5 not connected")
+            self._last_rejection = RejectionReason.transport(
+                "MT5 not connected", code="not_connected")
             return None
 
         # Local hard gate (mirror of governor; independent of Python policy).
         if not self._gate_enable(candidate, policy):
+            self._last_rejection = RejectionReason.governance(
+                "local hard risk gate refused the candidate",
+                code="local_hard_gate")
             return None
 
         sym_info = mt5.symbol_info(candidate.symbol)
         if sym_info is None:
             log.error(f"unknown symbol {candidate.symbol}")
+            self._last_rejection = RejectionReason.transport(
+                f"unknown symbol {candidate.symbol}", code="unknown_symbol")
             return None
 
         # Filling mode: some brokers advertise one mode but only accept
@@ -400,6 +434,8 @@ class MT5Adapter:
         tick = mt5.symbol_info_tick(candidate.symbol)
         if tick is None:
             log.error(f"no tick for {candidate.symbol}")
+            self._last_rejection = RejectionReason.transport(
+                f"no tick for {candidate.symbol}", code="no_tick")
             return None
 
         request = {
@@ -423,11 +459,18 @@ class MT5Adapter:
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
             err = mt5.last_error() if result is None else result.comment
             log.error(f"order_send failed: {err}")
+            # The broker answered and refused: this is a venue refusal, not a
+            # broken idea and not a connectivity problem. The class and the
+            # venue code travel with the error so the pipeline can record
+            # "invalid_stops" instead of a generic "rejected".
+            self._last_rejection = RejectionReason.venue_send(
+                str(err), code=classify_venue_error(str(err)).value)
             self._record_execution(candidate, err)
             bus.emit(Event(
                 type=EventType.ORDER_REJECTED,
                 source="execution.mt5",
-                payload={"candidate": candidate.as_dict(), "error": str(err)},
+                payload={"candidate": candidate.as_dict(), "error": str(err),
+                         "rejection": self._last_rejection.as_dict()},
             ))
             self._last_error = f"order_send: {err}"
             return None
@@ -718,7 +761,7 @@ class MT5Adapter:
                           error: Optional[str] = None,
                           result: Any = None) -> None:
         """Commit an execution attempt into the Experience Ledger (memory)."""
-        from learning.experience import ErrorType, ExperienceRecord, ledger
+        from learning.experience import ExperienceRecord, ledger
 
         filled = result is not None and error is None
         metadata = {
@@ -729,6 +772,13 @@ class MT5Adapter:
         sid = getattr(candidate, "strategy_id", None)
         if sid:
             metadata["strategy_id"] = str(sid)
+        # The refusal is classified, not flattened: a broker refusal
+        # ("Invalid stops") is an execution problem, a governor veto is a
+        # risk decision, and a dead terminal is a transport problem. The
+        # class is what later learning can be conditioned on.
+        rejection = self._last_rejection
+        if error and rejection is None:
+            rejection = RejectionReason.from_error(str(error))
         record = ExperienceRecord(
             record_id=f"exec:{candidate.candidate_id}",
             decision_id=candidate.candidate_id,
@@ -741,13 +791,16 @@ class MT5Adapter:
                 "symbol": candidate.symbol,
                 "direction": candidate.direction.value,
                 "rejection_reason": error,
+                "rejection_class": (rejection.rejection_class.value
+                                    if rejection else RejectionClass.NONE.value),
+                "rejection_code": (rejection.code if rejection else ""),
                 "source": "mt5",
                 "origin": "system",
             },
             metadata=metadata,
         )
         if error:
-            record.error_classification = ErrorType.OPERATIONAL_ERROR
+            record.error_classification = _error_type_for(rejection)
         ledger.record(record)
         self._sync_stats["execution_attempts"] = (
             self._sync_stats.get("execution_attempts", 0) + 1)
@@ -911,6 +964,8 @@ class MT5Adapter:
             "account_id": self.account_id(),
             "trade_allowed": self._trade_allowed(),
             "last_error": self._last_error,
+            "last_rejection": (self._last_rejection.as_dict()
+                               if self._last_rejection else None),
             "connected_at": self._connected_at,
             "sync_stats": self._sync_stats,
         }
@@ -1040,16 +1095,29 @@ class LiveMT5Executor:
             ticket = OrderTicket(str(uuid.uuid4()), order.order_id,
                                  ExecutionStatus.ERROR,
                                  note="MT5 terminal not reachable")
-            self._finish(order, ticket, filled=False)
+            self._finish(order, ticket, filled=False,
+                         rejection=RejectionReason.transport(
+                             "MT5 terminal not reachable",
+                             code="terminal_unreachable"))
             return ticket
 
         pos = self._adapter.place_position(candidate, decision.kind)
         if pos is None:
+            # The adapter knows why it refused: governance gate, transport
+            # problem, or a broker refusal. Carrying that class forward is
+            # what keeps "the broker said Invalid stops" from being filed as
+            # a failed idea.
+            rejection = getattr(self._adapter, "_last_rejection", None)
+            if rejection is None:
+                rejection = RejectionReason.venue_send(
+                    str(self._adapter.status().get("last_error")
+                        or "order rejected"))
+            note = rejection.reason or "order rejected"
             ticket = OrderTicket(
                 str(uuid.uuid4()), order.order_id, ExecutionStatus.REJECTED,
-                note=self._adapter.status().get("last_error") or "order rejected",
+                note=f"{rejection.rejection_class.value}: {note}",
             )
-            self._finish(order, ticket, filled=False)
+            self._finish(order, ticket, filled=False, rejection=rejection)
             return ticket
 
         # Broker opened a real position: re-sync canonical positions so the
@@ -1086,7 +1154,9 @@ class LiveMT5Executor:
         except WorkerError as exc:
             ticket = OrderTicket(str(uuid.uuid4()), order.order_id,
                                  ExecutionStatus.ERROR, note=str(exc))
-            self._finish(order, ticket, filled=False)
+            self._finish(order, ticket, filled=False,
+                         rejection=RejectionReason.transport(
+                             str(exc), code="worker_unreachable"))
             log.error(f"worker order failed for {candidate.symbol}: {exc}")
             return ticket
 
@@ -1094,7 +1164,9 @@ class LiveMT5Executor:
             note = str(result.get("error") or "worker rejected the order")
             ticket = OrderTicket(str(uuid.uuid4()), order.order_id,
                                  ExecutionStatus.REJECTED, note=note)
-            self._finish(order, ticket, filled=False)
+            self._finish(order, ticket, filled=False,
+                         rejection=RejectionReason.venue_send(
+                             note, code=classify_venue_error(note).value))
             log.warning(f"worker rejected {candidate.candidate_id[:8]}: {note}")
             return ticket
 
@@ -1105,7 +1177,10 @@ class LiveMT5Executor:
             ticket = OrderTicket(str(uuid.uuid4()), order.order_id,
                                  ExecutionStatus.ERROR,
                                  note="worker reported a fill with no ticket")
-            self._finish(order, ticket, filled=False)
+            self._finish(order, ticket, filled=False,
+                         rejection=RejectionReason.transport(
+                             "worker reported a fill with no ticket",
+                             code="worker_inconsistent_reply"))
             return ticket
 
         existing = state.get_position(pos.position_id)
@@ -1222,8 +1297,18 @@ class LiveMT5Executor:
             mirrored.append({"account_id": account_id, "positions": len(seen)})
         return mirrored
 
-    def _finish(self, order: OrderState, ticket: Any, filled: bool = False) -> None:
+    def _finish(self, order: OrderState, ticket: Any, filled: bool = False,
+                rejection: Optional[RejectionReason] = None) -> None:
         order.status = OrderStatus.FILLED if filled else OrderStatus.REJECTED
+        if rejection is not None:
+            order.apply_rejection(rejection)
+            # Stamp the ticket too: the pipeline reads the ticket, not the
+            # order, and it needs the class rather than a free-text note.
+            try:
+                ticket.rejection_class = rejection.rejection_class.value
+                ticket.rejection_code = rejection.code
+            except AttributeError:  # pragma: no cover - exotic ticket types
+                pass
         state.update_order(order)
         self._tickets[order.order_id] = ticket
 

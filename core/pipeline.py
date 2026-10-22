@@ -42,6 +42,19 @@ from schools.base import Suggestion
 log = get_logger("pipeline")
 
 
+def _ticket_filled(ticket) -> bool:
+    """True only when the venue actually filled the order.
+
+    Anything else -- a rejection, a transport error, no ticket at all -- is
+    "not filled", and the pipeline treats those three cases differently only
+    in their recorded class, never in whether a trade happened.
+    """
+    if ticket is None:
+        return False
+    status = getattr(ticket, "status", None)
+    return getattr(status, "value", status) == "filled"
+
+
 def suggestion_to_thesis(sugg: Suggestion, candles: Sequence[Candle],
                          symbol: str, min_rr: float = 1.2) -> Optional[Thesis]:
     """Bridge a school Suggestion into the canonical Thesis contract.
@@ -221,13 +234,24 @@ class TradingLoop:
                 continue
 
             ticket = (self._executor or execution_engine).execute(candidate, decision)
-            opp.executed(
-                ticket_key=getattr(ticket, "ticket", None)
-                if ticket is not None else "no-ticket")
+            filled = _ticket_filled(ticket)
+            if filled:
+                opp.executed(ticket_key=getattr(ticket, "ticket", None))
+                self._publish_mt5_signal(candidate)
+            else:
+                # The venue refused the order. The opportunity is rejected
+                # with the real class and reason, and NO bridge command is
+                # written: a refused order must not stay in the terminal's
+                # inbox as a live instruction that can fill later.
+                opp.reject(self._rejection_note(ticket))
+                self._mark_opportunity_refusal(opp, ticket)
             self._opportunities.update(opp)
-            self._publish_mt5_signal(candidate)
-            self._ledger.record(self._decision_record(candidate, decision))
-            log.info(f"{self.symbol}: approved opportunity {opp.opportunity_id} executed")
+            record = self._decision_record(candidate, decision)
+            record.metadata.update(self._execution_metadata(ticket))
+            self._ledger.record(record)
+            log.info(f"{self.symbol}: approved opportunity {opp.opportunity_id} "
+                     + ("executed" if filled
+                        else f"not executed ({self._rejection_note(ticket)})"))
 
     # -- School-board pipeline (analytical schools trade the same way) --
     def _run_school_board(self, candles: Sequence[Candle], context) -> None:
@@ -328,7 +352,9 @@ class TradingLoop:
 
         ticket = (self._executor or execution_engine).execute(candidate, decision)
         self._candidates.approve(candidate.candidate_id)
-        self._publish_mt5_signal(candidate)
+        filled = _ticket_filled(ticket)
+        if filled:
+            self._publish_mt5_signal(candidate)
 
         record = self._decision_record(candidate, decision)
         record.metadata = delib.selected.meta
@@ -347,6 +373,7 @@ class TradingLoop:
             "strategy_id": getattr(candidate, "strategy_id", None),
             "strategy_stage": getattr(candidate, "strategy_stage", None),
         })
+        record.metadata.update(self._execution_metadata(ticket))
         if ticket is not None and ticket.status.value == "filled":
             record.metadata["ticket"] = ticket.ticket
             self._schools.attribute_ticket(ticket.ticket, dict(record.metadata))
@@ -357,6 +384,15 @@ class TradingLoop:
                              "(TRADERAIG_OPPORTUNITY_GATE=0)")
             opp.executed(ticket.ticket, note="executed by pipeline (auto gate)")
             self._opportunities.update(opp)
+        elif not filled:
+            # The order did not fill. The opportunity is rejected with the
+            # real class and reason instead of staying `qualified`, and no
+            # bridge command is written for an order the broker refused.
+            opp.reject(self._rejection_note(ticket))
+            self._mark_opportunity_refusal(opp, ticket)
+            self._opportunities.update(opp)
+            log.warning(f"{self.symbol}: order not filled "
+                        f"({self._rejection_note(ticket)})")
         self._ledger.record(record)
 
         if ticket is not None and ticket.status.value == "filled":
@@ -506,6 +542,12 @@ class TradingLoop:
         file bridge stays authoritative and the WebSocket relay carries it to
         the attached terminal-side proxy. Best-effort: the trading path never
         breaks or blocks on this lane.
+
+        The caller only reaches this on a *real venue fill*. The bridge file
+        is an instruction to the EA, so an order the broker refused must
+        never be written there: it would sit in the terminal's inbox as a
+        live command and could open a position the risk layer never saw
+        fill.
         """
         try:
             if not getattr(self._executor, "BRIDGE_PUBLISH", False):
@@ -515,6 +557,44 @@ class TradingLoop:
                 log.warning(f"{self.symbol}: bridge signal relay skipped")
         except Exception:  # noqa: BLE001 - bridge is auxiliary, never fatal
             log.debug(f"{self.symbol}: bridge publish failed (aux lane)")
+
+    def _rejection_note(self, ticket) -> str:
+        """A short, honest description of why an order did not fill."""
+        if ticket is None:
+            return "execution returned no ticket"
+        status = getattr(ticket, "status", None)
+        status_value = getattr(status, "value", status)
+        note = str(getattr(ticket, "note", "") or "")
+        rejection_class = str(getattr(ticket, "rejection_class", "") or "none")
+        code = str(getattr(ticket, "rejection_code", "") or "")
+        if rejection_class in ("none", ""):
+            return f"not filled ({status_value}) {note}".strip()
+        return f"{rejection_class}/{code or 'unspecified'}: {note or status_value}"
+
+    def _execution_metadata(self, ticket) -> Dict[str, Any]:
+        """Execution outcome metadata for the decision record."""
+        status = getattr(ticket, "status", None)
+        status_value = getattr(status, "value", status)
+        meta: Dict[str, Any] = {
+            "execution_status": status_value,
+            "execution_note": str(getattr(ticket, "note", "") or ""),
+            "filled": _ticket_filled(ticket),
+        }
+        rejection_class = str(getattr(ticket, "rejection_class", "") or "")
+        if rejection_class and rejection_class != "none":
+            meta["rejection_class"] = rejection_class
+            meta["rejection_code"] = str(getattr(ticket, "rejection_code", "") or "")
+        return meta
+
+    def _mark_opportunity_refusal(self, opp, ticket) -> None:
+        """Record *why* an order did not fill on the opportunity itself."""
+        meta = self._execution_metadata(ticket)
+        opp.evidence["execution_status"] = meta.get("execution_status")
+        opp.evidence["filled"] = meta.get("filled")
+        if meta.get("rejection_class"):
+            opp.evidence["rejection_class"] = meta["rejection_class"]
+            opp.evidence["rejection_code"] = meta.get("rejection_code", "")
+            opp.evidence["rejection_reason"] = meta.get("execution_note", "")
 
     def _maybe_dspy_refine(self, evidence):
         """Optional DSPy refinement of gathered evidence (opt-in, no-op by
@@ -588,9 +668,11 @@ class TradingLoop:
 
         ticket = (self._executor or execution_engine).execute(candidate, decision)
         self._candidates.approve(candidate.candidate_id)
-        self._publish_mt5_signal(candidate)
+        filled = _ticket_filled(ticket)
+        if filled:
+            self._publish_mt5_signal(candidate)
 
-        if ticket is not None and ticket.status.value == "filled":
+        if filled:
             # gate=auto: governed approval + fill happened in this bar, so the
             # opportunity record follows that truth (approved -> executed).
             opp.approve(note="governed auto-execution "
@@ -598,6 +680,14 @@ class TradingLoop:
             opp.executed(ticket.ticket, note="executed by pipeline (auto gate)")
             self._opportunities.update(opp)
             log.info(f"{self.symbol}: trade executed")
+        else:
+            # Not filled: the opportunity is rejected with the real class and
+            # reason, and no bridge command is written for a refused order.
+            opp.reject(self._rejection_note(ticket))
+            self._mark_opportunity_refusal(opp, ticket)
+            self._opportunities.update(opp)
+            log.warning(f"{self.symbol}: order not filled "
+                        f"({self._rejection_note(ticket)})")
 
         # 6) Learning ledger entry
         self._ledger.record(self._decision_record(candidate, decision))

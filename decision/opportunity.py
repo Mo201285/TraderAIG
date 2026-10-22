@@ -39,6 +39,7 @@ from typing import Dict, List, Optional
 
 from core.logging import get_logger
 from core.contracts import TradeDirection
+from core.rejection import RejectionClass
 from decision.candidate import TradeCandidate
 from risk.governor import RiskDecision, RiskDecisionKind
 
@@ -390,6 +391,10 @@ class OpportunityEngine:
             reasons.append(f"risk: {reason}")
         if not live_eligible:
             reasons.append("live: not live-eligible")
+        # A veto is a *governance* refusal, and it is recorded as such: the
+        # class is what later learning can be conditioned on, so a risk
+        # decision is never confused with a broker refusal.
+        rejection_class = "" if risk_ok else RejectionClass.GOVERNANCE.value
 
         session_key = (
             f"{candidate.symbol}:{candidate.direction.value}:"
@@ -404,6 +409,7 @@ class OpportunityEngine:
                 {"name": "portfolio_allocation", "passed": True,
                  "detail": "no allocation check recorded"}),
             "candidate": candidate.as_dict(),
+            "rejection_class": rejection_class,
             "stage": {
                 "strategy_id": candidate.strategy_id,
                 "strategy_stage": candidate.strategy_stage,

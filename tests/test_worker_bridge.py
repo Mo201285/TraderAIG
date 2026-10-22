@@ -419,12 +419,12 @@ def test_adapter_resolves_its_account_from_the_registry(monkeypatch):
     class Registry:
         def for_login(self, venue, login, server):
             assert (venue, login, server) == (
-                "mt5", "1400167", "FTTrading-Server")
+                "mt5", "99887766", "FTTrading-Server")
             return {"account_id": ACCOUNT_A}
 
     monkeypatch.setattr(registry_module, "AccountRegistry", Registry)
     monkeypatch.setattr(mt5_module, "settings", SimpleNamespace(
-        mt5=SimpleNamespace(login=1400167, server="FTTrading-Server")))
+        mt5=SimpleNamespace(login=99887766, server="FTTrading-Server")))
 
     adapter = MT5Adapter()
     assert adapter.account_id() == ACCOUNT_A

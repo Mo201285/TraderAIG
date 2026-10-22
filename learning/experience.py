@@ -28,6 +28,10 @@ class ErrorType(str, Enum):
     EXECUTION_ERROR = "execution_error"
     RISK_ERROR = "risk_error"
     OPERATIONAL_ERROR = "operational_error"
+    # The broker answered and refused the order ("Invalid stops", "Market
+    # closed"). Distinct from RISK_ERROR (the idea was refused before it
+    # reached the venue) and from OPERATIONAL_ERROR (nothing was tried).
+    VENUE_REJECTION = "venue_rejection"
     MODEL_DRIFT = "model_drift"
     UNKNOWN = "unknown"
 

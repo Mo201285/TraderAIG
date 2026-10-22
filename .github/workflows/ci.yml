@@ -24,7 +24,13 @@ jobs:
   backend:
     name: ruff + pytest (windows)
     runs-on: windows-latest
-    timeout-minutes: 30
+    # The suite is a real gate, not a smoke test: the canonical full run on the
+    # dev box measures 1:07-2:05 (AGENTS.md / DECISION_LOG), and the CI runner
+    # is slower still. A 30-minute ceiling killed the job mid-suite, so every
+    # push reported "Cancelled" and the gate never actually reported a verdict.
+    # The ceiling is now above the slowest measured run; the run itself is not
+    # shortened (a marker test may not be skipped to fit a clock).
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
 

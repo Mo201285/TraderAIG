@@ -8678,8 +8678,17 @@ def execution_truth() -> Dict:
         # (`exec:<candidate>:<ms>`), which carries pnl 0 at order time.
         deals = [r for r in rows if str(r.record_id).startswith("mt5:")]
         attributed = attributed_to_account(deals, login)
-        block = execution_learning(attributed, source="mt5")
-        block["basis"] = block["basis"] + "; one row per closed MT5 deal"
+        # An entry deal is a fill, not a closed position: counting it as a
+        # close inflates `positions_closed` and files a zero-pnl "trade" the
+        # account never closed. Deals written before the entry flag was
+        # recorded have no key and are counted as closes -- the older rows
+        # are not reclassified by guessing.
+        closed = [r for r in attributed
+                  if (r.actual_result or {}).get("deal_entry", 1) != 0]
+        block = execution_learning(closed, source="mt5")
+        block["fill_count"] = len(attributed)
+        block["basis"] = (block["basis"]
+                          + "; closed deals only (an entry deal is a fill)")
         block["attributed_to_account"] = login or None
         block["unattributed_records"] = len(deals) - len(attributed)
         return block

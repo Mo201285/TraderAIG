@@ -862,6 +862,10 @@ class MT5Adapter:
                 "direction": direction.value,
                 "source": "mt5",
                 "origin": origin_meta["origin"],
+                # MT5 deal entry: 0 in, 1 out, 2 in/out, 3 out by. A deal is a
+                # fill either way, but only an out deal closes a position --
+                # the truth plane must not read an entry as a closed trade.
+                "deal_entry": int(getattr(d, "entry", 1)),
             },
             slippage=0.0,
             fees=float(d.commission or 0) + float(d.swap or 0),

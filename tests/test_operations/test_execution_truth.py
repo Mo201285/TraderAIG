@@ -162,6 +162,38 @@ def test_the_lifecycle_equals_a_fresh_derivation_of_the_canonical_reads(
     assert positions[0]["venue_position_ref"] == "TKT-002"
 
 
+def test_an_entry_deal_is_a_fill_not_a_closed_position(client):
+    """The mt5 deal tape records entries and exits. An entry is a fill, but it
+    closes nothing: counting it inflated `positions_closed` and filed a
+    zero-pnl trade the account never closed."""
+    from learning.experience import ExperienceRecord, ledger
+
+    saved = ledger.all()
+    ledger.clear()
+
+    def _deal(rid, pnl, entry):
+        ledger.record(ExperienceRecord(
+            record_id=rid, decision_id=rid, timestamp=1.0,
+            actual_result={"pnl": pnl, "filled": True, "source": "mt5",
+                           "deal_entry": entry}))
+
+    _deal("mt5:1", 0.0, 0)     # entry
+    _deal("mt5:2", 12.5, 1)    # close
+    try:
+        truth = client.get("/execution/truth").json()
+    finally:
+        ledger.clear()
+        for record in saved:
+            ledger.record(record)
+
+    learning = truth["learning"]
+    assert learning["count"] == 1
+    assert learning["fill_count"] == 2
+    assert learning["net_pnl"] == 12.5
+    assert truth["lifecycle"]["positions_closed"] == 1
+    assert truth["metrics"]["realized_pnl"] == 12.5
+
+
 def test_the_truth_surface_separates_the_real_rail_from_all_sources(client):
     """`learning`/`positions_closed`/`realized_pnl` must be real MT5 fills.
 

@@ -2598,6 +2598,110 @@ in the full run. The one non-passing marker is the documented uvicorn-boot
 `test_challenge_durability.py`, which hangs identically on a clean HEAD
 worktree (the .env-driven live host, not this slice). Commit `238eb01`.
 
+## Appendix R - The desk that was silent, and the door with no handle (2026-10-22)
+
+### 1. What was actually wrong
+
+The account was flat and the desk had not decided anything since 04:07:35 --
+before the 07:09 restart. The engine was not crashed, and the API was not
+down. It refused to start, and it refused for a reason it would not name.
+
+`/mt5/engine` said `armed: true`, `promotion_cleared: []`,
+`refusals: ["no strategy is at the paper/production stage"]`.
+
+`research/strategy_lab/data/registry.json` said why, if you opened the file:
+all five BTCUSD strategies were `quarantined`, every one with the history tag
+`quarantine#revalidation_failed`, written at 04:07:35 -- the same minute as
+`results.json`. A revalidation had run with
+`drawdown_policy: {mode: gov_approve, lab_cap_r: 3.0, gov_cap_r: 12.0,
+gov_override: false}`.
+
+That mode does not use the governed cap. `GOV_APPROVE` without an override
+uses the `3R` lab veto. The strategies had been promoted under the governed
+`12R` cap (row 824/825), with drawdowns between `3.4R` and `11.301R`. The
+evidence had not changed; the policy used to score it had.
+
+The row-824 invariant then did exactly what it was built to do:
+`attach_validation` saw a failing report attached to a live stage and demoted
+the entry to `QUARANTINED` in the same write. Correct.
+
+The defect was the other half: `QUARANTINED` had no exit. `promote()` has no
+transition out of it, `demote()` is the only way in, and nothing anywhere in
+the system could bring a strategy back. A governed sink with no exit is a
+one-way door -- so one strict re-run pulled five strategies out of the market
+and the desk could not come back at all.
+
+### 2. Why nobody saw it
+
+* The engine was not running, so no cycle logged that it had no work.
+* The refusal was correct and uninformative: it did not name a strategy, a
+  reason, or the file where either lived.
+* The demotion was not audited. `attach_validation` wrote the registry and
+  nothing else, so "who refused, and why" was answerable only by reading a
+  JSON history tag.
+
+### 3. Three missing pieces, now in
+
+1. **A way back.** `StrategyRegistry.reinstate()` restores the last stage the
+   strategy was actually promoted into -- read from its own `promote#` history,
+   never supplied by the caller -- and only when the caller attaches a passing
+   report. `ReviewLoop.apply` learns the `reinstate` kind and keeps the
+   engine-running deferral, so a registry change never lands mid-cycle.
+2. **Evidence-bound, not operator-bound.** `POST /research/reinstate`
+   re-scores the stored observations under the policy in force *now* and
+   refuses unless that report passes. It does not accept the old report on
+   trust, and it cannot be pointed at a stage the strategy never held.
+3. **A refusal that can be acted on.** `GET /mt5/engine` now returns
+   `quarantined: [{strategy_id, reason}]`, the refusal list carries
+   `quarantined: <id> (<reason>)`, and the engine's `_errors` and log line carry
+   the same names. A demotion inside `/research/revalidate` now writes a
+   `lab.quarantine` audit row with the policy, the samples and the drawdown.
+
+### 4. The restoration, as it happened
+
+The box holds no human session (the operator's password is set, and it is not
+stored anywhere the process can read), and the service token is deliberately
+scoped to the engine rails -- opening `/research/reinstate` to it would have
+widened a machine credential into the lab. The live restore therefore ran the
+same governed code path in-process against the same durable registry the API
+re-reads, and wrote the same `lab.reinstate` audit row.
+
+* policy in force: `governed`, `lab_cap_r 3.0`, `gov_cap_r 12.0` -- the
+  strategy was restored on the cap it was promoted under;
+* report: 151 stored observations, `max_dd 11.301R` (`<= 12R`), `EV 0.196`,
+  `PF 1.3326`, no failing gate;
+* history: `quarantine#revalidation_failed` -> `reinstate#paper`;
+* `/mt5/engine`: `promotion_cleared: ["btcusd:ict_liquidity_sweep_reversal:v7"]`,
+  `would_start: true`, `refusals: []`;
+* `POST /mt5/engine/start`: `started: true, live: true`;
+* the loop logged `LiveEngine LIVE start: 1 promotion-cleared strategies`,
+  `running: true`, `cycles` advancing, `errors: []`, `positions: 0`;
+* the first candidate after the start (XAUUSD) was vetoed by the weekend rule
+  (`no session schedule has been published`), which is the fail-closed path
+  working on live data.
+
+The other four quarantined strategies are named but were **not** reinstated:
+restoring v7 restores the desk, and whether the others trade again is a
+separate operator decision, not a side effect.
+
+### 5. Next
+
+1. Decide the four remaining quarantined BTCUSD strategies -- each passes the
+   governed `12R` cap on its stored evidence, and each is now one governed
+   `POST /research/reinstate` away.
+2. The 04:07:35 revalidation's actor is still unresolved: the access log shows
+   only one `POST /research/revalidate` (a 401), no dashboard control uses
+   `gov_approve`, and the API tests isolate `LAB_DATA_DIR`. The demotion is
+   audited from this commit on, so the next one cannot be silent -- but the
+   first one cannot be reconstructed.
+3. The service-token scope question stays open on purpose: the lab routes are
+   human-session surfaces, and a box with no session is a deployment problem,
+   not a reason to widen the machine token.
+
+Gate: ruff clean repo-wide; 137 strategy-lab, 22 api-lab, 23 arming, 14
+engine-API, 37 quality/priors/live-engine, 32 http-surface/api-m8m9/research-
+routes, all passing. Commit `27ff982`.
+
 
 
 

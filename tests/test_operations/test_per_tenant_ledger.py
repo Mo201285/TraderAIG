@@ -24,9 +24,9 @@ def two_tenants(monkeypatch):
     monkeypatch.setattr(_global_identity, "_subscriptions", svc._subscriptions)
     monkeypatch.setattr(_global_identity, "_audit", svc._audit)
     monkeypatch.setenv("IDENTITY_PRIMARY_EMAIL", "ledger-owner@institution.com")
-    _global_ledger._records.clear()
+    _global_ledger.clear()
     yield TestClient(api.app), principal.user_id, other.user_id
-    _global_ledger._records.clear()
+    _global_ledger.clear()
 
 
 @pytest.fixture()

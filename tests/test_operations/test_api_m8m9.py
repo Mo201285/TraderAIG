@@ -157,7 +157,7 @@ def test_drift_endpoint_read_only(lab_env, monkeypatch, ledger_snapshot):
 def test_performance_ownership_split(lab_env, monkeypatch, ledger_snapshot):
     from learning.experience import ExperienceRecord
 
-    api.ledger._records.clear()
+    api.ledger.clear()
     api.ledger._records.append(ExperienceRecord(
         record_id="sys-1", decision_id="d", timestamp=0.0,
         actual_result={"filled": True, "pnl": 12.0, "origin": "system"}))
@@ -195,13 +195,13 @@ def test_performance_hydrates_ledger_from_persistence(lab_env, monkeypatch):
     monkeypatch.setattr(pdb, "make_live_session", lambda: object())
     monkeypatch.setattr(prepos, "ExperienceRepository", lambda _session: _StubStore())
 
-    api.ledger._records.clear()
+    api.ledger.clear()
     try:
         out = api.performance_report()
         assert out["system"]["total_trades"] == 1
         assert out["system"]["net_pnl"] == 7.0  # came from the (fake) DB
     finally:
-        api.ledger._records.clear()
+        api.ledger.clear()
 
 
 def test_lab_live_feed_endpoint_metadata_only(lab_env, monkeypatch):
@@ -211,7 +211,7 @@ def test_lab_live_feed_endpoint_metadata_only(lab_env, monkeypatch):
     from learning.experience import ExperienceRecord
     from research.strategy_lab import live_feed as lf
 
-    api.ledger._records.clear()
+    api.ledger.clear()
     api.ledger._records.append(ExperienceRecord(
         record_id="lf-1", decision_id="d", timestamp=0.0,
         actual_result={"filled": True, "pnl": 1.0, "origin": "system"}))
@@ -230,4 +230,4 @@ def test_lab_live_feed_endpoint_metadata_only(lab_env, monkeypatch):
         assert out["skipped"] == {}
         assert len(calls) == 1 and calls[0][2] == 30
     finally:
-        api.ledger._records.clear()
+        api.ledger.clear()

@@ -101,7 +101,7 @@ def ledger_state(monkeypatch):
     old_records = list(ledger._records)
     old_vetoes = list(state.risk.vetoes)
     monkeypatch.setattr(ledger, "load_from_db", lambda limit=500: 0)
-    ledger._records = []
+    ledger.clear()
     state.risk.vetoes = []
     yield ledger
     ledger._records = old_records
@@ -198,7 +198,7 @@ def test_an_empty_ledger_reports_empty_execution_while_research_stays_honest(
     (CI) has none; seed one deterministic observation through a patched recorder
     so this guard proves the split without depending on runtime data.
     """
-    ledger_state._records = []
+    ledger_state.clear()
     from research.strategy_lab.observations import ObservationRecorder
     recorder = ObservationRecorder()
     recorder.record(_observation())

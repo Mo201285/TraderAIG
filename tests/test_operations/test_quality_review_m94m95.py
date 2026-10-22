@@ -110,7 +110,7 @@ def test_macro_freshness_verdicts():
 
 def test_ownership_snapshot_flags_integrity(lab_env, ledger_snapshot):
     from learning.experience import ExperienceRecord
-    api.ledger._records.clear()
+    api.ledger.clear()
     api.ledger._records.append(ExperienceRecord(
         record_id="sys-1", decision_id="d", timestamp=0.0,
         actual_result={"filled": True, "pnl": 1.0, "origin": "system"}))

@@ -97,7 +97,7 @@ def deep_pushdown():
 def clean_runtime_state():
     """Each school test starts from a clean singleton state."""
     reset_school_runtime()
-    ledger._records = []
+    ledger.clear()
     candidate_board._candidates = []
     for pos in list(state.positions.values()):
         if pos.status.value == "open":

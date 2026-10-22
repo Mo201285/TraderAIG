@@ -322,7 +322,7 @@ def reset_runtime_state(keep_quant: bool = False) -> None:
 
     state.__dict__.clear()
     state.__dict__.update(CanonicalState().__dict__)
-    ledger._records = []
+    ledger.clear()
     candidate_board._candidates = []
     school_board._attrib.clear()
     if not keep_quant:

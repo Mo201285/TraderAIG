@@ -57,3 +57,15 @@ def test_distinct_ids_are_still_separate_records():
 
     assert len(led.all()) == 2
     assert led.by_candidate("missing") == []
+
+
+def test_clear_drops_the_id_index_with_the_records():
+    """A reset must not leave ids behind that swallow the next run's records."""
+    led = _ledger()
+    assert led.record(_record("paper:p1")) is True
+
+    led.clear()
+    assert led.all() == []
+
+    assert led.record(_record("paper:p1")) is True
+    assert [r.record_id for r in led.all()] == ["paper:p1"]

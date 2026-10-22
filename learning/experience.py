@@ -180,6 +180,18 @@ class ExperienceLedger:
         self._by_owner: Dict[str, List[ExperienceRecord]] = {}
         self._by_id: Dict[str, ExperienceRecord] = {}
 
+    def clear(self) -> None:
+        """Drop the in-memory mirror (a fresh run/replay, never the database).
+
+        Resets must come through here rather than assigning `_records`: the
+        id index has to be dropped with the list, or the next `record()` of an
+        id that was just cleared would "update" an entry no longer in the
+        store and the caller would see nothing at all.
+        """
+        self._records = []
+        self._by_owner.clear()
+        self._by_id.clear()
+
     def record(self, record: ExperienceRecord) -> bool:
         """Store one record; True when it is new, False when it updated one.
 

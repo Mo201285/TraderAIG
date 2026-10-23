@@ -229,18 +229,27 @@ class ProductService:
         self._roll_all(user_id)
         return [e for e in self._entitlements.values() if e.user_id == user_id]
 
-    def has(self, user_id: str, entitlement: Entitlement) -> bool:
+    def has(self, user_id: str, entitlement: Entitlement | str) -> bool:
         """True only for a live, paid-for entitlement.
 
         Absence of a user, an unknown entitlement or a rolled-out record all
         answer False. This is the read the risk governor asks on every
         candidate, so it must be cheap and must never raise.
+
+        Accepts the enum or its plain value: the governor passes
+        `Entitlement.CHALLENGE_MANAGEMENT`, while a console or a stored row can
+        only hand over the string. A string used to hit `.value` on a `str`,
+        raise AttributeError, and be swallowed into a False -- a correctly
+        granted, paid-for service reported as absent.
         """
         if not user_id:
             return False
+        wanted = str(getattr(entitlement, "value", entitlement) or "").strip().lower()
+        if not wanted:
+            return False
         try:
             for ent in self.entitlements_for(user_id):
-                if ent.entitlement == entitlement.value and ent.is_effective():
+                if ent.entitlement == wanted and ent.is_effective():
                     return True
         except Exception:  # noqa: BLE001
             # Answering False here is the safe direction, but a swallowed

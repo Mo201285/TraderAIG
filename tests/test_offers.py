@@ -300,6 +300,21 @@ def test_redeem_without_verification_requires_verification(offers, referral_code
     assert not products.has(user.user_id, Entitlement.CHALLENGE_MANAGEMENT)
 
 
+def test_has_answers_the_same_for_the_enum_and_its_value(offers, referral_code):
+    """`products.has()` is asked with the enum by the governor and with the
+    stored string by console/row paths. A string used to reach `.value` on a
+    `str`, raise AttributeError, and be swallowed into a False -- a paid-for
+    service reported as absent."""
+    o = _offer(offers, referral_code)
+    user = _user()
+    offers.redeem(user.user_id, o["offer_id"])
+
+    assert products.has(user.user_id, Entitlement.CHALLENGE_MANAGEMENT) is True
+    assert products.has(user.user_id, "challenge_management") is True
+    assert products.has(user.user_id, " Challenge_Management ") is True
+    assert products.has(user.user_id, "no_such_entitlement") is False
+
+
 def test_redeem_is_idempotent(offers, referral_code):
     o = _offer(offers, referral_code)
     user = _user()

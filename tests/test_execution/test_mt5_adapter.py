@@ -172,6 +172,80 @@ def test_fetch_candles_normalizes_venue_timeframe_spelling(monkeypatch, adapter)
     assert seen["tf"] == fake.TIMEFRAME_H1
 
 
+def test_missing_symbol_on_a_connected_terminal_is_not_a_connection_fault(
+        monkeypatch, adapter):
+    """The CEX paper loop asks this FX/metals terminal for BTCUSDT every cycle.
+
+    `last_error` is what the operator reads as connection health, so "this book
+    does not carry crypto" must not be written there -- it was, once per pass,
+    and it buried the real `Call failed` lines it sat beside.
+    """
+    import logging
+
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    fake.copy_rates_from_pos = lambda sym, tf, pos, count: None
+    fake.symbol_info = lambda sym: None  # unknown to this terminal
+    fake.last_error = lambda: (-1, "Terminal: Call failed")
+
+    lines = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            lines.append((record.levelno, record.getMessage()))
+
+    handler = _Capture()
+    adapter_logger = adapter_mod.log._logger
+    adapter_logger.addHandler(handler)
+    try:
+        assert adapter.fetch_candles("BTCUSDT") == []
+        assert adapter.fetch_candles("BTCUSDT") == []
+    finally:
+        adapter_logger.removeHandler(handler)
+
+    assert adapter.status()["last_error"] == ""
+    said = [m for lvl, m in lines if "BTCUSDT" in m]
+    assert len(said) == 1, "the fact belongs in the log once, not once per pass"
+    assert all(lvl < logging.WARNING for lvl, _ in lines)
+
+
+def test_a_dropped_terminal_still_reports_the_candle_failure(
+        monkeypatch, adapter):
+    """`symbol_info() is None` is also what a disconnected terminal answers for
+    every symbol, so absence alone must not be read as "the venue does not
+    carry it"."""
+    import logging
+
+    _live_creds(monkeypatch)
+    fake = _make_fake_mt5()
+    monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
+    fake.copy_rates_from_pos = lambda sym, tf, pos, count: None
+    fake.symbol_info = lambda sym: None
+    fake.terminal_info = lambda: SimpleNamespace(name="fake",
+                                                 trade_allowed=True,
+                                                 connected=False)
+    fake.last_error = lambda: (-1, "Terminal: Call failed")
+
+    lines = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            lines.append((record.levelno, record.getMessage()))
+
+    handler = _Capture()
+    adapter_logger = adapter_mod.log._logger
+    adapter_logger.addHandler(handler)
+    try:
+        assert adapter.fetch_candles("XAUUSD") == []
+    finally:
+        adapter_logger.removeHandler(handler)
+
+    assert "Call failed" in adapter.status()["last_error"]
+    assert any(lvl == logging.WARNING and "copy_rates failed" in m
+               for lvl, m in lines)
+
+
 def test_sync_market_publishes_the_quote_into_the_plane(monkeypatch, adapter):
     """MT5 is the plane's quote producer; state and the plane share one object."""
     _live_creds(monkeypatch)

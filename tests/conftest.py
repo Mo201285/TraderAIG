@@ -38,6 +38,14 @@ os.environ["TRADERAIG_OPPORTUNITY_BOARD"] = os.path.join(
 os.environ["TRADERAIG_DB_PATH"] = os.path.join(
     tempfile.mkdtemp(prefix="traderaig-test-db-"), "test.db")
 
+# The log directory, for the same reason and with the same consequence. Every
+# module that calls `get_logger()` attaches a rotating handler to
+# `settings.logging.directory / "system.log"` at import, so a suite run on this
+# host wrote synthetic fills (`MT5 FILLED XAUUSD ... @ 2000.1`) into the live
+# desk's own audit log, interleaved with the real ones. `LOG_DIR` is read when
+# `core.config` is imported, which happens after this file is collected.
+os.environ["LOG_DIR"] = tempfile.mkdtemp(prefix="traderaig-test-logs-")
+
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 # This directory too, so `suite_isolation` is importable by name from here and

@@ -113,6 +113,10 @@ class MT5Adapter:
         # on every cycle is pointless write pressure on the live database and
         # would keep the "experienced" stat climbing without new trades.
         self._seen_deals: set = set()
+        # Symbols this terminal does not offer (the CEX paper loop asks an
+        # FX/metals book for BTCUSDT every cycle). Remembered so the fact is
+        # stated once instead of once per pass.
+        self._unoffered_symbols: set = set()
         # Login of the account this session is attached to. Stamped onto every
         # deal we ingest so the truth plane can tell this account's fills from
         # rows written by a different account or terminal session.
@@ -928,6 +932,28 @@ class MT5Adapter:
     # ------------------------------------------------------------------
     # Live candles (feed for the intelligence/pipeline stages)
     # ------------------------------------------------------------------
+    def _symbol_missing_from_venue(self, mt5, symbol: str) -> bool:
+        """True only when a *connected* terminal says it does not know `symbol`.
+
+        The CEX paper loop reads BTCUSDT/ETHUSDT from this FX/metals terminal
+        every cycle. That is a configuration fact, not a terminal fault, and it
+        used to be recorded as one: `last_error` is the operator's connection
+        health, and a warning per pass buries the warnings that matter.
+
+        A terminal that has lost its link answers `symbol_info() is None` for
+        every symbol, so that case must stay a fault -- hence the connected
+        check first. Anything unexpected also stays a fault: claiming a venue
+        does not offer a symbol is the stronger, quieter claim, so it needs the
+        evidence.
+        """
+        try:
+            info = mt5.terminal_info()
+            if info is None or not bool(getattr(info, "connected", False)):
+                return False
+            return mt5.symbol_info(symbol) is None
+        except Exception:  # noqa: BLE001
+            return False
+
     def fetch_candles(self, symbol: str, timeframe: str = "M15",
                       count: int = 300) -> List[Candle]:
         """Pull real candles from the terminal into canonical Candle objects.
@@ -941,6 +967,13 @@ class MT5Adapter:
         tf = getattr(mt5, f"TIMEFRAME_{tf_name}", mt5.TIMEFRAME_M15)
         rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
         if rates is None or len(rates) == 0:
+            if self._symbol_missing_from_venue(mt5, symbol):
+                if symbol not in self._unoffered_symbols:
+                    self._unoffered_symbols.add(symbol)
+                    log.info(
+                        f"copy_rates skipped for {symbol}: this terminal does "
+                        "not offer the symbol")
+                return []
             self._last_error = str(mt5.last_error())
             log.warning(f"copy_rates failed for {symbol}: {self._last_error}")
             return []

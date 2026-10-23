@@ -65,3 +65,21 @@ def test_a_configured_postgres_is_the_live_database_too(monkeypatch):
         assert _live("postgresql+psycopg://u@h:5432/db")
     finally:
         monkeypatch.delenv("POSTGRES_HOST", raising=False)
+
+
+def test_the_suite_does_not_log_into_the_live_desk_log_file():
+    """`get_logger()` attaches a rotating file handler the first time a module
+    asks for one, under `settings.logging.directory`. On this host that is the
+    live desk's own `logs/`, so a suite run wrote synthetic fills -- `MT5 FILLED
+    XAUUSD ... @ 2000.1` -- into the audit log beside the real ones, and the two
+    are indistinguishable once written. `LOG_DIR` in conftest moves the suite's
+    handler somewhere disposable; this reads the settings object the handlers
+    actually use rather than the variable that was supposed to redirect it.
+    """
+    from core.config import ROOT_DIR, settings
+
+    live = (ROOT_DIR / "logs").resolve()
+    suite = Path(settings.logging.directory).resolve()
+    assert suite != live, "the suite logs into the live desk's logs directory"
+    assert live not in suite.parents, (
+        "the suite's log directory is inside the live desk's logs directory")

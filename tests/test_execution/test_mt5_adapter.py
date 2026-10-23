@@ -479,11 +479,16 @@ def test_place_position_fills_when_approved_and_connected(monkeypatch, adapter):
     assert state.get_position("777") is not None
 
 
-def test_the_fill_log_reports_the_booked_price_not_zero(monkeypatch, adapter,
-                                                        caplog):
+def test_the_fill_log_reports_the_booked_price_not_zero(monkeypatch, adapter):
     """`OrderSendResult.price` reads 0.0 for market sends on this build, so the
     audit line said every live trade filled at 0.0. Log the price the terminal
-    actually booked on the position instead."""
+    actually booked on the position instead.
+
+    The adapter's logger is configured with `propagate` off, so caplog never
+    sees it: capture through a handler on the adapter's own logger.
+    """
+    import logging
+
     _live_creds(monkeypatch)
     fake = _make_fake_mt5()
     monkeypatch.setattr(adapter_mod, "_mt5", lambda: fake)
@@ -504,13 +509,26 @@ def test_the_fill_log_reports_the_booked_price_not_zero(monkeypatch, adapter,
         price_open=2000.7, price_current=2001.0, sl=1990.0, tp=2020.0,
         time=1000, profit=0.0, swap=0.0)]
 
-    with caplog.at_level("INFO", logger="execution.mt5"):
+    records = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = _Capture()
+    adapter_logger = adapter_mod.log._logger
+    adapter_logger.addHandler(handler)
+    try:
         adapter.place_position(_candidate(strategy_id="xauusd:loop:v1",
                                           strategy_stage="production"),
                                RiskDecisionKind.APPROVED)
+    finally:
+        adapter_logger.removeHandler(handler)
 
-    assert "@ 2000.7" in caplog.text
-    assert "@ 0.0" not in caplog.text
+    filled = [line for line in records if line.startswith("MT5 FILLED")]
+    assert filled, "the fill was never logged"
+    assert "@ 2000.7" in filled[0]
+    assert "@ 0.0" not in filled[0]
 
 
 def test_place_position_falls_back_across_filling_modes(monkeypatch, adapter):
